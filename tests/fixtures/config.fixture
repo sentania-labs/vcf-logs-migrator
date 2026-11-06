@@ -1,0 +1,151 @@
+{
+  "fixture_schema": "logs-migrate.simulator.v1",
+  "fixture_id": "config-90-v1",
+  "source": {
+    "id": "src-cluster",
+    "version": "8.18.7",
+    "nodes": [
+      {
+        "id": "src-1",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      },
+      {
+        "id": "src-2",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      }
+    ],
+    "partitions": [
+      {
+        "name": "Default",
+        "id": "",
+        "criteria": "",
+        "retention_seconds": 0,
+        "order": 0
+      },
+      {
+        "id": "partition-id",
+        "name": "Archive",
+        "criteria": "appname=\"demo\"",
+        "retention_seconds": 86400,
+        "order": 1
+      }
+    ],
+    "fields": [
+      "appname",
+      "dataset"
+    ],
+    "buckets": [],
+    "identity": "src-tls-enrollment-v1",
+    "history_complete": true,
+    "config": {
+      "filters": [
+        {
+          "id": "filter-id",
+          "name": "drop-debug",
+          "enabled": false,
+          "filter": "appname=\"debug\""
+        },
+        {
+          "id": "filter-new",
+          "name": "drop-test",
+          "enabled": false,
+          "filter": "appname=\"test\""
+        }
+      ],
+      "masking": [
+        {
+          "id": "mask-id",
+          "name": "mask-secret",
+          "enabled": true,
+          "applyLogsFilter": "appname=\"demo\"",
+          "fieldName": "text",
+          "selector": "secret=(\\S+)",
+          "maskValue": "****"
+        }
+      ],
+      "forwarding": [
+        {
+          "id": "forward-id",
+          "name": "archive",
+          "host": "archive.invalid",
+          "port": 9543,
+          "protocol": "cfapi",
+          "sslEnabled": true,
+          "transportProtocol": "TCP",
+          "filter": "appname=\"demo\""
+        }
+      ]
+    }
+  },
+  "destination": {
+    "id": "dst-cluster",
+    "version": "9.0.2.0200",
+    "nodes": [
+      {
+        "id": "dst-1",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      },
+      {
+        "id": "dst-2",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      },
+      {
+        "id": "dst-3",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      }
+    ],
+    "partitions": [
+      {
+        "name": "Default",
+        "id": "",
+        "criteria": "",
+        "retention_seconds": 0,
+        "order": 0
+      }
+    ],
+    "fields": [
+      "appname",
+      "dataset"
+    ],
+    "buckets": [],
+    "identity": "dst-tls-enrollment-v1",
+    "history_complete": true,
+    "config": {
+      "filters": [
+        {
+          "id": "filter-id",
+          "name": "drop-debug",
+          "enabled": true,
+          "filter": "appname=\"debug\""
+        },
+        {
+          "id": "local-id",
+          "name": "local-only",
+          "enabled": false,
+          "filter": "appname=\"local\""
+        }
+      ],
+      "masking": [],
+      "forwarding": []
+    }
+  },
+  "source_events": [],
+  "destination_events": [],
+  "ingest_during_run": [],
+  "artifact_verified": true
+}

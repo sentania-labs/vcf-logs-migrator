@@ -5,6 +5,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from uuid import uuid4
 
+from .config import ConfigMigration
 from .errors import Code, MigrationError, require, safe_boundary
 from .models import ACTIVE_ACK, EVERYTHING_END, Counts, Policy, Verification, Window, digest
 from .planning import build_plan, partition_diff
@@ -25,6 +26,14 @@ class Engine:
         self.journal = journal
         self.clock = clock or SystemClock()
         self.on_event = on_event
+
+    def config_compare(self):
+        """Compare forwarding, partitions, masking and filters by name."""
+        return ConfigMigration(self.env).compare()
+
+    def config_apply(self, selection):
+        """Apply explicit type:name selectors; return per-rule observations."""
+        return ConfigMigration(self.env).apply(selection)
 
     def _audit(self, run, event, details=None):
         self.journal.save(run, event, details)

@@ -56,8 +56,84 @@ logs-migrate --journal /private/migration/run.sqlite report RUN_UUID --format js
 `copy` sends one API request and returns;
 completion and verification are separate observations. Partition differences are
 reported before start and prevent transfer until matching configuration exists.
-On 9.1.1, extracted fields are compared too. Creating configuration is the next
-delivery, not a hidden side effect of planning.
+On 9.1.1, extracted fields are compared too. Configuration changes use the
+explicit `config` commands below and are never a hidden side effect of planning.
+
+## Configuration rules
+
+`config compare` lists source forwarding, partition, masking and filter rules by
+exact name as `missing`, `identical` or `differs`. Destination-only rules appear
+separately and are preserved. JSON includes a `selector`, changed field names and
+warnings for each source rule; raw definitions and credentials are not printed.
+
+```sh
+logs-migrate --fixture tests/fixtures/config.fixture \
+  --remote-state /private/migration/config.simulated-state config compare
+logs-migrate --fixture tests/fixtures/config.fixture \
+  --remote-state /private/migration/config.simulated-state config apply \
+  --select 'partitions:Archive' --select 'masking:mask-secret' \
+  --select 'filters:drop-debug' --select 'forwarding:archive'
+```
+
+Repeat `--select TYPE:NAME` for each rule to create or update, using the exact
+selector returned by compare. Names may contain colons or spaces. Selection is
+required; there is no implicit apply-all. Each selection authorizes copying that
+rule's **current** source definition. Apply re-reads both inventories, rejects
+unknown or duplicate selectors before any write, skips unselected rules, and
+leaves identical rules unchanged. Compare again before applying if configuration
+has changed. There is no stored config plan, journal requirement or extra
+acknowledgment. This is additive migration: nothing is deleted on either side,
+and the source is never written.
+
+The engine applies partitions, filters, masking, then forwarding. Existing rules
+are updated by destination ID after matching their name; creates of partitions,
+masking and filters omit the source `id` so the destination assigns its own.
+Masking and filters retain their API definitions. Partition retention/archive
+settings travel with the rule. A newly created partition needs **one destination
+restart before it routes**; `restart_required` and `maintenance` report this.
+Arrange that restart through normal maintenance. The tool never restarts services. The report covers
+this invocation only; an identical rule on a later compare does not prove that a
+restart happened or that routing works. Preserve the apply result for maintenance.
+
+TLS forwarders send `acceptCert:true`, which can add the target certificate to
+the destination's trust store. Forwarder batch creates wrap the selected item in
+`{"forwarders":[...]}`. 9.0 refuses a forwarder targeting itself; the simulator
+checks known destination names, and the appliance must also check aliases during
+live qualification. The tool does not retarget forwarders or rewrite filters.
+
+Apply returns `created`, `updated`, `unchanged`, `skipped`, `failed` or `uncertain`
+per source rule. Created/updated means the destination readback matches its
+configuration; it does not prove log delivery, masking, filtering or partition
+routing. A failed rule does not roll back earlier changes, and other selected
+rules are still attempted. A lost write response is uncertain and never retried
+automatically. Compare again to inspect the destination before selecting a retry.
+Exit 8 means at least one uncertain result; exit 7 means a failed rule; exit 0
+means the selected changes were observed (even if maintenance remains necessary).
+
+### Engine interface for a GUI
+
+```python
+from logs_migrate.engine import Engine
+
+engine = Engine(environment, journal=None)
+comparison = engine.config_compare()
+result = engine.config_apply(["masking:mask-secret", "filters:drop-debug"])
+```
+
+Both return the same JSON-compatible dictionaries as the CLI. For config-only
+consumers, `logs_migrate.config.ConfigMigration(environment).compare()` and
+`.apply(selection)` expose the same service. The small `ConfigEnvironment`
+protocol has `exclusive()`, `config_rules(scope, kind)`, `config_write(kind, rule,
+existing)` and `mode`. Reads return lists of API rule objects; `scope` is source
+or destination. Writes always target the destination, with `existing=None` for a
+create. Use the simulator for now; config apply accepts only simulation mode.
+
+`adapters.config.RestConfigEnvironment` uses the existing `Logs90` source/Bearer
+client and `Logs90` or `Logs911` destination auth client, including OpsToken
+exchange for 9.1.1 preview. REST config operations are also restricted to recorded
+transports. Fixtures exercise the codec, not a live appliance contract: GET
+wrappers and update routes still need captured-response qualification, especially
+on 9.1.1. No live appliance calls were added to the CLI or enabled by this feature.
 
 ## Status belongs to the API
 
@@ -158,4 +234,4 @@ and actual appliance tests. The current migration path never stops services.
 
 Run `make check` and, after installing the package, `make smoke` for the same
 fixture checks used by CI. GUI, native packaging, live appliance qualification and
-configuration-rule migration are separate deliveries.
+further live config qualification are separate deliveries.
