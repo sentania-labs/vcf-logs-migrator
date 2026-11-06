@@ -9,6 +9,8 @@ Broadcom. Snapshot both sides before trying any of it.
 
 ## The short version
 
+- **Start here:** Broadcom's own transfer API (`/api/v2/data-migrations`, on 9.0 and 9.1.1) takes any time window; the 90-day limit is only in the UI. It is the supported mover; this repo's tools add planning, dedupe, verification and the partition/creation-time fix-ups it lacks. See [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md).
+
 - 8.18 cannot upgrade in place to 9.x. The supported path is a new 9.0
   appliance plus the Log Data Transfer in the 9.0 UI (Administration >
   Control Panel > Logs Data Transfer), capped at the newest 90 days.
@@ -36,6 +38,7 @@ Broadcom. Snapshot both sides before trying any of it.
 | [`docs/lab-runs.md`](docs/lab-runs.md) | What was run, when, and the numbers |
 | [`docs/validation-2026-11-06.md`](docs/validation-2026-11-06.md) | Date selection, merge into a populated target, crash recovery, space, staging: tested |
 | [`docs/validation-2026-11-06-partitions-multinode.md`](docs/validation-2026-11-06-partitions-multinode.md) | Partition-aware registration (engineered and proven), creation-time fix, 3-node source and destination clusters |
+| [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md) | Broadcom's `/api/v2/data-migrations` on 9.0 and 9.1.1: no 90-day cap in the API, how 9.1 re-indexes legacy buckets into OpenSearch, what it loses |
 | [`docs/config-migration.md`](docs/config-migration.md) | Config migration 8.18 to 9.0: forwarders, masking, partitions, users, alerts, content; what moves by REST and what is manual |
 | [`docs/spec.md`](docs/spec.md) | Draft spec for `logs-migrate`: plan / copy / verify, date-based preview ("import back to this date") |
 | [`scripts/bucket-migrate.sh`](scripts/bucket-migrate.sh) | Prototype: `stage` (live, verified, resumable) and `commit` (target stopped), `status` |

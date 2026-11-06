@@ -59,6 +59,15 @@ tested the open questions. These override the sections below where they disagree
     sealed source bucket (copied while active) is replaced: `bucket-index
     delete` on the target, copy, register.
 
+13. **Build on Broadcom's `/api/v2/data-migrations`** (validation 3): it has
+    no 90-day cap, copies from every source node, spreads across destination
+    nodes on 9.0 without a stop, and is the only path into 9.1.1. The tool
+    becomes: plan (window, bucket list, preview from source listings), guard
+    (no window overlapping an earlier transfer: its dedupe is per node), run
+    the API, verify (sum of source `messages` = destination count), then on
+    9.0 the partition and creation-time fix-up. Our own stage/commit stays as
+    the fallback for buckets the API cannot place correctly.
+
 ## 1. Why
 
 Broadcom's Log Data Transfer stops at 90 days, and the stock
