@@ -98,3 +98,13 @@ def test_removed_controllers_are_unavailable(command, capsys):
 def test_live_execution_remains_unqualified(tmp_path, capsys):
     assert main(["--journal", str(tmp_path / "j.sqlite"), "discover"]) == 3
     assert json.loads(capsys.readouterr().err)["error"] == "unsupported_capability"
+
+
+def test_connection_fault_exits_as_operation_failed_not_missing_prerequisite(tmp_path, capsys):
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    data["faults"] = {"discover": "secret"}
+    fixture = tmp_path / "faulty.fixture"
+    fixture.write_text(json.dumps(data))
+    code = main(["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture), "discover"])
+    assert code == 7
+    assert json.loads(capsys.readouterr().err)["error"] == "connection_failed"

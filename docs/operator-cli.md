@@ -124,7 +124,7 @@ moves away; keep that source data available under the operator's retention plan.
 | 3 | Required acknowledgment, prerequisite or supported capability missing |
 | 5 | Complete count observations disagree |
 | 6 | Verification incomplete |
-| 7 | Operation failed |
+| 7 | Operation failed: connection, authentication, unrecognized response, journal unavailable or destination busy |
 | 8 | API outcome uncertain or client interrupted; query status |
 
 Secrets have no argv flags. Adapter failures are reduced to fixed error codes;

@@ -68,6 +68,17 @@ def parser():
     return p
 
 
+EXIT_CODES = {
+    Code.INVALID_INPUT: 2,
+    Code.UNCERTAIN: 8,
+    Code.CONNECTION: 7,
+    Code.AUTH: 7,
+    Code.SCHEMA: 7,
+    Code.STORAGE: 7,
+    Code.BUSY: 7,
+}
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     journal = None
@@ -119,7 +130,7 @@ def main(argv=None):
             json.dumps({"error": error.code.value, "run_id": getattr(args, "run_id", None)}),
             file=sys.stderr,
         )
-        return {Code.INVALID_INPUT: 2, Code.UNCERTAIN: 8}.get(error.code, 3)
+        return EXIT_CODES.get(error.code, 3)
     except KeyboardInterrupt:
         print('{"error":"observation_interrupted; query API status"}', file=sys.stderr)
         return 8
