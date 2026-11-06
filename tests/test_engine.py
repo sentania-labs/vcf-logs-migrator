@@ -1,911 +1,304 @@
 import copy
-from dataclasses import asdict, replace
+import json
+from dataclasses import replace
 
 import pytest
-from conftest import execute, planned, verified
+from conftest import FIXTURES, execute, planned
 
+from logs_migrate.adapters.simulated import SimulatedEnvironment
 from logs_migrate.engine import Engine
 from logs_migrate.errors import Code, MigrationError
-from logs_migrate.models import (
-    ACTIVE_ACK,
-    Bucket,
-    Policy,
-    State,
-    Verification,
-    Window,
-    digest,
-    parse_time,
-)
-from logs_migrate.planning import build_plan, capacity
-from logs_migrate.reporting import markdown, report_data
+from logs_migrate.models import ACTIVE_ACK, DAY, Counts, Policy, Window
+from logs_migrate.ports import Transfer
+from logs_migrate.verification import reconcile, stable_counts
 
 
-def detach_on(engine, kind):
-    def hook(event):
-        if event["kind"] == kind:
-            engine.request_detach()
-
-    engine.on_event = hook
-
-
-def flaky_discover(env, failures):
-    original = env.discover
-    left = {"n": failures}
-
-    def discover():
-        task = env.data["task"]
-        if task and task["status"] == "running" and env.data["poll"] >= 1 and left["n"]:
-            left["n"] -= 1
-            raise MigrationError(Code.CONNECTION)
-        return original()
-
-    env.discover = discover
-
-
-def operations(env):
-    return [entry["operation"] for entry in env.data["trace"]]
-
-
-def test_full_workflow_populated_target_ingest_and_no_source_mutation(rig):
-    engine, env, journal = rig
+@pytest.mark.parametrize("fixture_name", ["sealed-populated.fixture", "sealed-911.fixture"])
+def test_api_flow_preserves_source_and_verifies_daily_counts(rig, fixture_name):
+    engine, _, journal = rig
+    env = SimulatedEnvironment(json.loads((FIXTURES / fixture_name).read_text()))
+    engine = Engine(env, journal, engine.clock)
     before = copy.deepcopy(env.data["source"])
-    run = verified(engine)
-    assert run["state"] == State.VERIFIED
-    assert run["verification"]["actual_count"] == 8
-    assert run["verification"]["source_count"] == 6
-    assert run["verification"]["preexisting_count"] == 1
-    assert run["verification"]["new_ingest_count"] == 1
-    assert env.data["source"] == before
-    assert "stop_service" not in operations(env)
+    run = planned(engine)
+    assert len(run["plan"]["selected"]) == 3
     assert len(run["plan"]["active_skipped"]) == 1
-    assert run["plan"]["last_fully_sealed_day"] is None
-    assert all(v == "complete" for v in run["bucket_outcomes"].values())
-    kinds = [e["kind"] for e in journal.events(run["id"])]
-    assert kinds.index("transfer_start_intent") < kinds.index("transfer_start_observed")
-
-
-@pytest.mark.parametrize("incomplete_query", [False, True])
-def test_disjoint_transfer_waits_for_prior_verification(rig, incomplete_query):
-    engine, env, journal = rig
-    first = engine.plan(
-        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
-        Policy(poll_seconds=0),
+    assert execute(engine, run)["task"]["status"] == "running"
+    assert engine.status()["status"] == "completed"
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_success"
+    assert (result["source_count"], result["preexisting_count"], result["new_ingest_count"]) == (
+        6,
+        1,
+        1,
     )
+    assert result["expected_count"] == result["actual_count"] == 8
+    assert all(d["difference"] == 0 for d in result["daily"])
+    assert env.data["source"] == before
+    assert {t["operation"] for t in env.data["trace"]} == {
+        "test_source_credentials",
+        "test_mover",
+        "start",
+    }
+    assert "state" not in journal.load(run["id"])
+
+
+def test_two_disjoint_transfers_remain_independently_verifiable(rig):
+    engine, env, _ = rig
+    start = env.data["source"]["buckets"][0]["start"]
+    first = engine.plan(Window(start, start + DAY), Policy(poll_seconds=0))
     execute(engine, first)
-    if incomplete_query:
-        env.data["query_completeness"] = {"destination": [False] * 10}
-        assert engine.verify(first["id"])["verification"]["complete"] is False
-        env.data["query_completeness"] = {}
-    first_task = env.data["task"]["id"]
-    second = engine.plan(
-        Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z")),
-        Policy(poll_seconds=0),
-    )
-    # A fresh engine must enforce the durable dependency, not an in-memory flag.
-    restarted = Engine(env, journal, engine.clock)
-    with pytest.raises(MigrationError, match="verification_pending"):
-        execute(restarted, second)
-    blocked_report = report_data(journal.load(second["id"]), journal.events(second["id"]))
-    assert "Complete verification of earlier transfers" in blocked_report["next_actions"][0]
-    assert env.data["task"]["id"] == first_task
-    assert operations(env).count("start") == 1
-    assert restarted.verify(first["id"])["state"] == State.VERIFIED
-    execute(restarted, second)
-    assert restarted.verify(second["id"])["state"] == State.VERIFIED
-
-
-def test_complete_discrepancy_does_not_block_a_disjoint_transfer(rig):
-    engine, env, journal = rig
-    first = engine.plan(
-        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
-        Policy(poll_seconds=0),
-    )
-    execute(engine, first)
-    env.data["destination_events"] = [
-        e for e in env.data["destination_events"] if e["id"] != "event-0-0"
-    ]
-    result = engine.verify(first["id"])
-    assert result["verification"]["complete"] is True
-    assert result["verification"]["outcome"] == Verification.DISCREPANCY
-    second = engine.plan(
-        Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z")),
-        Policy(poll_seconds=0),
-    )
+    assert engine.status()["status"] == "completed"
+    second = engine.plan(Window(start + DAY, start + 3 * DAY), Policy(poll_seconds=0))
     execute(engine, second)
-    assert engine.verify(second["id"])["state"] == State.VERIFIED
-    assert journal.load(first["id"])["state"] == State.PARTIAL
-    assert journal.load(first["id"])["verification"]["outcome"] == Verification.DISCREPANCY
+    assert engine.status()["id"] == "sim-2"
+    for run, count in [(first, 2), (second, 4)]:
+        result = engine.verify(run["id"])
+        assert result["outcome"] == "verified_success"
+        assert result["source_count"] == count
 
 
-@pytest.mark.parametrize("baseline_multiplicity,new_copies", [(1, 0), (3, 0), (3, 2)])
-def test_ingest_excludes_current_baseline_but_counts_new_multiplicity(
-    rig, baseline_multiplicity, new_copies
+@pytest.mark.parametrize("old_count", [1, 3])
+@pytest.mark.parametrize("new_count", [0, 2])
+def test_baseline_ingest_is_not_counted_again_even_with_identical_new_arrivals(
+    rig, old_count, new_count
 ):
     engine, env, _ = rig
-    existing = env.data["destination_events"][0]
-    existing.update(cohort="ingest", multiplicity=baseline_multiplicity)
-    if new_copies:
-        env.data["ingest_during_run"].append({**existing, "multiplicity": new_copies})
-    result = verified(engine)
-    assert result["state"] == State.VERIFIED
-    evidence = result["verification"]
-    assert evidence["preexisting_count"] == baseline_multiplicity
-    assert evidence["new_ingest_count"] == 1 + new_copies
-    assert (
-        evidence["actual_count"]
-        == evidence["expected_count"]
-        == (6 + baseline_multiplicity + 1 + new_copies)
-    )
-
-
-def test_missing_preexisting_ingest_is_still_a_discrepancy(rig):
-    engine, env, _ = rig
-    env.data["destination_events"][0]["cohort"] = "ingest"
+    old = {**env.data["ingest_during_run"][0], "multiplicity": old_count}
+    env.data["destination_events"].append(old)
+    env.data["ingest_during_run"] = [{**old, "multiplicity": new_count}] if new_count else []
     run = planned(engine)
     execute(engine, run)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_success"
+    assert result["preexisting_count"] == 1 + old_count
+    assert result["new_ingest_count"] == new_count
+    assert result["actual_count"] == 7 + old_count + new_count
+
+
+def test_baseline_loss_is_a_discrepancy(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
     env.data["destination_events"] = [
-        e for e in env.data["destination_events"] if e["id"] != "preexisting-1"
+        e for e in env.data["destination_events"] if e.get("cohort") != "baseline"
     ]
     result = engine.verify(run["id"])
-    assert result["state"] == State.PARTIAL
-    assert result["verification"]["missing_events"] == 1
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["actual_count"] == result["expected_count"] - 1
 
 
-@pytest.mark.parametrize("version", ["9.0.2.0200", "9.1.1"])
-def test_both_destination_engines_and_preview(rig, version):
-    engine, env, _ = rig
-    env.data["destination"]["version"] = version
-    run = verified(engine)
-    assert run["state"] == State.VERIFIED
-    if version == "9.1.1":
-        assert env.data["destination"]["buckets"] == []
-        assert any("preview" in s for s in run["plan"]["warnings"])
-        with pytest.raises(MigrationError, match="unsupported"):
-            engine.plan(Window(**run["plan"]["window"]), tail_of=run["id"])
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [dict(backup_ack=False, active_ack=ACTIVE_ACK), dict(backup_ack=True, active_ack="yes")],
-)
-def test_acknowledgments_bind_to_plan_and_no_start(rig, kwargs):
-    engine, env, _ = rig
-    run = planned(engine)
-    with pytest.raises(MigrationError, match="acknowledgment"):
-        engine.run(run["id"], plan_hash=run["plan_hash"], **kwargs)
-    assert "start" not in operations(env)
-
-
-def test_changed_plan_hash_and_tampered_plan_block(rig):
+@pytest.mark.parametrize("scope", ["destination", "ingest"])
+def test_incomplete_counts_cannot_replace_prior_success_with_success(rig, scope):
     engine, env, journal = rig
     run = planned(engine)
-    with pytest.raises(MigrationError, match="acknowledgment"):
-        engine.run(run["id"], plan_hash="other", backup_ack=True, active_ack=ACTIVE_ACK)
-    run = journal.load(run["id"])
-    run["plan"]["window"]["end"] += 1000
-    journal.save(run, "tampered")
-    with pytest.raises(MigrationError, match="integrity"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-
-
-def test_release_gate_has_no_execution_override(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    env.mode = "appliance"
-    with pytest.raises(MigrationError, match="unsupported"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-
-
-def test_overlap_and_changed_nodes_block(rig):
-    engine, env, _ = rig
-    run = verified(engine)
-    with pytest.raises(MigrationError):
-        planned(engine)
-    env.data["destination"]["nodes"].append({**env.data["destination"]["nodes"][0], "id": "dst-4"})
-    with pytest.raises(MigrationError, match="topology"):
-        engine.plan(Window(**run["plan"]["window"]), tail_of=run["id"])
-    assert operations(env).count("start") == 1
-
-
-def test_sealed_tail_90_reconciles_existing_ids(rig):
-    engine, env, _ = rig
-    first = verified(engine)
-    active = env.data["source"]["buckets"][-1]
-    active.update(
-        status="archived",
-        complete=True,
-        size=1000,
-        messages=1,
-        start=parse_time("2026-03-04T00:00:00Z"),
-        end=parse_time("2026-03-04T00:00:00Z"),
-        manifest=digest("tail"),
-        bounds_proven=True,
-    )
-    env.data["source_events"].append(
-        {"id": "tail", "time": active["start"], "bucket": active["node"] + "/" + active["id"]}
-    )
-    env.data["ingest_during_run"] = []
-    second = engine.plan(Window(**first["plan"]["window"]), tail_of=first["id"])
-    assert len(second["plan"]["selected"]) == 1
-    execute(engine, second)
-    assert engine.verify(second["id"])["state"] == State.VERIFIED
-    assert len(env.data["destination"]["buckets"]) == 4
-
-
-def test_wide_bucket_is_not_reimported_in_adjacent_911_window(rig):
-    engine, env, _ = rig
-    env.data["destination"]["version"] = "9.1.1"
-    env.data["source"]["buckets"][0]["end"] = parse_time("2026-05-01T00:00:00Z")
-    first = verified(engine)
-    assert first["state"] == State.VERIFIED
-    with pytest.raises(MigrationError, match="overlapping"):
-        engine.plan(Window(parse_time("2026-04-01T00:00:00Z"), parse_time("2026-05-02T00:00:00Z")))
-    assert operations(env).count("start") == 1
-
-
-@pytest.mark.parametrize("mutation", ["retention", "removed", "sealed", "manifest", "identity"])
-def test_preflight_revalidates_live_inventory(rig, mutation):
-    engine, env, _ = rig
-    run = planned(engine)
-    source = env.data["source"]
-    if mutation == "retention":
-        source["retention_fingerprint"] = "changed"
-    elif mutation == "removed":
-        source["buckets"].pop(0)
-    elif mutation == "sealed":
-        source["buckets"][-1]["status"] = "archived"
-    elif mutation == "manifest":
-        source["buckets"][0]["manifest"] = digest("new-content")
-    else:
-        source["identity"] = "new-key"
-    with pytest.raises(MigrationError, match="inventory_changed"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-
-
-@pytest.mark.parametrize("collision", ["different", "unregistered", "partial", "duplicate"])
-def test_conflicting_destination_is_preserved_and_blocks(rig, collision):
-    engine, env, _ = rig
-    b = {**env.data["source"]["buckets"][0], "node": "dst-1"}
-    if collision == "different":
-        b["manifest"] = digest("different")
-    elif collision == "unregistered":
-        b["registered"] = False
-    elif collision == "partial":
-        b["complete"] = False
-    env.data["destination"]["buckets"].append(b)
-    if collision == "duplicate":
-        env.data["destination"]["buckets"].append({**b, "node": "dst-2"})
-    before = copy.deepcopy(env.data["destination"])
-    with pytest.raises(MigrationError, match="conflict"):
-        planned(engine)
-    assert env.data["destination"] == before
-    assert "start" not in operations(env)
-
-
-def test_different_bucket_ids_same_events_blocks(rig):
-    engine, env, _ = rig
-    env.data["destination_events"].append({**env.data["source_events"][0], "bucket": "other-id"})
-    run = planned(engine)
-    with pytest.raises(MigrationError, match="overlapping"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-
-
-def test_partition_check_create_and_911_fields(rig):
-    engine, env, _ = rig
-    env.data["source"]["partitions"].append(
-        {
-            "name": "secops",
-            "id": "secops-id",
-            "criteria": 'appname="Vpxa"',
-            "retention_seconds": 0,
-            "order": 1,
-        }
-    )
-    run = planned(engine)
-    assert len(run["plan"]["partition_diff"]["missing"]) == 1
-    with pytest.raises(MigrationError, match="partition"):
-        execute(engine, run)
-    new = engine.plan(
-        Window(**run["plan"]["window"]),
-        create_missing=True,
-        backup_ack=True,
-        partition_hash=engine.discover()["partition_preparation_hash"],
-    )
-    assert new["plan"]["partition_diff"]["missing"] == []
-    assert operations(env).count("create_partition") == 1
-    env.data["destination"]["version"] = "9.1.1"
-    env.data["destination"]["fields"] = []
-    new = planned(engine)
-    with pytest.raises(MigrationError, match="fields"):
-        execute(engine, new)
-
-
-def test_capacity_uses_each_node_and_service_headroom(rig):
-    engine, env, _ = rig
-    source, dest = env.discover()
-    dest = replace(dest, nodes=(replace(dest.nodes[0], repository_available=100), *dest.nodes[1:]))
-    with pytest.raises(MigrationError, match="capacity"):
-        capacity(dest, source.buckets, Policy())
-    run = planned(engine)
-    env.data["destination"]["nodes"][1]["repository_available"] = 1
-    with pytest.raises(MigrationError, match="capacity"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-
-
-def test_api_completed_with_skips_is_partial(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    env.data["skip_buckets"] = [next(iter(run["bucket_outcomes"]))]
-    result = execute(engine, run)
-    assert result["state"] == State.PARTIAL
-    assert engine.verify(run["id"])["verification"]["outcome"] == "incomplete_verification"
-
-
-def test_lost_post_response_never_reposts(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["faults"] = {"start.after": ["disconnect"]}
-    with pytest.raises(MigrationError, match="uncertain"):
-        execute(engine, run)
-    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
-    with pytest.raises(MigrationError, match="uncertain"):
-        engine.resume(run["id"])
-    assert operations(env).count("start") == 1
-
-
-def test_long_running_task_is_monitored_not_uncertain(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    result = execute(engine, run)
-    assert result["state"] == State.VERIFYING
-    assert env.data["poll"] == 100 > Policy().attempts
-    assert not journal.unresolved(run["plan"]["destination"]["id"])
-    assert engine.verify(run["id"])["state"] == State.VERIFIED
-
-
-def test_detach_leaves_task_running_and_resume_reattaches_without_repost(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    detach_on(engine, "transfer_start_observed")
-    result = execute(engine, run)
-    assert result["state"] == State.MONITOR_DETACHED
-    assert env.data["task"]["status"] == "running"
-    assert "cancel" not in operations(env)
-    assert not journal.unresolved(run["plan"]["destination"]["id"])
-    with pytest.raises(MigrationError, match="destination_busy"):
-        engine.verify(run["id"])
-    assert journal.load(run["id"])["state"] == State.MONITOR_DETACHED
-    env.data["complete_after_polls"] = 1
-    reattached = Engine(env, journal, engine.clock)
-    assert reattached.resume(run["id"])["state"] == State.VERIFYING
-    assert reattached.verify(run["id"])["state"] == State.VERIFIED
-    assert operations(env).count("start") == 1
-    assert journal.load(run["id"])["verification"]["actual_count"] == 8
-
-
-def test_stop_cancels_a_detached_task(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    detach_on(engine, "transfer_start_observed")
     execute(engine, run)
-    stopper = Engine(env, journal, engine.clock)
-    stopper.request_stop()
-    assert stopper.resume(run["id"])["state"] == State.STOPPED
-    assert env.data["task"]["status"] == "cancelled"
+    assert engine.verify(run["id"])["outcome"] == "verified_success"
+    env.data["query_completeness"] = {scope: [False] * 6}
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification" and result["complete"] is False
+    assert journal.load(run["id"])["verification"] == result
 
 
-def test_transient_contact_loss_keeps_monitoring(rig):
+def test_stable_counts_requires_two_consecutive_complete_observations(rig):
+    engine, env, _ = rig
+    values = iter(
+        [
+            Counts(True, (("2026-03-01", 1),), (), "destination"),
+            Counts(False, (("2026-03-01", 1),), (), "destination"),
+            Counts(True, (("2026-03-01", 2),), (), "destination"),
+            Counts(True, (("2026-03-01", 2),), (), "destination"),
+        ]
+    )
+    env.count = lambda *args: next(values)
+    result = stable_counts(
+        env, engine.clock, Policy(poll_seconds=1), "destination", Window(1, 2), ()
+    )
+    assert result.total == 2 and engine.clock.seconds == 3
+
+
+def test_equal_totals_on_different_days_are_not_verified():
+    source = Counts(True, (("2026-03-01", 1),), (), "source")
+    baseline = Counts(True, (), (), "baseline")
+    actual = Counts(True, (("2026-03-02", 1),), (), "destination")
+    ingest = Counts(True, (), (), "ingest")
+    assert reconcile(source, baseline, actual, ingest)["outcome"] == "verified_discrepancy"
+
+
+def test_source_retention_after_transfer_does_not_erase_count_evidence(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    env.data["source_events"] = []
+    env.data["source"]["buckets"] = []
+    assert engine.verify(run["id"])["outcome"] == "verified_success"
+
+
+@pytest.mark.parametrize("status", ["running", "unknown", "unrecognized"])
+def test_api_task_uncertainty_never_reports_verification_success(rig, status):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    env.data["complete_after_polls"] = 100
+    env.data["task"]["status"] = status
+    assert engine.verify(run["id"])["outcome"] == "incomplete_verification"
+
+
+def test_status_is_api_truth_without_a_journal_and_supplies_estimates(rig):
+    engine, env, _ = rig
+    task = Transfer(
+        "api-task", "running", bytes_transferred=200, elapsed_seconds=4, total_bytes=1000
+    )
+    env.transfer = lambda: task
+    wrapper = Engine(env, None)
+    assert wrapper.status()["rate_bytes_per_second"] == 50
+    assert wrapper.status()["eta_seconds"] == 16
+    task = replace(task, status="failed", elapsed_seconds=None)
+    result = wrapper.status()
+    assert result["status"] == "failed" and result["rate_bytes_per_second"] is None
+    assert result["eta_seconds"] is None
+
+
+def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(rig):
     engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    env.data["faults"] = {"start.after": "connection"}
+    with pytest.raises(MigrationError) as error:
+        execute(engine, run)
+    assert error.value.code == Code.UNCERTAIN
+    fresh = Engine(env, None)
+    task = fresh.status()
+    assert task["status"] == "running"
+    with pytest.raises(MigrationError):
+        fresh.stop("different-task")
+    assert fresh.stop(task["id"])["status"] == "cancelled"
+    assert journal.transfers(env.data["destination"]["id"])
+    with pytest.raises(MigrationError):
+        execute(engine, run)
+    assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
+
+
+def test_stop_does_not_relabel_a_completed_task(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    assert engine.stop("sim-1")["status"] == "completed"
+    assert not any(t["operation"] == "cancel" for t in env.data["trace"])
+
+
+@pytest.mark.parametrize("backup,active", [(False, ACTIVE_ACK), (True, "")])
+def test_required_attestations_precede_api_post(rig, backup, active):
+    engine, env, _ = rig
+    run = planned(engine)
+    with pytest.raises(MigrationError) as error:
+        engine.run(run["id"], backup_ack=backup, active_ack=active)
+    assert error.value.code == Code.ACK
+    assert not env.data["trace"]
+
+
+def test_api_busy_blocks_new_start(rig):
+    engine, env, _ = rig
+    start = env.data["source"]["buckets"][0]["start"]
+    first = engine.plan(Window(start, start + DAY), Policy(poll_seconds=0))
+    env.data["complete_after_polls"] = 100
+    execute(engine, first)
+    second = engine.plan(Window(start + DAY, start + 3 * DAY), Policy(poll_seconds=0))
+    with pytest.raises(MigrationError) as error:
+        execute(engine, second)
+    assert error.value.code == Code.BUSY
+    assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_overlap_guard_survives_current_task_replacement_and_missing_destination_ids(rig, preview):
+    engine, env, journal = rig
+    if preview:
+        env.data["destination"]["version"] = "9.1.1"
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    env.data["task"] = None
+    env.data["history"] = []
+    env.data["destination"]["buckets"] = []
+    with pytest.raises(MigrationError) as error:
+        planned(Engine(env, journal, engine.clock))
+    assert error.value.code == Code.OVERLAP
+
+
+def test_whole_bucket_cannot_be_sent_twice_in_adjacent_windows(rig):
+    engine, env, _ = rig
+    start = env.data["source"]["buckets"][0]["start"]
+    env.data["destination"]["version"] = "9.1.1"
+    first = engine.plan(Window(start, start + 500), Policy(poll_seconds=0))
+    execute(engine, first)
+    engine.status()
+    with pytest.raises(MigrationError) as error:
+        engine.plan(Window(start + 500, start + 1001))
+    assert error.value.code == Code.OVERLAP
+
+
+@pytest.mark.parametrize("change", ["partition", "fields", "history", "inventory"])
+def test_preflight_refusals_do_not_mutate_appliances(rig, change):
+    engine, env, _ = rig
+    env.data["destination"]["version"] = "9.1.1"
+    run = planned(engine)
+    if change == "partition":
+        env.data["destination"]["partitions"] = []
+    elif change == "fields":
+        env.data["destination"]["fields"] = []
+    elif change == "history":
+        env.data["destination"]["history_complete"] = False
+    else:
+        env.data["source"]["buckets"][0]["size"] += 1
+    with pytest.raises(MigrationError):
+        execute(engine, run)
+    assert not env.data["trace"]
+
+
+def test_presentation_callback_failure_cannot_abort_an_api_start(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+
+    def broken(event):
+        raise RuntimeError("observer unavailable")
+
+    engine.on_event = broken
+    assert execute(engine, run)["task"]["status"] == "running"
+    assert engine.status()["status"] == "completed"
+
+
+def test_api_completed_with_skips_is_a_count_discrepancy(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    env.data["skip_buckets"] = [env.data["source_events"][0]["bucket"]]
+    execute(engine, run)
+    status = engine.status()
+    assert status["status"] == "completed" and status["skipped"]
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["expected_count"] - result["actual_count"] == 2
+
+
+def test_destination_restart_or_inventory_drift_does_not_cancel_transfer(rig):
+    engine, env, _ = rig
     run = planned(engine)
     env.data["complete_after_polls"] = 3
-    env.data["faults"] = {"poll.before": ["", "disconnect", "disconnect"]}
-    assert execute(engine, run)["state"] == State.VERIFYING
-    kinds = [e["kind"] for e in journal.events(run["id"])]
-    assert kinds.count("monitor_contact_lost") == 1
-
-
-def test_contact_loss_beyond_window_is_uncertain_and_never_cancels(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["faults"] = {"poll.before": [""] + ["disconnect"] * 1000}
-    with pytest.raises(MigrationError, match="uncertain"):
-        execute(engine, run)
-    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
-    assert "cancel" not in operations(env)
-    assert engine.clock.seconds >= Policy().contact_loss_seconds
-
-
-def test_source_rotation_after_copy_still_verifies_and_reports_tail(rig):
-    engine, env, journal = rig
-    run = planned(engine)
     execute(engine, run)
-    buckets = env.data["source"]["buckets"]
-    sealed = dict(buckets[-1], status="archived", bounds_proven=True)
-    sealed.update(
-        start=parse_time("2026-03-31T00:00:00Z"),
-        end=parse_time("2026-03-31T12:00:00Z"),
-        manifest=digest("late"),
-        messages=1,
-        size=10,
-    )
-    buckets[-1] = sealed
-    buckets.append({**sealed, "id": "00000000-0000-0000-0000-000000000005", "status": "active"})
-    result = engine.verify(run["id"])
-    assert result["state"] == State.VERIFIED
-    assert result["tail_data"] == ["src-1/00000000-0000-0000-0000-000000000004"]
-    assert "--tail-of" in report_data(result, journal.events(run["id"]))["next_actions"][-1]
+    env.data["destination"]["nodes"][0]["service_epoch"] = "boot-2"
+    env.data["destination"]["retention_fingerprint"] = "changed"
+    assert engine.status()["status"] == "running"
+    assert not any(t["operation"] == "cancel" for t in env.data["trace"])
+    engine.status()
+    assert engine.verify(run["id"])["outcome"] == "verified_success"
 
 
-def test_selected_bucket_change_after_copy_still_stops_verification(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    execute(engine, run)
-    env.data["source"]["buckets"][0]["manifest"] = digest("changed")
-    result = engine.verify(run["id"])
-    assert result["state"] == State.PARTIAL
-    assert result["verification"]["reason"] == "inventory_changed"
-
-
-def test_new_in_window_sealed_bucket_blocks_before_start(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    active = env.data["source"]["buckets"][-1]
-    active.update(
-        status="archived",
-        bounds_proven=True,
-        start=parse_time("2026-03-31T00:00:00Z"),
-        end=parse_time("2026-03-31T12:00:00Z"),
-        manifest=digest("late"),
-    )
-    with pytest.raises(MigrationError, match="inventory_changed"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-
-
-def test_cooperative_stop_waits_for_server_and_preserves_outcome(rig):
-    engine, env, journal = rig
-    env.data["complete_after_polls"] = 100
-    run = planned(engine)
-    engine.request_stop()
-    result = execute(engine, run)
-    assert result["state"] == State.STOPPED
-    assert result["transfer"]["status"] == "cancelled"
-    assert operations(env).count("cancel") == 1
-    kinds = [e["kind"] for e in journal.events(run["id"])]
-    assert "cancel_intent" in kinds
-
-
-def test_resume_precheck_failure_still_cancels_running_task(rig):
-    engine, env, journal = rig
-    env.data["complete_after_polls"] = 100
-    run = planned(engine)
-    detach_on(engine, "transfer_start_observed")
-    assert execute(engine, run)["state"] == State.MONITOR_DETACHED
-    assert env.data["task"]["status"] == "running"
-    env.data["source"]["retention_fingerprint"] = "changed"
-    stopper = Engine(env, journal, engine.clock)
-    stopper.request_stop()
-    with pytest.raises(MigrationError, match="inventory_changed"):
-        stopper.resume(run["id"])
-    assert operations(env).count("cancel") == 1
-    assert env.data["task"]["status"] == "cancelled"
-    saved = journal.load(run["id"])
-    assert saved["state"] == State.PARTIAL
-    assert saved["reason"] == "inventory_changed"
-    with pytest.raises(MigrationError, match="invalid_state_transition"):
-        stopper.resume(run["id"])
-    assert journal.load(run["id"])["state"] == State.PARTIAL
-    assert operations(env).count("cancel") == 1
-    assert not journal.unresolved(run["plan"]["destination"]["id"])
-
-
-def test_cancel_failure_is_not_stopped(rig):
-    engine, env, journal = rig
-    env.data["complete_after_polls"] = 100
-    env.data["faults"] = {"cancel.before": "disconnect"}
-    run = planned(engine)
-    engine.request_stop()
-    with pytest.raises(MigrationError, match="uncertain"):
-        execute(engine, run)
-    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
-    assert env.data["task"]["status"] == "running"
-
-
-def test_foreign_running_task_blocks(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    env.data["task"] = {
-        "id": "foreign",
-        "status": "running",
-        "keys": [],
-        "completed": [],
-        "skipped": [],
-        "bytes_transferred": 0,
-    }
-    env.data["complete_after_polls"] = 100
-    with pytest.raises(MigrationError, match="busy"):
-        execute(engine, run)
-    assert "cancel" not in operations(env)
-
-
-@pytest.mark.parametrize("complete", [False, None])
-def test_incomplete_or_missing_query_completeness_never_passes(rig, complete):
-    engine, env, _ = rig
-    run = planned(engine)
-    execute(engine, run)
-    env.data["query_completeness"] = {"destination": [complete] * 20}
-    result = engine.verify(run["id"])
-    assert result["state"] == State.PARTIAL
-    assert result["verification"]["outcome"] == "incomplete_verification"
-
-
-def test_incomplete_then_two_complete_reads_pass(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    execute(engine, run)
-    env.data["query_completeness"] = {"destination": [False, True, True]}
-    assert engine.verify(run["id"])["state"] == State.VERIFIED
-
-
-@pytest.mark.parametrize("fault", ["missing", "duplicate", "compensated", "lost_baseline"])
-def test_exact_identity_accounting_catches_discrepancies(rig, fault):
-    engine, env, _ = rig
-    run = planned(engine)
-    execute(engine, run)
-    rows = env.data["destination_events"]
-    if fault == "missing":
-        rows.pop(1)
-    elif fault == "duplicate":
-        rows.append(dict(rows[1]))
-    elif fault == "compensated":
-        rows.pop(1)
-        rows.append(dict(rows[1]))
-    else:
-        rows.pop(0)
-    result = engine.verify(run["id"])
-    assert result["state"] == State.PARTIAL
-    assert result["verification"]["outcome"] == "verified_discrepancy"
-    if fault == "compensated":
-        assert result["verification"]["actual_count"] == result["verification"]["expected_count"]
-        assert result["verification"]["missing_events"] == 1
-        assert result["verification"]["unexpected_events"] == 1
-
-
-def test_reports_include_truthful_state_and_reconciliation(rig):
-    engine, _, journal = rig
-    run = verified(engine)
-    text = markdown(run, journal.events(run["id"]))
-    assert "Fixture evidence only" in text and "verified_success" in text
-    assert "Pre-existing" in text and "CST" in text
-    assert report_data(run, [])["run"]["backup_verified"] is False
-
-
-def test_transition_cannot_jump_to_verified(rig):
-    engine, _, journal = rig
-    run = planned(engine)
-    with pytest.raises(MigrationError, match="transition"):
-        journal.transition(run, State.VERIFIED)
-
-
-def test_half_open_selection_inclusive_bucket_end_and_late_backfill(rig):
-    _, env, _ = rig
-    source, dest = env.discover()
-    b = source.buckets[0]
-    assert b.selected(Window(b.end, b.end + 1))
-    assert not b.selected(Window(b.end + 1, b.end + 2))
-    assert not b.selected(Window(b.start - 1, b.start))
-    outlier = replace(b, start=b.start - 100 * 86400000)
-    plan = build_plan(
-        replace(source, buckets=(outlier,)), dest, Window(b.start, b.end + 1), Policy()
-    )
-    assert plan["coverage"]["start"] == outlier.start
-    unknown = replace(b, bounds_proven=False)
-    with pytest.raises(MigrationError, match="incomplete"):
-        unknown.selected(Window(b.start, b.end + 1))
-
-
-def test_timezones_leap_day_and_invalid_naive_times():
-    assert parse_time("2024-02-29T12:00:00Z") == parse_time("2024-02-29T06:00:00-06:00")
-    assert (
-        parse_time("2026-03-08T03:00:00-05:00") - parse_time("2026-03-08T01:00:00-06:00") == 3600000
-    )
-    with pytest.raises(MigrationError):
-        parse_time("2026-03-01")
-
-
-def test_unknown_bucket_status_and_traversal_fail(rig):
-    _, env, _ = rig
-    b = asdict(env.discover()[0].buckets[0])
-    with pytest.raises(MigrationError):
-        Bucket(**{**b, "id": "../../store"})
-    with pytest.raises(MigrationError):
-        Bucket(**{**b, "status": "maybe-sealed"})
-
-
-def test_external_history_and_unknown_history_block(rig):
-    engine, env, _ = rig
-    env.data["destination"]["history_complete"] = False
-    with pytest.raises(MigrationError, match="incomplete"):
-        planned(engine)
-    env.data["destination"]["history_complete"] = True
-    env.data["history"] = [
-        dict(
-            source="source-cluster",
-            destination="dst-cluster",
-            window=dict(
-                start=parse_time("2026-03-01T00:00:00Z"), end=parse_time("2026-04-01T00:00:00Z")
-            ),
-            destination_nodes=["dst-1", "dst-2", "dst-3"],
-            bucket_ids=["other"],
-            complete=True,
-        )
-    ]
-    with pytest.raises(MigrationError, match="overlapping"):
-        planned(engine)
-
-
-def test_source_auth_failure_stops_at_first_node_without_api_test(rig):
+def test_source_credential_failure_stops_at_first_node(rig):
     engine, env, _ = rig
     run = planned(engine)
     env.data["faults"] = {"source_credentials.src-1": "auth"}
-    with pytest.raises(MigrationError, match="authentication"):
+    with pytest.raises(MigrationError) as error:
         execute(engine, run)
-    assert operations(env).count("test_source_credentials") == 1
-    assert "test_mover" not in operations(env)
-
-
-def test_resume_monitor_failure_after_confirmed_cancel_stays_partial(rig, monkeypatch):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    detach_on(engine, "transfer_start_observed")
-    execute(engine, run)
-    original = env.transfer
-
-    def poll_then_exhaust():
-        result = original()
-        if result.status == "running":
-            env.data["destination"]["nodes"][0]["repository_available"] = 1
-        return result
-
-    monkeypatch.setattr(env, "transfer", poll_then_exhaust)
-    with pytest.raises(MigrationError, match="capacity"):
-        Engine(env, journal, engine.clock).resume(run["id"])
-    saved = journal.load(run["id"])
-    assert saved["state"] == State.PARTIAL
-    assert saved["reason"] == "insufficient_capacity"
-    assert saved["transfer"]["status"] == "cancelled"
-
-
-def test_transient_inventory_blip_during_monitoring_does_not_cancel(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 3
-    flaky_discover(env, 2)
-    assert execute(engine, run)["state"] == State.VERIFYING
-    assert "cancel" not in operations(env)
-    assert engine.verify(run["id"])["state"] == State.VERIFIED
-
-
-def test_persistent_inventory_outage_is_uncertain_and_leaves_task_running(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    flaky_discover(env, 10**6)
-    with pytest.raises(MigrationError, match="uncertain"):
-        execute(engine, run)
-    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
-    assert env.data["task"]["status"] == "running"
-    assert "cancel" not in operations(env)
-
-
-def test_resume_precheck_blip_does_not_cancel_running_task(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    detach_on(engine, "transfer_start_observed")
-    assert execute(engine, run)["state"] == State.MONITOR_DETACHED
-    env.data["complete_after_polls"] = 3
-    flaky_discover(env, 2)
-    assert Engine(env, journal, engine.clock).resume(run["id"])["state"] == State.VERIFYING
-    assert "cancel" not in operations(env)
-
-
-def test_attest_connection_blip_does_not_strand_the_run(rig):
-    engine, env, _ = rig
-    run = planned(engine)
-    original = env.attest_transfer
-    left = {"n": 2}
-
-    def attest(bucket):
-        if env.data["task"] and env.data["task"]["status"] == "running" and left["n"]:
-            left["n"] -= 1
-            raise MigrationError(Code.CONNECTION)
-        return original(bucket)
-
-    env.attest_transfer = attest
-    assert execute(engine, run)["state"] == State.VERIFYING
-
-
-def test_interrupt_before_start_aborts_without_starting_and_can_retry(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    engine.request_detach()
-    with pytest.raises(MigrationError, match="interrupted_before_start"):
-        execute(engine, run)
-    assert "start" not in operations(env)
-    saved = journal.load(run["id"])
-    assert saved["state"] == State.BLOCKED and not saved["transfer_intent"]
-    assert not journal.transfers(run["plan"]["destination"]["id"])
-    assert execute(Engine(env, journal, engine.clock), run)["state"] == State.VERIFYING
-
-
-def test_detach_interrupts_contact_loss_wait(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    env.data["faults"] = {"poll.before": [""] + ["disconnect"] * 1000}
-    detach_on(engine, "monitor_contact_lost")
-    result = execute(engine, run)
-    assert result["state"] == State.MONITOR_DETACHED
-    assert engine.clock.seconds < Policy().contact_loss_seconds
-    assert env.data["task"]["status"] == "running"
-    assert "cancel" not in operations(env)
-
-
-def test_partition_creation_blocked_while_detached_task_runs(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    detach_on(engine, "transfer_start_observed")
-    assert execute(engine, run)["state"] == State.MONITOR_DETACHED
-    env.data["source"]["partitions"].append(
-        {
-            "name": "secops",
-            "id": "secops-id",
-            "criteria": 'appname="Vpxa"',
-            "retention_seconds": 0,
-            "order": 1,
-        }
-    )
-    other = Engine(env, journal, engine.clock)
-    with pytest.raises(MigrationError, match="destination_busy"):
-        other.plan(
-            Window(**run["plan"]["window"]),
-            create_missing=True,
-            backup_ack=True,
-            partition_hash=other.discover()["partition_preparation_hash"],
-        )
-    assert "create_partition" not in operations(env)
-
-
-@pytest.mark.parametrize("terminal", ["verified", "partial", "stopped"])
-def test_resume_and_stop_reject_terminal_runs_without_changing_them(rig, terminal):
-    engine, env, journal = rig
-    run = planned(engine)
-    if terminal == "verified":
-        execute(engine, run)
-        engine.verify(run["id"])
-    elif terminal == "partial":
-        env.data["complete_after_polls"] = 100
-        detach_on(engine, "transfer_start_observed")
-        execute(engine, run)
-        env.data["source"]["retention_fingerprint"] = "changed"
-        stopper = Engine(env, journal, engine.clock)
-        stopper.request_stop()
-        with pytest.raises(MigrationError):
-            stopper.resume(run["id"])
-    else:
-        env.data["complete_after_polls"] = 100
-        detach_on(engine, "transfer_start_observed")
-        execute(engine, run)
-        stopper = Engine(env, journal, engine.clock)
-        stopper.request_stop()
-        assert stopper.resume(run["id"])["state"] == State.STOPPED
-    before = journal.load(run["id"])
-    cancels = operations(env).count("cancel")
-    for stop in (False, True):
-        actor = Engine(env, journal, engine.clock)
-        if stop:
-            actor.request_stop()
-        with pytest.raises(MigrationError, match="invalid_state_transition"):
-            actor.resume(run["id"])
-    assert journal.load(run["id"]) == before
-    assert operations(env).count("cancel") == cancels
-
-
-def test_verify_refuses_a_run_whose_monitor_died_and_resume_reattaches(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["faults"] = {"poll.after_complete": "crash"}
-    with pytest.raises(SystemExit):
-        execute(engine, run)
-    env.data["faults"] = {}
-    assert journal.load(run["id"])["state"] == State.RUNNING
-    with pytest.raises(MigrationError, match="destination_busy"):
-        engine.verify(run["id"])
-    assert journal.load(run["id"])["state"] == State.RUNNING
-    assert engine.resume(run["id"])["state"] == State.VERIFYING
-    assert engine.verify(run["id"])["state"] == State.VERIFIED
-
-
-@pytest.mark.parametrize("stop", [False, True])
-def test_detach_inside_resume_precheck_records_detached_state(rig, stop):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["complete_after_polls"] = 100
-    detach_on(engine, "transfer_start_observed")
-    execute(engine, run)
-    saved = journal.load(run["id"])
-    saved["state"] = State.RUNNING.value
-    journal.save(saved, "simulated_dead_monitor")
-    flaky_discover(env, 10**6)
-    actor = Engine(env, journal, engine.clock)
-    actor.on_event = lambda e: (
-        actor.request_detach() if e["kind"] == "monitor_contact_lost" else None
-    )
-    if stop:
-        actor.request_stop()
-    result = actor.resume(run["id"])
-    assert result["state"] == State.MONITOR_DETACHED
-    assert journal.load(run["id"])["state"] == State.MONITOR_DETACHED
-    assert env.data["task"]["status"] == "running"
-    assert "cancel" not in operations(env)
-    from logs_migrate.cli import exit_code
-
-    assert exit_code(result) == 9
-
-
-def test_next_actions_for_started_transfer_point_to_verify_not_replan(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["skip_buckets"] = [next(iter(run["bucket_outcomes"]))]
-    execute(engine, run)
-    partial = engine.verify(run["id"])
-    assert partial["state"] == State.PARTIAL
-    actions = " ".join(report_data(partial, journal.events(run["id"]))["next_actions"])
-    assert "Run verify" in actions
-    assert "new immutable plan" not in actions
-
-    stopped = journal.load(run["id"])
-    stopped["state"] = State.STOPPED
-    actions = " ".join(report_data(stopped, journal.events(run["id"]))["next_actions"])
-    assert "Run verify" in actions
-    assert "new immutable plan" not in actions
-
-
-def test_next_actions_for_unstarted_run_say_replan(rig):
-    engine, _, journal = rig
-    run = planned(engine)
-    actions = report_data(run, journal.events(run["id"]))["next_actions"]
-    assert actions == ["Resolve the recorded blocker, rediscover, and review a new immutable plan."]
-
-
-def test_next_actions_for_uncertain_partition_create_say_resume(rig):
-    engine, _, journal = rig
-    run = planned(engine)
-    run["state"] = State.RECOVERY_REQUIRED
-    run["preparation"] = {"pending": True}
-    actions = " ".join(report_data(run, journal.events(run["id"]))["next_actions"])
-    assert "Run resume" in actions
-    assert "reattach" not in actions.lower()
-
-
-def test_next_actions_for_recorded_discrepancy_say_inspect_before_reverify(rig):
-    engine, env, journal = rig
-    run = planned(engine)
-    execute(engine, run)
-    run = journal.load(run["id"])
-    run["state"] = State.PARTIAL
-    run["verification"] = {"outcome": Verification.DISCREPANCY.value}
-    actions = " ".join(report_data(run, journal.events(run["id"]))["next_actions"])
-    assert "inspect them in the report before re-verifying" in actions
-    assert "new immutable plan" not in actions
+    assert error.value.code == Code.AUTH
+    assert env.data["trace"] == [{"operation": "test_source_credentials", "node": "src-1"}]

@@ -61,7 +61,6 @@ class SimulatedEnvironment:
                     "task": None,
                     "history": [],
                     "fixups": {},
-                    "baseline_events": list(fixture["destination_events"]),
                     "poll": 0,
                     "recovery_markers": {},
                     "catalog_backups": {},
@@ -163,19 +162,9 @@ class SimulatedEnvironment:
         elif scope == "destination":
             events = self.data["destination_events"]
         elif scope == "ingest":
-            baseline = Counter()
-            for event in self.data["baseline_events"]:
-                baseline[event_identity(event)] += event.get("multiplicity", 1)
-            events = []
-            for event in self.data["destination_events"]:
-                if event.get("cohort") != "ingest":
-                    continue
-                identity = event_identity(event)
-                count = event.get("multiplicity", 1)
-                retained = min(baseline[identity], count)
-                baseline[identity] -= retained
-                if count > retained:
-                    events.append({**event, "multiplicity": count - retained})
+            # The engine subtracts the requested run's baseline. There is no global
+            # "current run" cohort: the API's latest task may belong to a later window.
+            events = [e for e in self.data["destination_events"] if e.get("cohort") == "ingest"]
         else:
             raise MigrationError(Code.SCHEMA)
         daily = Counter()
@@ -222,8 +211,9 @@ class SimulatedEnvironment:
             "bytes_transferred": 0,
             "keys": list(bucket_keys),
             "window": asdict(window),
+            "source": self.data["source"]["id"],
+            "destination": self.data["destination"]["id"],
         }
-        self.data["baseline_events"] = json.loads(canonical(self.data["destination_events"]))
         self.data["poll"] = 0
         source, dest = self.discover()
         self.data["history"].append(
@@ -274,6 +264,16 @@ class SimulatedEnvironment:
             tuple(task["skipped"]),
             task["bytes_transferred"],
             tuple(outcomes),
+            task.get("source", ""),
+            task.get("destination", ""),
+            Window(**task["window"]) if task.get("window") else None,
+            tuple(task.get("keys", ())),
+            self.data.get("poll", 0) * self.data.get("api_poll_seconds", 1),
+            sum(
+                b["size"]
+                for b in self.data["source"]["buckets"]
+                if b["node"] + "/" + b["id"] in task.get("keys", ())
+            ),
         )
 
     def transfer(self):

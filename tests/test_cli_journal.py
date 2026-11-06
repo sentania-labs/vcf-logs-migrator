@@ -11,342 +11,90 @@ from logs_migrate.journal import Journal
 from logs_migrate.models import ACTIVE_ACK
 
 
-def test_cli_persistent_workflow_and_reports(tmp_path, capsys):
-    base = [
-        "--journal",
-        str(tmp_path / "journal.sqlite"),
-        "--fixture",
-        str(FIXTURES / "sealed-populated.fixture"),
-    ]
-    assert main([*base, "discover"]) == 0
-    assert json.loads(capsys.readouterr().out)["source"]["version"] == "8.18.7"
+@pytest.mark.parametrize("fixture", ["sealed-populated.fixture", "sealed-911.fixture"])
+def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture):
+    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(FIXTURES / fixture)]
+    assert main([*base, "partitions"]) == 0
+    assert json.loads(capsys.readouterr().out)["missing"] == []
     assert (
         main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
         == 0
     )
     run = json.loads(capsys.readouterr().out)
-    assert (
-        main(
-            [
-                *base,
-                "copy",
-                run["id"],
-                "--plan-hash",
-                run["plan_hash"],
-                "--ack-backup",
-                "--ack-active",
-                ACTIVE_ACK,
-            ]
-        )
-        == 0
-    )
-    copied = json.loads(capsys.readouterr().out)
-    assert copied["state"] == "VERIFYING"
-    assert copied["verification"]["outcome"] == "verification_pending"
+    assert main([*base, "run", run["id"], "--ack-backup", "--ack-active", ACTIVE_ACK]) == 0
+    assert json.loads(capsys.readouterr().out)["task"]["status"] == "running"
+    api_only = [
+        "--fixture",
+        str(FIXTURES / fixture),
+        "--remote-state",
+        str(tmp_path / "j.simulated-state"),
+    ]
+    assert main([*api_only, "status"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["status"] == "completed" and len(status["nodes"]) == 3
     assert main([*base, "verify", run["id"]]) == 0
-    assert json.loads(capsys.readouterr().out)["state"] == "VERIFIED"
-    assert main([*base, "status", run["id"]]) == 0
-    assert "journal_only" in json.loads(capsys.readouterr().out)["observation"]
-    assert main([*base, "report", run["id"], "--format", "json"]) == 0
-    assert json.loads(capsys.readouterr().out)["run"]["verification"]["actual_count"] == 8
-    assert main([*base, "report", run["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "verified_success"
+    offline = ["--journal", str(tmp_path / "j.sqlite"), "report", run["id"]]
+    assert main([*offline, "--format", "json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["run"]["backup_ack"] and report["run"]["backup_verified"] is False
+    assert main(offline) == 0
     assert "verified_success" in capsys.readouterr().out
 
 
-def test_cli_never_echoes_accidental_password_argument(tmp_path, capsys):
-    with pytest.raises(SystemExit):
-        main(["--journal", str(tmp_path / "j"), "--password=canary-secret", "discover"])
-    output = capsys.readouterr()
-    assert "canary-secret" not in output.out + output.err
-
-
-def test_cli_live_execution_is_explicitly_blocked(tmp_path, capsys):
-    assert main(["--journal", str(tmp_path / "j"), "discover"]) == 3
-    assert json.loads(capsys.readouterr().err)["error"] == "unsupported_capability"
-
-
-def test_journal_private_mode_and_second_writer_rejected(tmp_path):
-    journal = Journal(tmp_path / "j.sqlite")
-    second = Journal(tmp_path / "j.sqlite")
+def test_journal_private_and_exclusive(rig):
+    _, _, journal = rig
+    if os.name == "posix":
+        assert journal.path.stat().st_mode & 0o077 == 0
+    other = Journal(journal.path)
     try:
-        if os.name == "posix":
-            assert journal.path.stat().st_mode & 0o777 == 0o600
-        with journal.exclusive():
-            with pytest.raises(MigrationError, match="busy"):
-                with second.exclusive():
-                    pytest.fail("Second writer acquired a held lease")
+        with journal.exclusive(), pytest.raises(MigrationError):
+            with other.exclusive():
+                pytest.fail("lock admitted a second writer")
     finally:
-        journal.close()
-        second.close()
-
-
-def test_symlink_journal_is_rejected(tmp_path):
-    target = tmp_path / "target"
-    target.write_text("unchanged")
-    link = tmp_path / "journal"
-    link.symlink_to(target)
-    with pytest.raises(MigrationError):
-        Journal(link)
-    assert target.read_text() == "unchanged"
-
-
-@pytest.mark.parametrize("point", ["start.before", "start.after", "poll.after_complete"])
-def test_crash_preserves_durable_intent_and_never_blindly_reposts(rig, point):
-    engine, env, journal = rig
-    run = planned(engine)
-    env.data["faults"] = {point: "crash"}
-    with pytest.raises(SystemExit):
-        execute(engine, run)
-    saved = journal.load(run["id"])
-    assert saved["transfer_intent"]
-    assert journal.transfers(env.data["destination"]["id"])
-    env.data["faults"] = {}
-    try:
-        engine.resume(run["id"])
-    except MigrationError:
-        pass
-    assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
+        other.close()
 
 
 @pytest.mark.parametrize(
-    "point", ["discover", "test_mover", "start.before", "start.after", "poll.before"]
+    "point",
+    ["discover", "test_mover", "start.before", "start.after", "poll.before", "query.source"],
 )
-def test_error_text_and_journal_never_contain_remote_secrets(rig, point):
+def test_adapter_exception_secrets_never_escape_errors_or_audit(rig, point):
     engine, env, journal = rig
     run = planned(engine)
     env.data["faults"] = {point: "secret"}
     with pytest.raises(MigrationError) as error:
         execute(engine, run)
-    assert "DO-NOT-PRINT" not in str(error.value)
     assert error.value.__context__ is None and error.value.__cause__ is None
-    assert "DO-NOT-PRINT" not in "".join(traceback.format_exception(error.value, chain=True))
-    assert "DO-NOT-PRINT" not in json.dumps(journal.load(run["id"]))
-    assert "DO-NOT-PRINT" not in json.dumps(journal.events(run["id"]))
-
-
-def test_sigint_handler_is_installed_only_for_monitoring_commands(tmp_path, monkeypatch, capsys):
-    import signal
-
-    installed = []
-    monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.append(sig))
-    base = [
-        "--journal",
-        str(tmp_path / "journal.sqlite"),
-        "--fixture",
-        str(FIXTURES / "sealed-populated.fixture"),
+    artifacts = [
+        str(error.value),
+        "".join(traceback.format_exception(error.value, chain=True)),
+        json.dumps(journal.load(run["id"])),
+        json.dumps(journal.events(run["id"])),
     ]
-    assert main([*base, "discover"]) == 0
-    assert (
-        main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
-        == 0
-    )
-    run = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert not installed
-    args = [*base, "copy", run["id"], "--plan-hash", run["plan_hash"], "--ack-backup"]
-    assert main([*args, "--ack-active", ACTIVE_ACK]) == 0
-    assert signal.SIGINT in installed
+    assert all("DO-NOT-PRINT" not in a for a in artifacts)
 
 
-def test_cli_workflow_on_the_911_preview_fixture(tmp_path, capsys):
-    base = [
-        "--journal",
-        str(tmp_path / "journal.sqlite"),
-        "--fixture",
-        str(FIXTURES / "sealed-911.fixture"),
-    ]
-    assert main([*base, "discover"]) == 0
-    assert json.loads(capsys.readouterr().out)["destination"]["version"] == "9.1.1"
-    assert (
-        main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
-        == 0
-    )
-    run = json.loads(capsys.readouterr().out)
-    assert any("preview" in warning for warning in run["plan"]["warnings"])
-    args = [*base, "copy", run["id"], "--plan-hash", run["plan_hash"], "--ack-backup"]
-    assert main([*args, "--ack-active", ACTIVE_ACK]) == 0
-    assert json.loads(capsys.readouterr().out)["state"] == "VERIFYING"
-    assert main([*base, "verify", run["id"]]) == 0
-    assert json.loads(capsys.readouterr().out)["state"] == "VERIFIED"
-
-
-def _long_running_fixture(tmp_path):
-    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
-    data["complete_after_polls"] = 100
-    path = tmp_path / "long.fixture"
-    path.write_text(json.dumps(data))
-    return path
-
-
-def _plan(base, capsys):
-    since, until = "2026-03-01T00:00:00Z", "2026-04-01T00:00:00Z"
-    assert main([*base, "plan", "--since", since, "--until", until]) == 0
-    return json.loads(capsys.readouterr().out)
-
-
-def _copy(base, run):
-    return main(
-        [
-            *base,
-            "copy",
-            run["id"],
-            "--plan-hash",
-            run["plan_hash"],
-            "--ack-backup",
-            "--ack-active",
-            ACTIVE_ACK,
-        ]
-    )
-
-
-def test_exit_code_follows_persisted_state_when_capacity_drops_mid_copy(
-    tmp_path, capsys, monkeypatch
-):
-    from logs_migrate.adapters.simulated import SimulatedEnvironment
-
-    base = [
-        "--journal",
-        str(tmp_path / "j.sqlite"),
-        "--fixture",
-        str(_long_running_fixture(tmp_path)),
-    ]
-    run = _plan(base, capsys)
-    original = SimulatedEnvironment.transfer
-
-    def transfer(self):
-        result = original(self)
-        if result.status == "running":
-            self.data["destination"]["nodes"][0]["repository_available"] = 1
-        return result
-
-    monkeypatch.setattr(SimulatedEnvironment, "transfer", transfer)
-    assert _copy(base, run) == 5
-    error = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-    assert error == {"error": "insufficient_capacity", "run_id": run["id"]}
-    assert main([*base, "status", run["id"]]) == 0
-    assert json.loads(capsys.readouterr().out)["run"]["state"] == "PARTIAL"
-
-
-def test_exit_code_after_stop_with_source_drift_is_partial(tmp_path, capsys):
-    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
-    from logs_migrate.engine import Engine
-
-    fixture = _long_running_fixture(tmp_path)
-    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture)]
-    run = _plan(base, capsys)
-    state = tmp_path / "j.simulated-state"
-    env = SimulatedEnvironment.from_file(fixture, state)
-    journal = Journal(tmp_path / "j.sqlite")
-    engine = Engine(env, journal, SimulatedClock())
-    engine.on_event = lambda e: (
-        engine.request_detach() if e["kind"] == "transfer_start_observed" else None
-    )
-    assert execute(engine, run)["state"] == "MONITOR_DETACHED"
-    journal.close()
-    env.data["source"]["retention_fingerprint"] = "changed"
-    env._persist()
-    assert main([*base, "stop", run["id"]]) == 5
-    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["run_id"] == run["id"]
-
-
-def test_exit_code_is_recovery_required_when_post_start_integrity_fails(
-    tmp_path, capsys, monkeypatch
-):
-    from logs_migrate.adapters.simulated import SimulatedEnvironment
-
-    base = [
-        "--journal",
-        str(tmp_path / "j.sqlite"),
-        "--fixture",
-        str(FIXTURES / "sealed-populated.fixture"),
-    ]
-    run = _plan(base, capsys)
-    monkeypatch.setattr(SimulatedEnvironment, "attest_transfer", lambda self, bucket: False)
-    assert _copy(base, run) == 8
-    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == (
-        "integrity_mismatch"
-    )
-    assert main([*base, "status", run["id"]]) == 0
-    assert json.loads(capsys.readouterr().out)["run"]["state"] == "RECOVERY_REQUIRED"
-
-
-@pytest.mark.parametrize("command", ["verify", "stop", "close", "report"])
-def test_cli_never_echoes_a_pasted_secret_in_place_of_a_run_id(tmp_path, capsys, command):
-    with pytest.raises(SystemExit) as exit_:
+@pytest.mark.parametrize("command", ["run", "verify", "report"])
+def test_cli_does_not_echo_pasted_secrets(tmp_path, capsys, command):
+    with pytest.raises(SystemExit) as error:
         main(["--journal", str(tmp_path / "j.sqlite"), command, "Hunter2-pasted-by-mistake"])
-    assert exit_.value.code == 2
-    output = capsys.readouterr()
-    assert "Hunter2" not in output.out + output.err
-    with pytest.raises(SystemExit):
-        main(
-            [
-                "--journal",
-                str(tmp_path / "j.sqlite"),
-                "plan",
-                "--since",
-                "2026-03-01T00:00:00Z",
-                "--until",
-                "2026-04-01T00:00:00Z",
-                "--tail-of",
-                "Hunter2-pasted-by-mistake",
-            ]
-        )
+    assert error.value.code == 2
     assert "Hunter2" not in "".join(capsys.readouterr())
 
 
-@pytest.mark.parametrize(
-    "point", ["discover", "test_mover", "start.after", "poll.before", "query.source", "attest"]
-)
-def test_canary_never_reaches_any_cli_output_report_journal_or_remote_state(
-    tmp_path, capsys, point
-):
-    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
-    path = tmp_path / "canary.fixture"
-    path.write_text(json.dumps(data))
-    journal = tmp_path / "j.sqlite"
-    base = ["--journal", str(journal), "--fixture", str(path)]
-    run = _plan(base, capsys)
-    data["faults"] = {point: "secret"}
-    path.write_text(json.dumps(data))
-    state = journal.with_suffix(".simulated-state")
-    if state.exists():
-        state.unlink()
-    assert _copy(base, run) != 0
-    captured = capsys.readouterr()
-    outputs = [captured.out, captured.err]
-    main([*base, "report", run["id"]])
-    main([*base, "report", run["id"], "--format", "json"])
-    main([*base, "status", run["id"]])
-    reported = capsys.readouterr()
-    outputs += [reported.out, reported.err]
-    blobs = [o.encode() for o in outputs]
-    for artifact in tmp_path.iterdir():
-        if artifact.is_file():
-            blobs.append(artifact.read_bytes())
-    assert not any(b"DO-NOT-PRINT" in blob for blob in blobs)
-
-
-def test_close_command_exits_zero_and_leaves_the_run_marked_incomplete(tmp_path, capsys):
-    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
-    from logs_migrate.engine import Engine
-
-    fixture = _long_running_fixture(tmp_path)
-    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture)]
-    run = _plan(base, capsys)
-    env = SimulatedEnvironment.from_file(fixture, tmp_path / "j.simulated-state")
-    journal = Journal(tmp_path / "j.sqlite")
-    engine = Engine(env, journal, SimulatedClock())
-    engine.on_event = lambda e: (
-        engine.request_detach() if e["kind"] == "transfer_start_observed" else None
-    )
-    assert execute(engine, run)["state"] == "MONITOR_DETACHED"
-    journal.close()
-    assert main([*base, "stop", run["id"]]) == 4
+@pytest.mark.parametrize("command", ["fixup", "recover", "close", "resume"])
+def test_removed_controllers_are_unavailable(command, capsys):
+    with pytest.raises(SystemExit) as error:
+        main([command])
+    assert error.value.code == 2
     capsys.readouterr()
-    assert main([*base, "close", run["id"]]) == 0
-    closed = json.loads(capsys.readouterr().out)
-    assert closed["state"] == "STOPPED" and closed["closed"]["task_started"] is True
-    assert main([*base, "status", run["id"]]) == 0
-    assert json.loads(capsys.readouterr().out)["run"]["closed"]["landed"] == []
-    assert main([*base, "report", run["id"]]) == 0
-    assert "never a successful migration" in capsys.readouterr().out
-    assert main([*base, "close", run["id"]]) == 4
+    with pytest.raises(SystemExit) as help_:
+        main(["--help"])
+    assert help_.value.code == 0
+    assert command not in capsys.readouterr().out
+
+
+def test_live_execution_remains_unqualified(tmp_path, capsys):
+    assert main(["--journal", str(tmp_path / "j.sqlite"), "discover"]) == 3
+    assert json.loads(capsys.readouterr().err)["error"] == "unsupported_capability"

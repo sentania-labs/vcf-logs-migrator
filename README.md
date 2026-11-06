@@ -8,12 +8,12 @@ A shared Python engine and automation CLI for historical log migration from
 mutation is disabled pending safety and lab qualification.** The GUI and native
 installers are separate deliveries. This project is not supported by Broadcom.
 
-The mover is the destination's `/api/v2/data-migrations` API. It accepts arbitrary
-time windows and skips active buckets. The engine adds immutable planning,
-partition prerequisites, capacity and overlap guards, durable recovery, explicit
-verification, optional 9.0 fixup orchestration, and Markdown/JSON evidence.
-It never stops the source, deletes buckets, overwrites destination data, or falls
-back to manual copying.
+The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
+sealed buckets by date, starts the transfer once, reads status directly from the
+API, checks partitions, verifies per-day counts, and produces Markdown/JSON reports.
+A small local record keeps sent buckets, baseline counts and audit evidence. There
+is no local task state machine. It never stops the source, deletes buckets,
+overwrites destination data, or falls back to manual copying.
 
 ## Try the fixture CLI
 
@@ -26,16 +26,22 @@ logs-migrate --journal /private/migration/run.sqlite \
   --since 2026-03-01T00:00:00Z --until 2026-04-01T00:00:00Z
 ```
 
-Use the returned run ID and plan fingerprint with `run`/`copy`, then `verify`.
-`status`, `resume`, `stop`, `report`, `fixup`, `close`, and `recover-services` share the same
-engine and journal. Full commands, exit codes, recovery guidance, and release
-gates are in the [CLI operator guide](docs/operator-cli.md).
+Use the returned run ID with `run`/`copy`/`start`, then query `status` and run
+`verify`. Status exposes API task and per-node observations, elapsed time, relative
+transfer rate and ETA when the API supplies enough data. `stop` explicitly cancels
+the observed API task by its task ID. The [CLI operator guide](docs/operator-cli.md)
+has the complete workflow, attestations, exit codes and qualification limits.
 
-`COMPLETED` from the appliance is not verified success: it can hide disk-limit
-skips. Verification requires complete, agreeing observations and explicit
-accounting for pre-existing data and new ingest. Active exclusions remain visible.
-A 9.0 tail rerun requires unchanged topology and matching prior buckets; 9.1.1
-must not re-import any previously selected bucket, even in an adjacent date window.
+API completion is not verified success: it can hide skipped data. Verification
+requires complete, agreeing counts and accounts for pre-existing data and new
+ingest. Active exclusions remain visible. Overlapping windows and previously sent
+buckets are refused, including on 9.1.1 where no destination bucket store exists.
+A later disjoint transfer does not prevent verifying an earlier run.
+
+Configuration migration (forwarding, partition, masking and filter rules) is the
+next delivery. This delivery only compares partitions and 9.1.1 extracted fields;
+it does not create rules. Existing fixup code is retained privately and **set
+aside**, unavailable from the engine/CLI, pending migration qualification.
 
 ## Development
 
@@ -54,7 +60,7 @@ console script from a temporary directory through both fixture workflows. Linux 
 installs the package and runs these same targets on pull requests and pushes to main.
 These checks do not contact appliances. In particular,
 fixture helper behavior does not prove that updating an already-registered vendor
-bucket is safe; real fixup is explicitly gated.
+bucket is safe; fixup is not an enabled operation.
 
 ## Research and historical evidence
 

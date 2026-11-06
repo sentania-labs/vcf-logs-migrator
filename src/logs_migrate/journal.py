@@ -9,25 +9,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .errors import Code, MigrationError, require
-from .models import State, canonical
+from .models import canonical
 from .ports import SystemClock
-
-_NORMAL = {
-    State.DRAFT: {State.DISCOVERED},
-    State.DISCOVERED: {State.PLANNED},
-    State.PLANNED: {State.PREFLIGHT_PASSED},
-    State.PREFLIGHT_PASSED: {State.AUTHORIZED},
-    State.AUTHORIZED: {State.RUNNING},
-    State.RUNNING: {State.VERIFYING, State.STOPPED, State.MONITOR_DETACHED},
-    State.MONITOR_DETACHED: {State.RUNNING, State.VERIFYING, State.STOPPED},
-    State.VERIFYING: {State.VERIFIED, State.PARTIAL},
-    State.PARTIAL: {State.VERIFYING},
-    State.STOPPED: {State.VERIFYING},
-    State.BLOCKED: {State.PREFLIGHT_PASSED, State.VERIFYING},
-    State.RECOVERY_REQUIRED: {State.STOPPED, State.VERIFYING, State.RUNNING},
-    State.FAILED: {State.VERIFYING},
-    State.VERIFIED: {State.VERIFYING},
-}
 
 
 @contextmanager
@@ -120,16 +103,6 @@ class Journal:
                 self.db.execute("ROLLBACK")
             raise MigrationError(Code.STORAGE) from None
 
-    def transition(self, run: dict, state: State, reason: Code | None = None):
-        old = State(run["state"])
-        exceptional = {State.BLOCKED, State.PARTIAL, State.FAILED, State.RECOVERY_REQUIRED}
-        require(
-            state == old or state in _NORMAL.get(old, set()) or state in exceptional, Code.STATE
-        )
-        run["state"] = state.value
-        run["reason"] = reason.value if reason else None
-        self.save(run, "state", {"from": old.value, "to": state.value, "reason": run["reason"]})
-
     def record_transfer(self, run: dict):
         plan = run["plan"]
         self.db.execute(
@@ -150,10 +123,6 @@ class Journal:
             ),
         )
 
-    def release_transfer(self, run_id: str):
-        """Only for a run proven never to have reached the appliance."""
-        self.db.execute("DELETE FROM transfers WHERE run=?", (run_id,))
-
     def transfers(self, destination: str) -> list[dict]:
         return [
             {"run": r, "source": s, "start": a, "end": b, **json.loads(body)}
@@ -162,34 +131,6 @@ class Journal:
                 (destination,),
             )
         ]
-
-    def unresolved(self, destination: str, excluding: str | None = None) -> list[str]:
-        pending = []
-        for (body,) in self.db.execute("SELECT body FROM runs"):
-            run = json.loads(body)
-            if run["id"] == excluding:
-                continue
-            target = (
-                run["plan"]["destination"]["id"]
-                if run.get("plan")
-                else run.get("preparation", {}).get("destination_id")
-            )
-            if target == destination and (
-                run["service_obligations"]
-                or run.get("preparation", {}).get("pending", False)
-                or run["state"] in {State.RUNNING, State.RECOVERY_REQUIRED}
-            ):
-                pending.append(run["id"])
-        return pending
-
-    def awaiting_verification(self, destination: str) -> list[str]:
-        """The current appliance task is needed until its transfer is accounted for or closed."""
-        pending = []
-        for transfer in self.transfers(destination):
-            run = self.load(transfer["run"])
-            if run["verification"].get("complete") is not True and not run.get("closed"):
-                pending.append(transfer["run"])
-        return pending
 
     def events(self, run_id: str) -> list[dict]:
         return [

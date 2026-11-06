@@ -34,7 +34,7 @@ def planned(engine):
 
 
 def execute(engine, run):
-    return engine.run(run["id"], plan_hash=run["plan_hash"], backup_ack=True, active_ack=ACTIVE_ACK)
+    return engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
 
 
 def verified(engine):

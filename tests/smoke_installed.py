@@ -47,29 +47,26 @@ def smoke(fixture: Path, executable: str) -> None:
         assert discovered["destination"]["version"] == data["destination"]["version"]
         plan = invoke("plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z")
         run_id = plan["id"]
-        refused = invoke("run", run_id, "--plan-hash", plan["plan_hash"], code=3)
+        refused = invoke("run", run_id, code=3)
         assert refused["error"] == "acknowledgment_required"
         copied = invoke(
             "run",
             run_id,
-            "--plan-hash",
-            plan["plan_hash"],
             "--ack-backup",
             "--ack-active",
             ACTIVE_ACK,
         )
-        assert copied["state"] == "VERIFYING"
+        assert copied["task"]["status"] == "running"
         assert copied["verification"]["outcome"] == "verification_pending"
         verified = invoke("verify", run_id)
-        assert verified["state"] == "VERIFIED"
-        evidence = verified["verification"]
+        evidence = verified
         assert evidence["outcome"] == "verified_success"
         assert evidence["source_count"] == len(data["source_events"])
         expected = sum(
             len(data[key]) for key in ("source_events", "destination_events", "ingest_during_run")
         )
         assert evidence["actual_count"] == evidence["expected_count"] == expected
-        assert invoke("status", run_id)["run"]["state"] == "VERIFIED"
+        assert invoke("status")["status"] == "completed"
         report = invoke("report", run_id, "--format", "json")
         assert report["run"]["verification"] == evidence
         assert "verified_success" in invoke("report", run_id, parse=False)

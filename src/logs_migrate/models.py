@@ -35,23 +35,6 @@ def parse_time(value: str) -> int:
         raise MigrationError(Code.INVALID_INPUT) from None
 
 
-class State(StrEnum):
-    DRAFT = "DRAFT"
-    DISCOVERED = "DISCOVERED"
-    PLANNED = "PLANNED"
-    PREFLIGHT_PASSED = "PREFLIGHT_PASSED"
-    AUTHORIZED = "AUTHORIZED"
-    RUNNING = "RUNNING"
-    MONITOR_DETACHED = "MONITOR_DETACHED"
-    VERIFYING = "VERIFYING"
-    VERIFIED = "VERIFIED"
-    BLOCKED = "BLOCKED"
-    STOPPED = "STOPPED"
-    PARTIAL = "PARTIAL"
-    FAILED = "FAILED"
-    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
-
-
 class Verification(StrEnum):
     PENDING = "verification_pending"
     SUCCESS = "verified_success"

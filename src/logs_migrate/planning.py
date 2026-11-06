@@ -27,18 +27,6 @@ def partition_diff(source: Cluster, destination: Cluster) -> dict:
     }
 
 
-def preparation_hash(source: Cluster, destination: Cluster) -> str:
-    from .models import digest
-
-    return digest(
-        {
-            "source": source.identity_fingerprint,
-            "destination": destination.identity_fingerprint,
-            "difference": partition_diff(source, destination),
-        }
-    )
-
-
 def capacity(destination: Cluster, buckets: tuple[Bucket, ...], policy: Policy) -> dict[str, int]:
     # Conservative bound: the API's node assignment is not operator-controlled.
     # Every node must be able to hold the entire batch, overhead, and bounded concurrent growth.
@@ -56,78 +44,43 @@ def capacity(destination: Cluster, buckets: tuple[Bucket, ...], policy: Policy) 
     return allocations
 
 
-def build_plan(
-    source: Cluster,
-    destination: Cluster,
-    window: Window,
-    policy: Policy,
-    previously_copied: tuple[str, ...] = (),
-    *,
-    fixup_only: bool = False,
-) -> dict:
+BACKUP_ACK = (
+    "No undo: migrated data stays on the destination. Snapshot the destination before "
+    "continuing (snapshotting the source too is optional)."
+)
+
+
+def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
     compatible(source, destination)
+    require(destination.history_complete, Code.INCOMPLETE)
     selected = tuple(b for b in source.buckets if b.selected(window))
     require(bool(selected), Code.INCOMPLETE)
     require(len({b.id for b in selected}) == len(selected), Code.COLLISION)
     require(
-        all(b.complete and b.manifest is not None and b.size > 0 for b in selected), Code.INCOMPLETE
+        all(b.complete and b.start is not None and b.end is not None for b in selected),
+        Code.INCOMPLETE,
     )
-    old = set(previously_copied)
-    fresh = selected if fixup_only else tuple(b for b in selected if b.id not in old)
-    require(bool(fresh), Code.INCOMPLETE)
-    for b in selected:
-        copies = [d for d in destination.buckets if d.id == b.id]
-        if copies:
-            require(
-                (b.id in old or fixup_only)
-                and len(copies) == 1
-                and copies[0].complete
-                and copies[0].registered
-                and copies[0].manifest == b.manifest,
-                Code.COLLISION,
-            )
-        elif b.id in old or fixup_only:
-            require(False, Code.COLLISION)
-    bounds = Window(min(b.start for b in fresh), max(b.end for b in fresh) + 1)
-    warnings = [
-        "Whole buckets may include events outside the requested window.",
-        "Backup acknowledgment is an operator attestation, not snapshot verification.",
-    ]
-    active = tuple(b for b in source.buckets if b.status == "active")
-    if active:
-        warnings.append("Active buckets are skipped entirely; newest coverage is incomplete.")
-    if destination.preview:
-        warnings.append(
-            "9.1.1 preview: per-event partition routing still needs live qualification."
-        )
-        warnings.append("9.1.1 may bypass ingest-time masking; this is not yet live-validated.")
-        warnings.append("9.1.1 tail windows must select no previously imported bucket.")
-    warnings.append(
-        "The destination receives source root credentials. Use a temporary password "
-        "and rotate it afterwards; the tool does not change source passwords."
-    )
-    if any(p.retention_seconds > 0 for p in source.partitions):
-        warnings.append("Source retention can remove planned buckets; drift blocks execution.")
-    if destination.version.startswith("9.0."):
-        warnings.append("9.0 API registers in Default with registration-time creation timestamps.")
+    require(not ({b.id for b in selected} & {b.id for b in destination.buckets}), Code.COLLISION)
+    coverage = Window(min(b.start for b in selected), max(b.end for b in selected) + 1)
     return {
-        "schema_version": 1,
-        "kind": "fixup" if fixup_only else "migration",
-        "source": asdict(source),
-        "destination": asdict(destination),
-        "source_fingerprint": source.cohort_fingerprint([b.key for b in selected]),
+        "source": {"id": source.id, "version": source.version},
+        "destination": {
+            "id": destination.id,
+            "version": destination.version,
+            "nodes": [{"id": n.id} for n in destination.nodes],
+        },
         "window": asdict(window),
-        "coverage": asdict(bounds),
-        "policy": asdict(policy),
-        "selected": [asdict(b) for b in fresh],
-        "api_selected": [b.key for b in selected],
-        "previously_copied": list(previously_copied),
-        "active_skipped": [b.key for b in active],
+        "coverage": asdict(coverage),
+        "selected": [asdict(b) for b in selected],
+        "active_skipped": [b.key for b in source.buckets if b.status == "active"],
         "last_fully_sealed_day": last_sealed_day(source.buckets),
-        "last_fully_sealed_day_basis": "unknown"
-        if last_sealed_day(source.buckets) is None
-        else "earliest proven active event bound; America/Chicago",
         "partition_diff": partition_diff(source, destination),
-        "capacity_reservations": capacity(destination, () if fixup_only else fresh, policy),
-        "warnings": warnings,
+        "warnings": [
+            BACKUP_ACK,
+            "Active buckets are skipped; newest data is not copied.",
+            "Whole buckets can extend beyond the requested date range.",
+        ]
+        + (
+            ["9.1.1 preview; live adapter qualification is pending."] if destination.preview else []
+        ),
     }

@@ -24,6 +24,13 @@ class Transfer:
     skipped: tuple[str, ...] = ()
     bytes_transferred: int = 0
     nodes: tuple[NodeTransfer, ...] = ()
+    # Observed request identity from the destination, never invented from local task state.
+    source: str = ""
+    destination: str = ""
+    window: Window | None = None
+    bucket_keys: tuple[str, ...] = ()
+    elapsed_seconds: float | None = None
+    total_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -39,8 +46,8 @@ class History:
 class Environment(Protocol):
     """No source write or stop operation exists on this boundary.
 
-    A live adapter must hold a destination-wide exclusive lease, include external API
-    transfers in history, and enforce bounded storage allocation for the API batch.
+    An adapter serializes local start calls and includes external API transfers in history.
+    Task state belongs to the destination; the wrapper never maintains a second controller.
     Observations are fresh on every call. Counts use the immutable query scope.
     """
 
@@ -53,10 +60,14 @@ class Environment(Protocol):
     def count(self, scope: str, window: Window, bucket_keys: tuple[str, ...]) -> Counts: ...
     def test_mover(self) -> None: ...
     def test_source_credentials(self, node: str) -> None: ...
-    def reserve(self, per_node: dict[str, int], ceiling_percent: int) -> None: ...
     def start(self, window: Window, bucket_keys: tuple[str, ...]) -> Transfer: ...
     def transfer(self) -> Transfer: ...
     def cancel(self) -> None: ...
+
+
+class SetAsideFixupEnvironment(Environment, Protocol):
+    """Deferred service/registration capabilities; not consumed by the shipped Engine."""
+
     def attest_transfer(self, bucket: Bucket) -> bool: ...
     def test_node_credentials(self, node: str) -> None: ...
     def service(self, node: str) -> str: ...

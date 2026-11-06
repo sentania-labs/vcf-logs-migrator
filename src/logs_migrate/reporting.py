@@ -1,169 +1,56 @@
-"""Reports derive from durable evidence; never turn transfer completion into success."""
+"""Plain count evidence and audit reports, never an alternate source of task status."""
 
 import json
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
-from .models import State, Verification
 
 
-def report_data(run: dict, events: list[dict]) -> dict:
+def report_data(run, events):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "run": run,
         "events": events,
-        "execution_backend": "simulation",
-        "qualification": "Fixture evidence only. No real appliance execution is enabled.",
-        "next_actions": next_actions(run),
+        "qualification": "Fixture evidence only; real appliance execution is not qualified.",
+        "task_status": (
+            "Query status for the current destination API task; this is an audit report."
+        ),
     }
 
 
-def next_actions(run: dict) -> list[str]:
-    if run["service_obligations"]:
-        return [
-            "Reconcile the run-owned recovery marker and catalog backup before recovery.",
-            "A damaged catalog requires manual restoration from its backup; do not delete buckets.",
-        ]
-    if run.get("closed"):
-        if not run["closed"]["task_started"]:
-            return [
-                "Closed: the destination proved the transfer never started. "
-                "Rediscover and review a new immutable plan.",
-            ]
-        return [
-            "Closed as incomplete; this run is never a successful migration.",
-            "Landed and uncertain buckets stay protected from re-copy. Plan a disjoint window, "
-            "or follow the manual recovery steps for the buckets listed under Closure.",
-        ]
-    if run["reason"] == "verification_pending":
-        return [
-            "Complete verification of earlier transfers to this destination, or close an "
-            "earlier stopped or partial run with close RUN_ID.",
-            "Then retry this run with its reviewed plan; no new transfer has started.",
-        ]
-    if run["reason"] == "bucket_identity_conflict":
-        return [
-            "Preserve the conflicting bucket and its catalog entry.",
-            "Compare source and destination manifests on every node and record the mismatch.",
-            "Use a clean destination or obtain a separately reviewed manual recovery procedure.",
-            "The tool cannot repair this by deleting or overwriting destination data.",
-        ]
-    if run["state"] == State.MONITOR_DETACHED:
-        return [
-            "The appliance task is still running; monitoring was detached, not stopped.",
-            "Run resume to reattach to the existing task, or stop to cancel it.",
-        ]
-    if run["state"] == State.VERIFIED:
-        actions = ["Retain this evidence and the journal. Active buckets remain excluded."]
-        if run.get("tail_data"):
-            if run["plan"]["destination"]["version"].startswith("9.0."):
-                actions.append(
-                    "Sealed tail data was not copied; plan the same window with --tail-of."
-                )
-            else:
-                actions.append(
-                    "Sealed tail data was not copied; plan a later run whose window selects "
-                    "no previously imported bucket."
-                )
-        return actions
-    if run["state"] == State.VERIFYING:
-        return ["Run verify; transfer completion is not verified migration success."]
-    if run["state"] == State.RECOVERY_REQUIRED:
-        if run.get("preparation", {}).get("pending") and not run["transfer_intent"]:
-            return [
-                "Partition creation had an unknown outcome and no transfer was started.",
-                "Run resume to reconcile the partitions against the destination.",
-            ]
-        if run["transfer_intent"] and run["transfer"] is None:
-            return [
-                "The start request was never acknowledged. Run close: it clears the run only "
-                "when the destination proves the start had no effect; otherwise reconcile by hand.",
-                "Do not repeat the POST.",
-            ]
-        return [
-            "Run resume to reattach to the existing task and inspect live state. "
-            "Do not repeat the POST."
-        ]
-    if run["transfer_intent"]:
-        if run["verification"]["outcome"] == Verification.DISCREPANCY:
-            return [
-                "Verification recorded discrepancies; inspect them in the report before "
-                "re-verifying, because verify re-reconciles the same counts.",
-                "Re-planning the same window is refused as an overlap.",
-            ]
-        return [
-            "A transfer was started; its buckets are recorded in the transfer ledger, "
-            "so re-planning the same window is refused as an overlap.",
-            "Run verify to account for the data already copied, then follow its outcome.",
-        ]
-    return ["Resolve the recorded blocker, rediscover, and review a new immutable plan."]
-
-
-def markdown(run: dict, events: list[dict], timezone: str = "America/Chicago") -> str:
-    def local(value):
-        return (
-            datetime.fromisoformat(value)
-            .astimezone(ZoneInfo(timezone))
-            .strftime("%Y-%m-%d %H:%M:%S %Z")
-        )
-
-    plan = run.get("plan") or {}
-    verify = run["verification"]
+def markdown(run, events):
+    plan = run["plan"]
+    verification = run["verification"]
     lines = [
-        "# Log migration evidence",
+        "# Migration count report",
         "",
         f"Run: `{run['id']}`",
         "",
-        f"State: **{run['state']}**. Verification: **{verify['outcome']}**.",
+        "Fixture evidence only. Query `status` for current API task progress.",
         "",
-        "Fixture evidence only. Real appliance execution remains release-gated.",
+        f"Verification: **{verification['outcome']}**. "
+        f"Complete query evidence: **{verification.get('complete', False)}**.",
         "",
-        f"Created: {local(run['created_at'])}. Updated: {local(run['updated_at'])}.",
+        "Snapshot acknowledgment: "
+        + ("operator attested" if run["backup_ack"] else "not given")
+        + "; snapshots were not independently verified.",
         "",
-        f"Plan fingerprint: `{run.get('plan_hash')}`.",
-        "",
-        f"Backup: {'operator attested' if run['backup_ack'] else 'not acknowledged'}; "
-        "not independently verified.",
+        f"Requested dates (Unix ms): {json.dumps(plan['window'], sort_keys=True)}.",
+        f"Whole-bucket coverage (Unix ms): {json.dumps(plan['coverage'], sort_keys=True)}.",
+        f"Active buckets skipped: {len(plan['active_skipped'])}.",
+        f"Last fully sealed day: {plan['last_fully_sealed_day'] or 'unknown'}.",
         "",
     ]
-    if plan:
+    if verification.get("reason"):
+        lines += [f"Reason: {verification['reason']}.", ""]
+    if "daily" in verification:
         lines += [
-            f"Source: {plan['source']['id']} ({plan['source']['version']}); "
-            f"{len(plan['source']['nodes'])} nodes.",
-            "",
-            f"Destination: {plan['destination']['id']} ({plan['destination']['version']}); "
-            f"{len(plan['destination']['nodes'])} nodes.",
-            "",
-            f"Requested range (Unix ms, half-open): {plan['window']}.",
-            "",
-            f"Whole-bucket coverage: {plan['coverage']}.",
-            "",
-            f"Active buckets skipped: {len(plan['active_skipped'])}. Last fully sealed day: "
-            f"{plan['last_fully_sealed_day'] or 'unknown because active bounds are unproven'}.",
-            "",
-            f"Tail data sealed after planning, not copied: {len(run.get('tail_data', []))}.",
-            "",
-            "## Bucket outcomes",
-            "",
-            "| Bucket | Outcome |",
-            "|---|---|",
-        ]
-        lines += [f"| `{key}` | {value} |" for key, value in run["bucket_outcomes"].items()]
-        lines += ["", "## Warnings", ""] + [f"- {warning}" for warning in plan["warnings"]]
-    if "daily" in verify:
-        lines += [
-            "",
-            "## Daily reconciliation",
-            "",
             "| Day | Source | Pre-existing | New ingest | Expected | Actual | Difference |",
             "|---|---:|---:|---:|---:|---:|---:|",
         ]
-        for row in verify["daily"]:
+        for row in verification["daily"]:
             lines.append(
                 "| "
                 + " | ".join(
-                    str(row[key])
-                    for key in (
+                    str(row[k])
+                    for k in (
                         "day",
                         "source",
                         "preexisting",
@@ -175,29 +62,10 @@ def markdown(run: dict, events: list[dict], timezone: str = "America/Chicago") -
                 )
                 + " |"
             )
-    if run.get("closed"):
-        closed = run["closed"]
-        lines += [
-            "",
-            "## Closure",
-            "",
-            f"Closed incomplete at {local(closed['at'])}; this run is never a successful "
-            "migration. Event reconciliation was not completed.",
-            "",
-            f"Appliance task started: {closed['task_started']}. Task status at close: "
-            f"{closed['task_status']}. Overlap protection: {closed['overlap_protection']}.",
-            "",
-            "| Bucket | Destination evidence |",
-            "|---|---|",
-        ]
-        lines += [f"| `{key}` | {value} |" for key, value in closed["buckets"].items()]
-    if run.get("drift"):
-        lines += ["", "## Observed drift", ""] + [f"- {fact}" for fact in run["drift"]]
-    lines += ["", "## Service interventions", ""]
-    service_events = [e for e in events if e["kind"].startswith(("service_", "catalog_", "fixup_"))]
     lines += [
-        f"- {local(e['at'])}: {e['kind']} ({json.dumps(e['details'], sort_keys=True)})."
-        for e in service_events
-    ] or ["None."]
-    lines += ["", "## Next actions", ""] + [f"- {a}" for a in next_actions(run)]
+        "",
+        "Counts do not establish full event-content equality.",
+        "",
+        f"Audit events: {len(events)}. No source writes or destination bucket deletions.",
+    ]
     return "\n".join(lines) + "\n"

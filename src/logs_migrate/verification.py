@@ -1,4 +1,4 @@
-"""Bounded complete=true polling and explicit multiset accounting."""
+"""Two complete agreeing observations and per-day baseline/ingest accounting."""
 
 from collections import Counter
 from dataclasses import asdict
@@ -20,7 +20,7 @@ def stable_counts(
     for attempt in range(policy.attempts):
         result = env.count(scope, window, keys)
         require(result.scope == scope, Code.SCHEMA)
-        if result.complete and result.identity_complete:
+        if result.complete:
             if previous == result:
                 return result
             previous = result
@@ -33,18 +33,9 @@ def stable_counts(
 
 def reconcile(source: Counts, baseline: Counts, actual: Counts, ingest: Counts) -> dict:
     require(
-        all(c.complete and c.identity_complete for c in (source, baseline, actual, ingest)),
+        all(c.complete for c in (source, baseline, actual, ingest)),
         Code.INCOMPLETE,
     )
-    # Cohorts are evidence, not operator-supplied count adjustments. Source overlapping the
-    # baseline is blocked before copying; ingest duplicating source is still unexpected data.
-    require(not (set(dict(source.identities)) & set(dict(baseline.identities))), Code.OVERLAP)
-    expected_ids = Counter(dict(source.identities)) + Counter(dict(baseline.identities))
-    expected_ids += Counter(dict(ingest.identities))
-    actual_ids = Counter(dict(actual.identities))
-    missing = expected_ids - actual_ids
-    unexpected = actual_ids - expected_ids
-    duplicates = set(dict(ingest.identities)) & set(dict(source.identities))
     expected = Counter(dict(source.daily)) + Counter(dict(baseline.daily))
     expected += Counter(dict(ingest.daily))
     observed = dict(actual.daily)
@@ -60,12 +51,7 @@ def reconcile(source: Counts, baseline: Counts, actual: Counts, ingest: Counts) 
         }
         for day in sorted(set(expected) | set(observed))
     ]
-    success = (
-        not missing
-        and not unexpected
-        and not duplicates
-        and all(d["difference"] == 0 for d in daily)
-    )
+    success = all(d["difference"] == 0 for d in daily)
     months = {}
     for row in daily:
         month = months.setdefault(row["day"][:7], {"expected": 0, "actual": 0})
@@ -79,12 +65,11 @@ def reconcile(source: Counts, baseline: Counts, actual: Counts, ingest: Counts) 
         "new_ingest_count": ingest.total,
         "expected_count": sum(expected.values()),
         "actual_count": actual.total,
-        "missing_events": sum(missing.values()),
-        "unexpected_events": sum(unexpected.values()),
-        "duplicated_ingest_identities": len(duplicates),
         "daily": daily,
         "monthly": months,
-        "method": "Two agreeing complete observations; exact event-and-field multiset accounting",
+        "method": (
+            "Two agreeing complete observations; per-day counts including baseline and new ingest"
+        ),
         "evidence": {
             "source": asdict(source),
             "baseline": asdict(baseline),

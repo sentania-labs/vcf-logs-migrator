@@ -1,379 +1,142 @@
-# Engine and CLI: fixture delivery
+# CLI operator guide
 
-This first landing supplies the shared Python engine, an automation CLI, a durable
-journal, deterministic appliance simulation, read-only SSH transport, and REST
-authentication/request adapters. **Real appliance mutation is disabled.** There is
-no command-line override. No appliance was contacted to validate this client.
-
-The lab's API experiments establish the migration approach. They do not establish
-that this client, its response decoders, cancellation, or fixup are ready for live
-use. GUI implementation and standalone installers are separate deliveries.
+This delivery runs deterministic fixtures only. It does not connect the CLI to
+real appliances. The REST/SSH transport seams are separately tested, but typed
+live discovery, version-specific count queries, ingest attribution and migration
+response decoders still need qualification. No fixture result proves a real
+appliance migration safe. Sources are 8.18.x; destinations are 9.0.x or 9.1.1 preview.
 
 ## Install and exercise
 
-Python 3.11 or newer is required for this source distribution:
+Python 3.11 or later:
 
 ```sh
 python -m pip install .
-logs-migrate --help
-```
-
-Create a private workspace outside the checkout. The example fixture contains six
-sealed source events, one pre-existing destination event, one concurrent ingest
-event, and an excluded active bucket. It is synthetic, not a captured appliance
-response or a reproduction of the historical 2,429,018-event lab run.
-
-```sh
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture discover
-
+logs-migrate --journal /private/migration/run.sqlite \
+  --fixture tests/fixtures/sealed-populated.fixture partitions
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture plan \
   --since 2026-03-01T00:00:00Z --until 2026-04-01T00:00:00Z
 ```
 
-Read the returned JSON, including `id`, `plan_hash`, requested and whole-bucket
-coverage, active exclusions, partition differences, and storage reservations.
-Then use those exact values:
+Use the returned run UUID below. Dates must include a timezone. The end is
+exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so the
+preview includes both the requested interval and actual bucket coverage. Active
+buckets are always excluded. The last fully sealed day is reported in
+America/Chicago when bounds establish it; otherwise it is unknown.
+
+**No undo: migrated data stays on the destination. Snapshot the destination before
+continuing (snapshotting the source too is optional).** `--ack-backup` records the
+operator's attestation, not proof that a snapshot exists. Active exclusions require
+the exact acknowledgment below.
 
 ```sh
 logs-migrate --journal /private/migration/run.sqlite \
-  --fixture tests/fixtures/sealed-populated.fixture run RUN_ID \
-  --plan-hash PLAN_HASH --ack-backup \
+  --fixture tests/fixtures/sealed-populated.fixture run RUN_UUID \
+  --ack-backup \
   --ack-active "i understand you aren't going to copy the latest data"
-
 logs-migrate --journal /private/migration/run.sqlite \
-  --fixture tests/fixtures/sealed-populated.fixture verify RUN_ID
-
-logs-migrate --journal /private/migration/run.sqlite status RUN_ID
-logs-migrate --journal /private/migration/run.sqlite report RUN_ID --format markdown
-logs-migrate --journal /private/migration/run.sqlite report RUN_ID --format json
+  --fixture tests/fixtures/sealed-populated.fixture status
+logs-migrate --journal /private/migration/run.sqlite \
+  --fixture tests/fixtures/sealed-populated.fixture verify RUN_UUID
+logs-migrate --journal /private/migration/run.sqlite report RUN_UUID
+logs-migrate --journal /private/migration/run.sqlite report RUN_UUID --format json
 ```
 
-`copy` is an alias of `run`. Output is JSON on stdout, except Markdown reports.
-Errors are static reason codes on stderr. The report commands write to stdout;
-the operator controls where exports are saved. Protect redirected exports with
-owner-only file permissions or ACLs. Human report timestamps use America/Chicago.
-Query days use UTC. Every input timestamp requires an explicit offset or `Z`.
+`copy` and `start` are aliases for `run`. Start sends one API request and returns;
+completion and verification are separate observations. Partition differences are
+reported before start and prevent transfer until matching configuration exists.
+On 9.1.1, extracted fields are compared too. Creating configuration is the next
+delivery, not a hidden side effect of planning.
 
-The simulated remote appliance persists next to the journal in
-`run.simulated-state`; `--remote-state PATH` chooses a different location. Keep
-both files to resume a fixture across CLI processes. The SQLite journal uses WAL,
-FULL synchronous writes, a process lock and POSIX mode 600. Preserve its `-wal`
-and `-shm` companions while it is open. Use a private local filesystem directory;
-network filesystem lock/durability behavior is not qualified. Windows deployments
-also require owner-only directory/file ACL qualification before release.
+## Status belongs to the API
 
-## Planning and prerequisites
+`status` queries the destination's current task and per-node details on every
+invocation. It needs no run UUID or journal. For the simulator, use `--remote-state`
+to name the same simulated appliance without opening a journal:
 
-- Any half-open date range is allowed. Whole sealed buckets whose observed event
-  bounds intersect it are selected; a bucket's maximum timestamp is inclusive.
-  Late backfill can make coverage much wider than the request. Coverage bounds
-  are not a claim of continuous daily coverage.
-- Active buckets are never transferred or stopped. Unknown/stale active bounds
-  produce `last_fully_sealed_day: null`, displayed as unknown. The engine will
-  not manufacture a last sealed day from zero or stale metadata.
-- Unknown sealed bounds, incomplete manifests, source retention drift, changed
-  topology/identity, orphan destination directories, and conflicting bucket IDs
-  block execution. Directory and registration evidence must be reconciled by an
-  adapter; directory existence alone is never success.
-- Source and destination partition name, ID, criteria, ordering, and retention
-  must match. The preview shows missing/different definitions. `plan
-  --create-missing --ack-backup --partition-hash HASH` explicitly consents to the
-  routing/retention definitions shown by `discover`; use its exact
-  `partition_preparation_hash`. Changed definitions or identities revoke consent. A
-  successful POST is not proof that routing is active. Real partition creation
-  and any required rolling restart remain gated on live qualification.
-- On 9.1.1, required extracted fields must already exist. This delivery checks
-  them; it does not migrate extracted fields or other configuration.
-- Capacity uses each node's service repository budget and physical threshold,
-  plus `--reserve-bytes`, `--growth-bytes` and an allocation margin. Until the
-  vendor's MurmurHash variant/seed/node order is captured and qualified, the
-  conservative reservation requires each node to fit the entire batch. This can
-  reject a batch that an accurately modeled placement would fit. It does not
-  invent a placement algorithm or rely on the server's 95% cutoff.
-- Unknown prior transfer history blocks. API task status, including COMPLETED,
-  is not integrity evidence. A task can complete with skipped buckets.
+```sh
+logs-migrate --fixture tests/fixtures/sealed-populated.fixture \
+  --remote-state /private/migration/run.simulated-state status
+```
 
-Backup acknowledgment is bound to the plan fingerprint and recorded as an
-operator attestation. The tool never claims it independently verified snapshots.
+The result exposes task ID, API status, completed/skipped buckets, bytes and node
+observations. Rate is transferred bytes divided by API elapsed seconds; ETA uses
+remaining bytes and that average rate. Unknown elapsed time, total size or rate
+produces null estimates. These are relative estimates, not promises. The simulator
+uses configured poll intervals as synthetic elapsed time, not measured throughput.
+An API completion does not itself claim verified success.
 
-## Overlap, tail collection, and recovery
+The local journal stores plans, sent windows/bucket IDs, pre-transfer source and
+destination counts, verification evidence and operator audit events. It does not
+maintain running/stopped/recovery task states. Reports are historical evidence;
+query `status` for current progress. A later transfer replacing the current API
+task does not invalidate earlier count evidence.
 
-The transfer ledger survives crashes and blocks overlapping transfers, including
-selected bucket IDs that straddle adjacent windows. Adapters must include earlier
-external/UI transfers and hold exclusive destination ownership. A local journal
-alone cannot arbitrate multiple workstations and the official UI.
+An interrupted client or lost POST response does not imply a stopped task. Query
+status. Explicit cancellation uses the currently observed **API task ID**:
 
-On **9.0**, `plan --tail-of VERIFIED_RUN_ID` permits a new sealed tail in the same
-window only with unchanged source identity, destination node set, matching prior
-bucket manifests, and unambiguous history. Previously imported bucket IDs are
-accounted for rather than counted as new. The live variant additionally requires
-qualified deterministic placement and cross-node reconciliation.
+```sh
+logs-migrate --journal /private/migration/run.sqlite \
+  --fixture tests/fixtures/sealed-populated.fixture stop API_TASK_ID
+```
 
-On **9.1.1**, same-window tail reruns are blocked. Choose a window selecting no
-previously imported bucket. If overlapping bucket ranges make that impossible,
-the tail cannot safely be collected with this API. Merely choosing adjacent dates
-does not establish disjoint bucket selection.
+The wrapper checks that ID before cancelling, then returns the API's observation.
+It never automatically cancels a transfer because local inventory changed. There
+is no resume/close/reconcile workflow and no local recovery state to clear.
 
-`resume RUN_ID` reattaches to an existing task; it never repeats the POST.
-It also reconciles an uncertain partition-create request by observing matching
-definitions, without repeating creation. After that reconciliation, create a fresh
-migration plan. Unresolved preparation blocks other writes to the destination.
-An unacknowledged POST remains recovery-required when the returned task cannot
-be unambiguously attributed. Raw task correlation fields are not yet captured.
-`stop RUN_ID` requests cancellation of this run's known task and waits for a
-terminal observation. The request is honored as soon as the task identity matches,
-before any landed bucket is attested, so a bucket that fails attestation cannot keep
-a task running. Every bucket the task landed, including one that finished while the
-stop was in flight, is attested and recorded before the run becomes `STOPPED`. `stop`
-cancels even when revalidation fails, and a confirmed cancellation after a real
-cohort change records `PARTIAL` with the revalidation reason rather than
-`RECOVERY_REQUIRED`. A task that failed on its own records `PARTIAL`, not `STOPPED`. During `copy`, `resume` and `stop`, Ctrl-C only detaches the
-monitor, including while waiting out a lost connection: the run records
-`MONITOR_DETACHED` (exit 9), the appliance task keeps running, and `resume RUN_ID`
-reattaches by reading the server task. Ctrl-C before the task is started aborts
-with `interrupted_before_start` and starts nothing. Other commands keep the default
-interrupt behavior. Closing or losing the workstation does not
-stop an appliance task. Cancel never means rollback and never removes partial
-destination data.
+## Data protection and verification
 
-Only changes that affect the selected cohort or its target nodes cancel a running
-task: a changed selected source bucket or source topology, a changed destination
-identity, partition or extracted-field routing, and insufficient capacity. Routine
-destination events (the destination retiring one of its own buckets, a service
-restart, a changed destination retention setting) never interrupt a healthy
-transfer. They are recorded on the run as drift facts, listed in the report, and
-accounted for by `verify`. Other revalidation failures leave the task running and
-record `RECOVERY_REQUIRED`; `resume` or `stop` handles it.
+- Source operations are read-only. No source stop, bucket delete, overwrite or
+  manual-copy fallback exists in the engine path.
+- Sent windows and bucket IDs remain recorded even when the POST response was
+  lost or a transfer was cancelled. Repeating them is refused. Preserve the journal
+  for each destination; external transfer history must also be known. Do not start
+  overlapping transfers from another client. Adjacent windows selecting the same
+  whole bucket are also refused, especially on 9.1.1 where bucket IDs disappear.
+- A plan is checked against fresh inventory before start. Existing destination
+  bucket collisions, unknown history and incompatible partitions block transfer.
+- Verification uses complete=true and two agreeing count responses, then confirms
+  destination and ingest observations still agree. Missing or unstable evidence
+  returns incomplete, never success. An active overlapping or unknown API task
+  also prevents a successful verification.
+- For every UTC day in the copied bucket coverage, expected destination count is
+  source count plus pre-existing destination count plus new ingest. Pre-existing
+  ingest identities and their multiplicities are subtracted from the ingest cohort
+  using this run's own baseline. The fixture adapter supplies attribution;
+  unverifiable attribution must remain incomplete on a future live adapter.
+- Daily count equality is count evidence, not proof of identical message content,
+  partition routing or field extraction. A report preserves active exclusions and
+  does not authorize retiring source data that was not copied.
 
-A task that is still running is an expected state, not an uncertain one. The
-monitor polls every plan `--monitor-poll-seconds` (default 30) for as long as the
-task runs or makes progress. It records `RECOVERY_REQUIRED` only when the task state
-is genuinely unknown, or when the destination stays unreachable for the plan's
-`--contact-loss-seconds` (default 600).
-Task polls, inventory revalidation and bucket attestation all retry through that
-same window; a transient connection error never cancels a healthy task.
-`resume` and `stop` accept only running, detached or recovery-required runs, or an
-authorized run whose start intent was recorded (which becomes recovery-required
-because the POST outcome is unknown); any other state is rejected unchanged.
-Partition creation (`plan --create-missing`) also refuses while the destination
-reports a running task.
-A detached run does not block other destination runs by itself; the appliance's
-own running task and the overlap ledger do. `verify` refuses a detached run.
+No tail rerun bypass exists. Newly sealed data needs a non-overlapping window that
+selects no previously sent bucket. Some active data may never seal after ingest
+moves away; keep that source data available under the operator's retention plan.
 
-`status` reads the durable journal and labels it as journal-only observation.
-Use `resume` for live revalidation through the selected adapter. Unknown service
-state or an unresolved effect outranks ordinary progress and prevents new writes.
+## Exits and boundaries
 
-### Closing a run that cannot complete
-
-`close RUN_ID` is the explicit operator step for a run that ended `STOPPED`,
-`PARTIAL`, `FAILED` or `RECOVERY_REQUIRED` and cannot be completed, so that it does
-not block the destination forever. It never deletes or overwrites anything and
-never reports success. It:
-
-1. Re-reads the destination and refuses (`destination_busy`) while the task is
-   running.
-2. Records, per planned bucket, `landed` (attested earlier in the run, or attested
-   now on the destination, including by the live task on 9.1.1),
-   `unverified_destination_copy`, `absent`, or `unknown` where the inventory cannot
-   show buckets (9.1.1) and nothing was attested, plus whether the appliance task
-   started and its status. The run keeps its state and an unchanged verification
-   outcome, and `closed` appears in `status`, `report` and the JSON export with the
-   next actions "closed as incomplete". Its exit code stays non-zero when reported
-   by other commands; `close` itself exits 0.
-3. Releases only the `verification_pending` dependency, so a disjoint window may
-   start. Overlap protection stays for every bucket that landed or whose outcome
-   is uncertain, so the same window and shared bucket IDs remain refused.
-
-A run whose transfer fully landed is refused (`verification_pending`) because real
-verification is the way out: run `verify`. The exception is a run that was already
-verified successfully before an engine fix-up reset it; it can be closed, and a
-later successful `verify` supersedes the closure.
-
-A run in `RECOVERY_REQUIRED` whose start was never acknowledged (a crash or lost
-connection around the POST) is cleared only when the appliance task is unchanged
-since preflight, no selected bucket exists on any destination node, and no
-transfer history mentions a selected bucket. Then the run becomes `FAILED` and its
-window is released, because the start provably had no effect. On 9.1.1, where the
-inventory cannot prove absence, and in every other case the run stays
-`RECOVERY_REQUIRED` with `remote_outcome_uncertain` and needs manual reconciliation.
-The engine cannot yet attribute or cancel an unacknowledged running task, because
-raw task correlation fields are not captured; that remains a live-adapter
-prerequisite.
-
-For a conflicting or partial destination bucket:
-
-1. Preserve the directory, catalog, journal, and manifests.
-2. Inspect every destination node for the same ID and compare source/destination
-   contents. Do not rerun the overlapping API window.
-3. Use a clean destination or obtain a separately reviewed manual recovery
-   procedure. The engine never deletes or overwrites the conflict.
-
-## Verification
-
-The engine freezes the whole-bucket coverage and selected cohort, obtains two
-agreeing explicitly complete observations, and rejects missing completeness.
-The default separation is 30 seconds on the injected clock. Fixture clocks
-advance without sleeping. Verification query retries are bounded by the plan's
-`--attempts`; this is separate from task monitoring.
-
-Plan gates bind the endpoint identities, retention, partitions, extracted fields and
-the exact selected buckets (presence, status, size, counts and manifest) until the
-transfer starts and while it runs. Active bucket rotation is informational. A bucket that seals inside the window after
-planning is recorded as tail data and reported as not copied; it blocks only before
-the task starts, because the appliance would otherwise select it. On 9.0 plan the
-same window with `--tail-of`; on 9.1.1 plan a later run that selects no previously
-imported bucket.
-
-Expected destination content is the exact disjoint sealed source cohort plus
-the captured pre-existing destination baseline plus independently attributed new
-ingest. Events already in that run's baseline are excluded from its ingest cohort,
-including ingest retained from earlier runs. A new transfer to the same destination
-is blocked with `verification_pending` until earlier transfers have complete
-verification evidence or were closed, even for disjoint windows. Retry `verify` on
-a fully transferred earlier run, or `close` one that cannot complete, before starting
-the next transfer. A complete discrepancy report remains a discrepancy; it is not
-relabeled as success to release this guard.
-
-`verify` stands on the evidence persisted for the run: the terminal task observation,
-the source counts from the two agreeing pre-copy reads, and the captured baseline.
-It does not need the appliance's latest task to still be this run's. Routine drift
-after the copy is recorded rather than fatal: source retention aging out a migrated
-bucket, the destination restarting (including the engine's own fix-up), nodes added,
-or changed destination retention. A changed selected source bucket, a removed
-destination node, or any missing, unexpected or duplicated event still prevents
-verified success. A destination bucket retired by the destination's own retention
-shows up as missing pre-existing events, a verified discrepancy, because the engine
-cannot tell that from loss. A standalone `plan --fixup-existing` run is checked only
-by the fix-up's own before/after count equality; it cannot be passed to `verify`.
-
-The simulator verifies daily counts and event-and-field identity
-multiplicity. A missing event replaced by a duplicate fails even when totals
-agree. Unexplained retirement, missing baseline content, unstable ingest,
-ambiguous cohorts, or incomplete query evidence cannot yield verified success.
-Reports store only counts and identity digests, never raw log event text.
-
-Legacy count-only REST queries use frozen daily windows to avoid the 100-bin
-limit. Those counts alone do not satisfy the engine's multiset/cohort proof.
-The 9.1.1 query-response codec and exact attribution adapter still need captured,
-sanitized live schemas. The legacy query route is explicitly rejected for 9.1.1.
-
-Exit codes:
-
-| Code | Meaning |
+| Exit | Meaning |
 |---|---|
-| 0 | Command completed; `run` may still say `verification_pending` |
-| 2 | Invalid arguments |
-| 3 | Blocked prerequisite or unsupported capability |
-| 4 | Confirmed stopped task |
-| 5 | Partial result or verified discrepancy |
-| 6 | Incomplete verification |
-| 7 | Operation or verification failure |
-| 8 | Recovery required or uncertain remote outcome |
-| 9 | Monitor detached; the appliance task is still running |
+| 0 | Requested observation/action completed; inspect its result |
+| 2 | Invalid arguments/input |
+| 3 | Required acknowledgment, prerequisite or supported capability missing |
+| 5 | Complete count observations disagree |
+| 6 | Verification incomplete |
+| 7 | Operation failed |
+| 8 | API outcome uncertain or client interrupted; query status |
 
-`close` exits 0 when it recorded the closure; the run itself remains incomplete.
+Secrets have no argv flags. Adapter failures are reduced to fixed error codes;
+raw responses, credentials and exception strings must never enter reports or
+logs. Private journal files use restrictive permissions and writer locking.
 
-When a command fails after a run has reached a partial, stopped, detached, failed or
-recovery-required state, the exit code follows that persisted state rather than the
-error reason, and the stderr error names the run.
+The optional 9.0 fixup implementation is retained in `_set_aside_fixup.py`, marked
+set aside and not instantiable or exposed in CLI help/commands. Reintroduction
+requires separate review, typed source/destination capability boundaries, positive
+adapter qualification, trusted helper integrity, independent restart safeguards
+and actual appliance tests. The current migration path never stops services.
 
-`verify` returns zero only on verified success. `status` and `report` return zero
-when reading/exporting an unsuccessful run successfully; inspect their contents.
-Skipped active data is always reported separately from the verified sealed scope.
-
-## Optional 9.0 fixup
-
-After a fixture migration, use `fixup RUN_ID --plan-hash PLAN_HASH --ack-backup
---consent-node dst-1 --consent-node dst-2 --consent-node dst-3`, with the same
-global journal and fixture arguments. For pre-existing equal destination buckets,
-first use `plan --fixup-existing`; it creates a standalone fixup plan that cannot
-start a migration. A normal migration plan never silently adopts unrelated copies.
-
-The shared credential provider supports the later prompt “Same password on all
-N nodes?” or distinct per-node credentials. All credential checks finish before
-any stop. Every node must be healthy, only one stops at a time, and the primary
-goes last. The engine requires a verified helper, records a run-owned remote
-restoration marker, snapshots the catalog, checks the catalog remains intact,
-confirms partition/creation-time metadata, and checks service, REST, and complete
-query readiness before proceeding. Counts must remain unchanged.
-
-Buckets that would immediately expire under destination retention block fixup.
-Lengthen destination retention through an independently reviewed procedure or
-leave creation-time fixup unapplied. No acknowledgment overrides this block.
-
-Restoration runs in `finally`. A damaged catalog is the exception: restarting
-could compound loss, so the engine preserves the backup, holds the service, and
-records recovery-required. `recover-services RUN_ID` re-observes ownership and
-catalog safety before starting an engine-owned node. It never starts an unrelated
-stopped node. The simulator models an independent remote restorer; a real transient
-unit/helper must still pass workstation-loss and catalog-corruption lab tests.
-
-**The existing research helper has not proven safe reassignment of API-registered
-buckets from Default to another partition, or persistent creation-time updates.**
-Real fixup remains blocked. If it requires bucket deletion, it cannot be enabled
-under the current no-delete requirement. The simulator's metadata update is a
-contract test, not evidence that the vendor catalog supports that update.
-
-## Security and remaining release gates
-
-Run identifiers are generated UUIDs. Any other value for a run identifier argument
-is rejected without being echoed, so a mistakenly pasted secret never reaches the
-terminal, shell history output or CI logs. Errors that cross the engine boundary
-carry only a static code and no chained remote exception text.
-
-No passwords are accepted in argv or environment variables. Library credential
-providers use masked prompts or an input stream and keep values in memory only.
-Source SSH has a fixed read allowlist and no write/service-control method. HTTPS
-requires CA/hostname validation plus an enrolled certificate digest, checked before
-sending credentials. SSH requires an enrolled known-host key and digest before
-password authentication. Unknown/changed identities have no bypass.
-
-9.0 sessions use Bearer authentication. 9.1.1 exchanges an in-memory OpsToken for
-an `ops-li` JWT and uses `X-JWT-Token` at the Logs FQDN on 9543; both HTTPS endpoints
-must be enrolled. Safe GETs can refresh once; mutations are never replayed on an
-uncertain response. The exchange response decoder is injectable pending a genuine
-wire capture. Recorded transports do not retain authentication/request bodies.
-
-The official mover sends source root credentials to the destination. Use a
-temporary migration password and rotate it afterwards; the engine does not change
-source passwords. Credential leakage and destination-to-source host validation
-inside the vendor mover are not established by this client. Credential tests are
-sequential, stop at the first failure, and never retry failed SSH authentication.
-Check the source lockout policy before a future qualified run.
-
-Known prerequisites before any live adapter (not addressed in this fixture delivery):
-
-- The execution release gate is an `env.mode` check and the REST mutation allowlist
-  is host-agnostic. A live delivery needs a positive adapter qualification, a
-  source-only read client with no non-GET method, a destination-only client that
-  holds the mutations, and a test that no non-GET request reaches a source endpoint.
-- Restoration surviving loss of the controlling workstation, helper integrity
-  (hash verification, removal, build allowlist) and the `PROJECTS_ROOT` check are
-  simulator behavior only until real adapter code and lab tests exist.
-- Attribution and cancellation of an unacknowledged running task, space-based
-  retirement checks for fix-up, a guaranteed primary-node ordering from the adapter,
-  and OS crash-report suppression on Windows and macOS (packaging gate).
-- A fix-up count check that tolerates late in-window ingest. Today such ingest
-  fails closed with `integrity_mismatch`, leaves the nodes restored, and requires
-  `verify` and a fix-up re-run.
-
-Before enabling real operations, retain evidence for:
-
-- Exact task/query/auth schemas and full source/destination inventory reconciliation.
-- MurmurHash placement variant/seed/order and collision behavior on all nodes.
-- Mid-bucket cancel, node restart, partial directory, and 95% disk-limit outcomes.
-- Source command audit and canary-secret sweeps of logs, argv, stored state, and bundles.
-- Independent remote service restoration after workstation/SSH loss.
-- Catalog backup/superset integrity, safe Default reassignment, creation time and retention.
-- 9.1.1 partition readiness, field searchability, masking behavior, and query accounting.
-- OS-specific trust, crash reporting, private storage permissions, and locking.
-
-Capability labels: the engine/CLI simulation is **Experimental**; the historical
-8.18.7→9.0.2 API approach has **Validated lab evidence** at the documented builds;
-9.1.1 is **Experimental / preview**. Active copying, source stops, deletion,
-overwrite, and a fallback mover are **Unsupported**. Uncaptured wire formats,
-unqualified builds and 9.0→9.1.1 source migration are **Unknown**. No production
-readiness is inferred from fixture tests.
+Run `make check` and, after installing the package, `make smoke` for the same
+fixture checks used by CI. GUI, native packaging, live appliance qualification and
+configuration-rule migration are separate deliveries.

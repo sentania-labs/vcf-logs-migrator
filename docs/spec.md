@@ -3,11 +3,19 @@
 Date: 2026-11-06. Status: design draft. The engine and CLI landed as a fixture
 delivery with real appliance mutation disabled; shipped commands, flags and exit
 codes are in [`operator-cli.md`](operator-cli.md), which wins over this draft.
+The principal's later 2026-11-06 re-scope makes this delivery a tight API wrapper:
+date preview, start, direct API status/progress, per-day verification, partition
+comparison and a plain report. Local task/recovery states, close/reconcile,
+plan-hash gates and tail reruns described below are not shipped. Fixup is set aside
+and hidden; configuration migration follows in the next delivery. Only data
+protection guards and required backup/active-data attestations remain. The API is
+the sole authority for task progress, with local sent-bucket and count evidence.
+
 Basis: [`research-guide.md`](research-guide.md), [`lab-runs.md`](lab-runs.md),
 and the 2026-11-06 validation docs. The principal's 2026-11-06 interview
 decisions supersede the earlier manual copy design, kept in Appendix A.
 
-## 0. Current decisions
+## 0. Earlier design decisions (superseded where noted)
 
 1. **API-only mover for v1.** Use Broadcom's `/api/v2/data-migrations`.
    It has no 90-day cap, copies sealed buckets from every source node and
