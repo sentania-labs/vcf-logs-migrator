@@ -37,8 +37,9 @@ questions. These override the sections below where they disagree:
    manifest without an index entry. `status` reports: target service state,
    staged dirs, manifests, store dirs not in the index, index entries
    without a dir. `commit` rerun completes the job (proven).
-7. Verification waits for `complete=true` on both sides and busts the 9
-   query cache (results are cached for up to 300 s) before trusting a count.
+7. Verification waits for `complete=true` on both sides and for two counts
+   in a row to agree: both services return partial results for a minute or
+   so after a start.
 
 ## 1. Why
 
