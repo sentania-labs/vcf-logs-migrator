@@ -307,3 +307,9 @@ def test_start_notes_only_promise_no_post_for_pre_post_refusals():
     view = {"blockers": [], "needs_ack": False}
     assert vm.start_state(view, True, True, started=True)[0] is False
     assert "already submitted" in vm.start_state(view, True, True, started=True)[1]
+
+
+def test_format_time_renders_zone_local_time_without_platform_flags():
+    assert vm.format_time("2026-11-06T15:04:05+00:00", "America/Chicago") == "Nov 6, 09:04:05 CST"
+    assert vm.format_time("2026-03-02T01:02:03+00:00", "UTC") == "Mar 2, 01:02:03 UTC"
+    assert vm.format_time(None, "UTC") == vm.UNAVAILABLE

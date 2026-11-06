@@ -184,7 +184,7 @@ def format_time(iso: str | None, zone: str) -> str:
         local = parsed.astimezone(ZoneInfo(zone))
     except Exception:
         local = parsed.astimezone(UTC)
-    return local.strftime("%b %-d, %H:%M:%S %Z") if hasattr(local, "strftime") else iso
+    return f"{format_day(local)}, {local.strftime('%H:%M:%S %Z')}"
 
 
 def now_iso() -> str:
