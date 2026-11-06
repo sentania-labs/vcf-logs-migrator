@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vcf-logs-migrator"
+version = "0.1.0"
+description = "Evidence-driven historical log migration engine and CLI"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["tzdata>=2025.1"]
+
+[project.optional-dependencies]
+ssh = ["paramiko>=3.5"]
+gui = ["PySide6>=6.8"]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[project.scripts]
+logs-migrate = "logs_migrate.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/logs_migrate"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

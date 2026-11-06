@@ -1,93 +1,84 @@
-# vcf-logs-migrator
+# VCF Logs Migrator
 
-Moving log data from **Aria Operations for Logs 8.18** to **VCF Operations for
-Logs 9.0 and 9.1.1 (preview)** past the 90-day limit of Broadcom's Log Data Transfer.
+A shared Python engine and automation CLI for historical log migration from
+**Aria Operations for Logs 8.18.x** to **VCF Operations for Logs 9.0.x** and
+**9.1.1 preview**, including history older than 90 days.
 
-Status: **research and a spec, no tool yet.** Evidence includes single-node
-and multi-node lab runs with synthetic data, plus a 9.1.1 API run. Validation
-limits are recorded in the linked docs. It is not supported by Broadcom. Snapshot both sides before trying any of it.
+**Current delivery: engine and CLI with deterministic fixtures. Real appliance
+mutation is disabled pending safety and lab qualification.** The GUI and native
+installers are separate deliveries. This project is not supported by Broadcom.
 
-## The workflow
+The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
+sealed buckets by date, starts the transfer once, reads status directly from the
+API, checks partitions, verifies per-day counts, and produces Markdown/JSON reports.
+A small local record keeps sent buckets, baseline counts and audit evidence. There
+is no local task state machine. It never stops the source, deletes buckets,
+overwrites destination data, or falls back to manual copying.
 
-![Migration workflow](docs/images/migration-workflow.svg)
+## Try the fixture CLI
 
-Step by step: [`docs/migration-workflow.md`](docs/migration-workflow.md).
+```sh
+python -m pip install .
+logs-migrate --journal /private/migration/run.sqlite \
+  --fixture tests/fixtures/sealed-populated.fixture discover
+logs-migrate --journal /private/migration/run.sqlite \
+  --fixture tests/fixtures/sealed-populated.fixture plan \
+  --since 2026-03-01T00:00:00Z --until 2026-04-01T00:00:00Z
+```
 
-## The short version
+Use the returned run ID with `copy`, then query `status` and run
+`verify`. Status exposes API task and per-node observations, elapsed time, relative
+transfer rate and ETA when the API supplies enough data. `stop` explicitly cancels
+the observed API task by its task ID. The [CLI operator guide](docs/operator-cli.md)
+has the complete workflow, attestations, exit codes and qualification limits.
 
-- **Start here:** Broadcom's own transfer API (`/api/v2/data-migrations`, on 9.0 and 9.1.1) takes any time window; the 90-day limit is only in the UI. It is the only v1 mover; the planned tool adds planning, overlap guards, verification and optional 9.0 partition/creation-time fix-up. See [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md).
+API completion is not verified success: it can hide skipped data. Verification
+requires complete, agreeing counts and accounts for pre-existing data and new
+ingest. Active exclusions remain visible. Buckets already received (or in flight)
+are refused, including on 9.1.1 where no destination bucket store exists.
+Verification is cumulative per destination, so a later transfer never invalidates
+an earlier success.
 
-- 8.18 cannot upgrade in place to 9.x. The supported path is a new 9.0
-  appliance plus the Log Data Transfer in the 9.0 UI (Administration >
-  Control Panel > Logs Data Transfer), capped at the newest 90 days.
-- The API copies only sealed buckets and leaves the source untouched. Active
-  buckets are always skipped; the preview names the last fully sealed day.
-  The required acknowledgment is "i understand you aren't going to copy the
-  latest data". A later run of the same window collects the tail after
-  sealing, subject to overlap checks. A changed 9.0 destination node count
-  blocks reruns; 9.1 rerun dedupe is not validated.
-- Compare partitions on both targets and offer to create missing ones before
-  the run; check extracted fields too. Config migration beyond partitions
-  waits for a follow-on release. 9.1.1 uses an Ops token exchanged for a Logs
-  JWT and its query API for verification.
-- On 9.0, optional fix-up restores source partitions and creation times,
-  with per-node credentials and stop consent. Configure it before migration
-  or run it afterwards. 9.1 needs no fix-up; matching partition filters must
-  exist before importing. That routing is code-proven, not yet tested live.
-- Never delete destination data. A mismatched existing bucket blocks the
-  run and gets manual remediation steps printed.
-- Do **not** run the stock `bucket-tools --bucketMigrationStart` by hand: it
-  takes the active bucket by mtime and deletes every bucket on the source.
+Configuration migration (forwarding, partition, masking and filter rules) is the
+next delivery. This delivery only compares partitions and 9.1.1 extracted fields;
+it does not create rules. Existing fixup code is retained privately and **set
+aside**, unavailable from the engine/CLI, pending migration qualification.
 
-## What is here
+## Development
 
-| Path | What |
+Python 3.11+; the core and CLI do not import Qt. `gui` reserves the optional
+PySide6 dependency for the later GUI. `ssh` installs the optional Paramiko adapter.
+
+```sh
+python -m pip install '.[dev]'
+make check
+make smoke
+```
+
+`make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
+contracts, and simulated failures. `make smoke` drives the installed `logs-migrate`
+console script from a temporary directory through both fixture workflows. Linux CI
+installs the package and runs these same targets on pull requests and pushes to main.
+These checks do not contact appliances. In particular,
+fixture helper behavior does not prove that updating an already-registered vendor
+bucket is safe; fixup is not an enabled operation.
+
+## Research and historical evidence
+
+| Document | Evidence |
 |---|---|
-| [`docs/migration-workflow.md`](docs/migration-workflow.md) | The end-to-end workflow with `logs-migrate`, with the diagram |
-| [`docs/research-guide.md`](docs/research-guide.md) | The full guide: options (keep 8.18 as cold archive, bucket copy, archive import, replay), what was proven, the runbook with every command |
-| [`docs/lab-runs.md`](docs/lab-runs.md) | What was run, when, and the numbers |
-| [`docs/validation-2026-11-06.md`](docs/validation-2026-11-06.md) | Date selection, merge into a populated target, crash recovery, space, staging: tested |
-| [`docs/validation-2026-11-06-partitions-multinode.md`](docs/validation-2026-11-06-partitions-multinode.md) | Partition-aware registration (engineered and proven), creation-time fix, 3-node source and destination clusters |
-| [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md) | Broadcom's `/api/v2/data-migrations` on 9.0 and 9.1.1: no 90-day cap in the API, how 9.1 re-indexes legacy buckets into OpenSearch, what it loses |
-| [`docs/config-migration.md`](docs/config-migration.md) | Config migration 8.18 to 9.0: forwarders, masking, partitions, users, alerts, content; what moves by REST and what is manual |
-| [`docs/spec.md`](docs/spec.md) | Draft spec for `logs-migrate`: plan / copy / verify, date-based preview ("import back to this date") |
-| [`scripts/bucket-migrate.sh`](scripts/bucket-migrate.sh) | Prototype: `stage` (live, verified, resumable) and `commit` (target stopped), `status` |
-| [`scripts/PartitionBucketAdd.java`](scripts/PartitionBucketAdd.java), [`scripts/partition-add.sh`](scripts/partition-add.sh) | Register buckets into a named partition with a chosen creation time (target stopped) |
-| [`scripts/bucket-copy.sh`](scripts/bucket-copy.sh) | First copy script (superseded: registers with the target running) |
-| [`scripts/count-events.py`](scripts/count-events.py) | Per-day / per-month event counts over REST, for before and after |
-| [`scripts/replay.py`](scripts/replay.py) | Replay events between instances through the agent-format ingest, keeping timestamps |
-| [`scripts/synth/`](scripts/synth/) | Synthetic data generators used for the tests (ESXi syslog, mixed syslog) |
+| [Official API validation](docs/validation-2026-11-06-official-api.md) | 9.0/9.1.1 requests, placement, dedupe, disk skips, active exclusions, partition behavior |
+| [Partitions and multi-node validation](docs/validation-2026-11-06-partitions-multinode.md) | Partition registration, creation time, three-node source and target experiments |
+| [Validation run](docs/validation-2026-11-06.md) | Date selection, populated targets, retention and interrupted manual transfers |
+| [Lab runs](docs/lab-runs.md) | Historical experiments, including the manual 2,429,018-event run |
+| [Research guide](docs/research-guide.md) | Original investigation and experimental procedures |
+| [Config migration](docs/config-migration.md) | Config API findings; broader config migration is outside this delivery |
+| [Specification](docs/spec.md) | Product design and historical appendix; the operator guide describes shipped commands |
 
-## Superseded manual copy prototype (reference only)
+The files under `scripts/` are historical research prototypes, not this CLI's
+execution path. Some contain source stops, insecure transport or deletion flows.
+Do not use them as production operator instructions. The engine invokes none of
+them, including the destructive stock bucket migration command.
 
-This is the earlier manual path, outside v1 and not a fallback. Its source
-stop procedure is superseded by always skipping active buckets. The current
-API-only requirements are in [`docs/spec.md`](docs/spec.md).
-
-Historical commands from [`docs/research-guide.md`](docs/research-guide.md)
-section 4.3:
-
-```
-# 1. source (8.18), as root: which buckets hold data, and retention settings
-bucket-index show
-du -sh /storage/core/loginsight/cidata/store/*-*-*-*-*
-grep -o '<retention[^>]*>' /storage/core/loginsight/config/loginsight-config.xml#*
-
-# 2. baseline counts
-LI_PASS=... LI_OUT=before.json scripts/count-events.py <8.18 node> 300
-
-# 3. stage with both sides running (sealed buckets), then commit
-ssh root@<9> "SSHPASS=... /root/bucket-migrate.sh stage <8.18 ip> <bucket id> ..."
-#    active buckets: stop 8.18, stage them, start 8.18
-ssh root@<9> /root/bucket-migrate.sh commit     # stops 9, moves + registers, starts 9
-
-# 4. verify (wait for the source to finish warming up before comparing)
-LI_PASS=... LI_OUT=after.json scripts/count-events.py <9 node> 300
-```
-
-Content (dashboards, alerts, extracted fields, agent groups) does not travel
-with buckets; move it as a content pack.
-
-## License
-
-MIT
+MIT licensed. No production-readiness claim is made from fixture tests or the
+recorded lab results alone.

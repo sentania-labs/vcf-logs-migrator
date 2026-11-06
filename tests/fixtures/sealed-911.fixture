@@ -1,0 +1,215 @@
+{
+  "fixture_schema": "logs-migrate.simulator.v1",
+  "fixture_id": "sealed-populated-911-v1",
+  "source": {
+    "id": "src-cluster",
+    "version": "8.18.7",
+    "nodes": [
+      {
+        "id": "src-1",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      },
+      {
+        "id": "src-2",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      }
+    ],
+    "partitions": [
+      {
+        "name": "Default",
+        "id": "",
+        "criteria": "",
+        "retention_seconds": 0,
+        "order": 0
+      }
+    ],
+    "fields": [
+      "appname",
+      "dataset"
+    ],
+    "buckets": [
+      {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "node": "src-1",
+        "partition": "",
+        "status": "archived",
+        "size": 1000,
+        "messages": 2,
+        "start": 1772323200000,
+        "end": 1772323201000,
+        "manifest": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+        "bounds_proven": true,
+        "complete": true
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000002",
+        "node": "src-2",
+        "partition": "",
+        "status": "archived",
+        "size": 1000,
+        "messages": 2,
+        "start": 1772409600000,
+        "end": 1772409601000,
+        "manifest": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+        "bounds_proven": true,
+        "complete": true
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000003",
+        "node": "src-1",
+        "partition": "",
+        "status": "archived",
+        "size": 1000,
+        "messages": 2,
+        "start": 1772496000000,
+        "end": 1772496001000,
+        "manifest": "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+        "bounds_proven": true,
+        "complete": true
+      },
+      {
+        "id": "00000000-0000-0000-0000-000000000004",
+        "node": "src-1",
+        "partition": "",
+        "status": "active",
+        "size": 0,
+        "messages": 0,
+        "start": null,
+        "end": null,
+        "manifest": null,
+        "bounds_proven": false,
+        "complete": false
+      }
+    ],
+    "identity": "src-tls-enrollment-v1",
+    "history_complete": true
+  },
+  "destination": {
+    "id": "dst-cluster",
+    "version": "9.1.1",
+    "nodes": [
+      {
+        "id": "dst-1",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      },
+      {
+        "id": "dst-2",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      },
+      {
+        "id": "dst-3",
+        "capacity": 1000000000,
+        "used": 1000000,
+        "repository_available": 900000000,
+        "service": "running"
+      }
+    ],
+    "partitions": [
+      {
+        "name": "Default",
+        "id": "",
+        "criteria": "",
+        "retention_seconds": 0,
+        "order": 0
+      }
+    ],
+    "fields": [
+      "appname",
+      "dataset"
+    ],
+    "buckets": [],
+    "identity": "dst-tls-enrollment-v1",
+    "history_complete": true
+  },
+  "source_events": [
+    {
+      "id": "event-0-0",
+      "time": 1772323200000,
+      "bucket": "src-1/00000000-0000-0000-0000-000000000001",
+      "fields": {
+        "appname": "fixture-vpxa",
+        "dataset": "historical"
+      }
+    },
+    {
+      "id": "event-0-1",
+      "time": 1772323201000,
+      "bucket": "src-1/00000000-0000-0000-0000-000000000001",
+      "fields": {
+        "appname": "fixture-vpxa",
+        "dataset": "historical"
+      }
+    },
+    {
+      "id": "event-1-0",
+      "time": 1772409600000,
+      "bucket": "src-2/00000000-0000-0000-0000-000000000002",
+      "fields": {
+        "appname": "fixture-vpxa",
+        "dataset": "historical"
+      }
+    },
+    {
+      "id": "event-1-1",
+      "time": 1772409601000,
+      "bucket": "src-2/00000000-0000-0000-0000-000000000002",
+      "fields": {
+        "appname": "fixture-vpxa",
+        "dataset": "historical"
+      }
+    },
+    {
+      "id": "event-2-0",
+      "time": 1772496000000,
+      "bucket": "src-1/00000000-0000-0000-0000-000000000003",
+      "fields": {
+        "appname": "fixture-vpxa",
+        "dataset": "historical"
+      }
+    },
+    {
+      "id": "event-2-1",
+      "time": 1772496001000,
+      "bucket": "src-1/00000000-0000-0000-0000-000000000003",
+      "fields": {
+        "appname": "fixture-vpxa",
+        "dataset": "historical"
+      }
+    }
+  ],
+  "destination_events": [
+    {
+      "id": "preexisting-1",
+      "time": 1772323200000,
+      "bucket": "unrelated",
+      "fields": {
+        "dataset": "existing"
+      },
+      "cohort": "baseline"
+    }
+  ],
+  "ingest_during_run": [
+    {
+      "id": "live-1",
+      "time": 1772323202000,
+      "bucket": "live",
+      "fields": {
+        "dataset": "live"
+      },
+      "cohort": "ingest"
+    }
+  ],
+  "artifact_verified": true
+}
