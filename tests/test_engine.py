@@ -739,3 +739,30 @@ def test_verify_refuses_a_run_whose_monitor_died_and_resume_reattaches(rig):
     assert journal.load(run["id"])["state"] == State.RUNNING
     assert engine.resume(run["id"])["state"] == State.VERIFYING
     assert engine.verify(run["id"])["state"] == State.VERIFIED
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_detach_inside_resume_precheck_records_detached_state(rig, stop):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    detach_on(engine, "transfer_start_observed")
+    execute(engine, run)
+    saved = journal.load(run["id"])
+    saved["state"] = State.RUNNING.value
+    journal.save(saved, "simulated_dead_monitor")
+    flaky_discover(env, 10**6)
+    actor = Engine(env, journal, engine.clock)
+    actor.on_event = lambda e: (
+        actor.request_detach() if e["kind"] == "monitor_contact_lost" else None
+    )
+    if stop:
+        actor.request_stop()
+    result = actor.resume(run["id"])
+    assert result["state"] == State.MONITOR_DETACHED
+    assert journal.load(run["id"])["state"] == State.MONITOR_DETACHED
+    assert env.data["task"]["status"] == "running"
+    assert "cancel" not in operations(env)
+    from logs_migrate.cli import exit_code
+
+    assert exit_code(result) == 9

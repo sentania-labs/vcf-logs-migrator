@@ -537,6 +537,9 @@ class Engine:
                 try:
                     self._contact(run, lambda: self._live(run, during=True))
                 except _Detach:
+                    require(run["transfer"] is not None, Code.UNCERTAIN)
+                    if run["state"] == State.RUNNING:
+                        self.journal.transition(run, State.MONITOR_DETACHED)
                     return run
                 except MigrationError as error:
                     if (
