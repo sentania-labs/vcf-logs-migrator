@@ -102,3 +102,29 @@ captured (the Ops UI login form could not be automated cleanly).
 | Reruns / overlap | Per-node dedupe only: plan non-overlapping windows, or verify per id across nodes before | Not tested; re-ingest would duplicate documents |
 | Custom fields | Kept, searchable | Kept in `_source`, searchable only where 9.1 maps them; create extracted fields first |
 | What the tool adds | Planner (window to buckets, preview), cross-node dedupe check, verification, partition and creation-time fix-up | Planner, preview, verification (counts against source `messages`), field mapping prep |
+
+## Code reading: where migrated data lands (2026-11-06 PM)
+
+Read from the shipped 9.0.2 jars and the 9.1.1 `ops-logs` service jar (decompiled with CFR 0.152). Class and method names are given so the result can be re-checked on a later release. No code is reproduced here.
+
+### 9.0: always Default, creation time = now (by design)
+
+- `DataMigrationProvider.startMigration` lists the source buckets on every source node over SSH, keeps the ones whose range overlaps the window, and assigns each bucket to a destination node by `MurmurHash3(bucket uuid) % node count`.
+- `DataMigrationTaskDaemon` (one per destination node) copies each bucket and registers it. Its bucket factory **ignores the source partition** and hard-codes `DataPartitionDef.getDefaultPartitionId()`, with `BucketId(id, System.currentTimeMillis())` and status ARCHIVED. So partition loss and createTime=now are both deliberate, and no source-side setting changes them. A lab test of "secops on the source" would only confirm this, so it was not run.
+- Dedupe is `Files.notExists(<store>/<uuid>)` on the **assigned node only**. The assignment is deterministic for a given node count, so a re-run with the same cluster size lands on the same node and is skipped. Duplicates appear when the destination node count changes between runs (what happened in our test: 1 node, then 3).
+- **Trap:** at 95% disk use the task stops copying, logs the skipped buckets, and still sets status **COMPLETED**. COMPLETED does not mean everything moved; verify counts.
+- Consequence for the tool: keep PartitionBucketAdd for 9.0 (partition plus creation-time fix-up), and refuse to re-run a window after the destination's node count changed.
+
+### 9.1: per-event partition routing applies
+
+- `DataMigrationTaskScheduler` copies each bucket to a temp dir and calls `LegacyImportService.importLegacyBucketBySegment`. That reads the legacy blob and hands batches of 5,000 to `IndexingTaskProcessor.submit`, the normal indexing path.
+- `OpenSearchIndexer.index` evaluates every partition's criteria against each event in order. **First match wins**. With no match the event goes to the Default index.
+- So on 9.1, **create the partitions (with the same filters) before migrating** and historical events land in the right partition. Our 11-06 prod run had no matching partition, which is why everything went to Default. This is not yet proven live.
+- Timestamps: the converter sets both `logDate` and `ingestDate` to the original event time, which matches the original timestamps we observed.
+- The path enters after the parsing pipeline (the post-pipeline queue), so ingest-time processing such as masking and forwarding is probably **not** applied to migrated events. That is inferred, not tested.
+- Separate feature, not a migration path: `LogImportWorker` with `legacy=true` (`importLegacyBucketToArchivePartition`) imports archive buckets into the "Archived Logs" import partition (`li-next-import`), which purges after 7 days. That is the archive-restore view, not a home for migrated history.
+
+### Still to prove live
+
+1. On 9.1.1, create a partition whose filter matches one synthetic dataset, migrate a short window, and confirm it lands in that partition's data stream.
+2. On 9.1.1, confirm whether a masking rule applies to migrated events.
