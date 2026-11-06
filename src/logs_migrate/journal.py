@@ -69,7 +69,7 @@ class Journal:
             at TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS transfers (
             run TEXT PRIMARY KEY, source TEXT NOT NULL, destination TEXT NOT NULL,
-            start INTEGER NOT NULL, end INTEGER NOT NULL, body TEXT NOT NULL);
+            body TEXT NOT NULL);
         """)
         require(self.db.execute("SELECT version FROM metadata").fetchall() == [(1,)], Code.STORAGE)
 
@@ -104,31 +104,48 @@ class Journal:
             raise MigrationError(Code.STORAGE) from None
 
     def record_transfer(self, run: dict):
+        """Ledger row written before the POST: the selection is in flight until settled."""
         plan = run["plan"]
+        keys = [b["node"] + "/" + b["id"] for b in plan["selected"]]
         self.db.execute(
-            "INSERT INTO transfers VALUES (?,?,?,?,?,?)",
+            "INSERT INTO transfers VALUES (?,?,?,?)",
             (
                 run["id"],
                 plan["source"]["id"],
                 plan["destination"]["id"],
-                plan["window"]["start"],
-                plan["window"]["end"],
-                canonical(
-                    {
-                        "destination_nodes": [n["id"] for n in plan["destination"]["nodes"]],
-                        "bucket_ids": [b["id"] for b in plan["selected"]],
-                        "coverage": plan["coverage"],
-                        "plan_hash": run["plan_hash"],
-                    }
-                ),
+                canonical({"keys": keys, "closed": False, "received": []}),
             ),
         )
 
+    def settle_transfer(self, run_id: str, received: list[str]):
+        """Replace the in-flight selection with the bucket keys the API reported as transferred."""
+        try:
+            self.db.execute(
+                "UPDATE transfers SET body=? WHERE run=?",
+                (
+                    canonical(
+                        {
+                            "keys": self._transfer_body(run_id)["keys"],
+                            "closed": True,
+                            "received": sorted(received),
+                        }
+                    ),
+                    run_id,
+                ),
+            )
+        except sqlite3.Error:
+            raise MigrationError(Code.STORAGE) from None
+
+    def _transfer_body(self, run_id: str) -> dict:
+        row = self.db.execute("SELECT body FROM transfers WHERE run=?", (run_id,)).fetchone()
+        require(row is not None, Code.INVALID_INPUT)
+        return json.loads(row[0])
+
     def transfers(self, destination: str) -> list[dict]:
         return [
-            {"run": r, "source": s, "start": a, "end": b, **json.loads(body)}
-            for r, s, a, b, body in self.db.execute(
-                "SELECT run,source,start,end,body FROM transfers WHERE destination=?",
+            {"run": r, "source": s, **json.loads(body)}
+            for r, s, body in self.db.execute(
+                "SELECT run,source,body FROM transfers WHERE destination=? ORDER BY rowid",
                 (destination,),
             )
         ]

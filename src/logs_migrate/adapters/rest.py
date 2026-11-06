@@ -186,10 +186,6 @@ class Logs90:
     def partitions(self):
         return self.call("GET", "/api/v1/partitioning")
 
-    def create_partition(self, body: dict):
-        require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
-        return self.call("POST", "/api/v1/partitioning", body)
-
     def daily_counts(self, window: Window) -> dict[str, int]:
         """One frozen daily interval per request: avoids the legacy 100-bin response cap.
 

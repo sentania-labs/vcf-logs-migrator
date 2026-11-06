@@ -14,6 +14,7 @@ from .errors import Code, require
 
 ACTIVE_ACK = "i understand you aren't going to copy the latest data"
 DAY = 86_400_000
+EVERYTHING_END = 2**53
 
 
 def canonical(value: object) -> str:
@@ -40,7 +41,6 @@ class Verification(StrEnum):
     SUCCESS = "verified_success"
     DISCREPANCY = "verified_discrepancy"
     INCOMPLETE = "incomplete_verification"
-    FAILURE = "verification_failure"
 
 
 _LABEL = re.compile(r"[A-Za-z0-9._:-]{0,128}")
@@ -179,10 +179,6 @@ class Cluster:
     @property
     def preview(self) -> bool:
         return self.version.startswith("9.1.1")
-
-    @property
-    def identity_fingerprint(self) -> str:
-        return digest([self.id, self.version, self.identity, sorted(n.id for n in self.nodes)])
 
     @classmethod
     def from_dict(cls, data: dict) -> Cluster:

@@ -10,6 +10,7 @@ from logs_migrate.engine import Engine
 from logs_migrate.errors import Code, MigrationError
 from logs_migrate.models import ACTIVE_ACK, DAY, Counts, Policy, Window
 from logs_migrate.ports import Transfer
+from logs_migrate.reporting import markdown
 from logs_migrate.verification import reconcile, stable_counts
 
 
@@ -42,19 +43,89 @@ def test_api_flow_preserves_source_and_verifies_daily_counts(rig, fixture_name):
     assert "state" not in journal.load(run["id"])
 
 
-def test_two_disjoint_transfers_remain_independently_verifiable(rig):
+def test_verification_is_cumulative_and_a_later_transfer_never_invalidates_an_earlier_success(rig):
     engine, env, _ = rig
     start = env.data["source"]["buckets"][0]["start"]
     first = engine.plan(Window(start, start + DAY), Policy(poll_seconds=0))
     execute(engine, first)
     assert engine.status()["status"] == "completed"
+    before = engine.verify(first["id"])
+    assert before["outcome"] == "verified_success" and before["source_count"] == 2
     second = engine.plan(Window(start + DAY, start + 3 * DAY), Policy(poll_seconds=0))
     execute(engine, second)
     assert engine.status()["id"] == "sim-2"
-    for run, count in [(first, 2), (second, 4)]:
+    for run in (first, second):
         result = engine.verify(run["id"])
         assert result["outcome"] == "verified_success"
-        assert result["source_count"] == count
+        assert result["source_count"] == 6 and result["actual_count"] == result["expected_count"]
+        assert len(result["buckets"]["covered"]) == 3 and not result["buckets"]["not_received"]
+        assert len(result["covered_days"]) == 3
+
+
+def test_transfers_with_intersecting_coverage_verify_without_double_counting(rig):
+    engine, env, _ = rig
+    hour = 3_600_000
+    buckets = env.data["source"]["buckets"]
+    origin = buckets[0]["start"]
+    buckets[0]["end"] = origin + 10 * hour
+    buckets[1]["start"], buckets[1]["end"] = origin + 5 * hour, origin + 20 * hour
+    for event in env.data["source_events"]:
+        if event["bucket"].endswith("2"):
+            event["time"] = origin + 17 * hour + event["time"] % 1000
+    first = engine.plan(Window(origin, origin + hour), Policy(poll_seconds=0))
+    second = engine.plan(Window(origin + 15 * hour, origin + 16 * hour), Policy(poll_seconds=0))
+    assert {b["id"] for b in first["plan"]["selected"]}.isdisjoint(
+        b["id"] for b in second["plan"]["selected"]
+    )
+    execute(engine, first)
+    assert engine.status()["status"] == "completed"
+    execute(engine, second)
+    assert engine.status()["status"] == "completed"
+    for run in (first, second):
+        result = engine.verify(run["id"])
+        assert result["outcome"] == "verified_success"
+        assert result["preexisting_count"] == 1 and result["new_ingest_count"] == 2
+
+
+def test_stopped_transfer_records_only_what_landed_and_the_remainder_can_be_replanned(rig):
+    engine, env, _ = rig
+    start = env.data["source"]["buckets"][0]["start"]
+    env.data["destination"]["version"] = "9.1.1"
+    env.data["cancel_after"] = 1
+    first = engine.plan(Window(start, start + 3 * DAY), Policy(poll_seconds=0))
+    assert len(first["plan"]["selected"]) == 3
+    execute(engine, first)
+    stopped = engine.status()
+    assert stopped["status"] == "cancelled" and len(stopped["completed"]) == 1
+    landed = stopped["completed"][0].rsplit("/", 1)[-1]
+    with pytest.raises(MigrationError) as error:
+        engine.plan(Window(start, start + 3 * DAY), Policy(poll_seconds=0))
+    assert error.value.code == Code.OVERLAP
+    del env.data["cancel_after"]
+    remainder = engine.plan(Window(start + DAY, start + 3 * DAY), Policy(poll_seconds=0))
+    remaining = {b["id"] for b in remainder["plan"]["selected"]}
+    assert landed not in remaining and len(remaining) == 2
+    execute(engine, remainder)
+    assert engine.status()["status"] == "completed"
+    result = engine.verify(first["id"])
+    assert result["outcome"] == "verified_success"
+    assert len(result["buckets"]["covered"]) == 3 and result["source_count"] == 6
+
+
+def test_in_flight_selection_blocks_overlap_until_the_api_reports_what_landed(rig):
+    engine, env, _ = rig
+    start = env.data["source"]["buckets"][0]["start"]
+    env.data["complete_after_polls"] = 100
+    execute(engine, engine.plan(Window(start, start + DAY), Policy(poll_seconds=0)))
+    with pytest.raises(MigrationError) as error:
+        engine.plan(Window(start, start + 3 * DAY), Policy(poll_seconds=0))
+    assert error.value.code == Code.OVERLAP
+    assert (
+        engine.verify(next(iter(engine.journal.db.execute("SELECT run FROM transfers")))[0])[
+            "reason"
+        ]
+        == Code.BUSY
+    )
 
 
 @pytest.mark.parametrize("old_count", [1, 3])
@@ -277,16 +348,20 @@ def test_presentation_callback_failure_cannot_abort_an_api_start(rig):
     assert engine.status()["status"] == "completed"
 
 
-def test_api_completed_with_skips_is_a_count_discrepancy(rig):
-    engine, env, _ = rig
+def test_api_skipped_bucket_is_reported_as_not_received_in_result_and_report(rig):
+    engine, env, journal = rig
     run = planned(engine)
-    env.data["skip_buckets"] = [env.data["source_events"][0]["bucket"]]
+    skipped = env.data["source_events"][0]["bucket"]
+    env.data["skip_buckets"] = [skipped]
     execute(engine, run)
     status = engine.status()
-    assert status["status"] == "completed" and status["skipped"]
+    assert status["status"] == "completed" and list(status["skipped"]) == [skipped]
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_discrepancy"
-    assert result["expected_count"] - result["actual_count"] == 2
+    assert result["outcome"] == "verified_success"
+    assert result["buckets"]["not_received"] == [skipped]
+    assert skipped not in result["buckets"]["covered"] and result["source_count"] == 4
+    text = markdown(journal.load(run["id"]), journal.events(run["id"]))
+    assert f"selected but not received: {skipped}" in text
 
 
 def test_destination_restart_or_inventory_drift_does_not_cancel_transfer(rig):
@@ -328,28 +403,6 @@ def test_plan_shows_space_and_copy_refuses_when_a_node_cannot_hold_the_selection
         execute(engine, short)
     assert error.value.code == Code.CAPACITY
     assert not env.data["trace"]
-
-
-def test_intersecting_coverage_waits_for_the_earlier_run_to_verify(rig):
-    engine, env, _ = rig
-    hour = 3_600_000
-    buckets = env.data["source"]["buckets"]
-    origin = buckets[0]["start"]
-    buckets[0]["end"] = origin + 10 * hour
-    buckets[1]["start"], buckets[1]["end"] = origin + 5 * hour, origin + 20 * hour
-    first = engine.plan(Window(origin, origin + hour), Policy(poll_seconds=0))
-    second = engine.plan(Window(origin + 15 * hour, origin + 16 * hour), Policy(poll_seconds=0))
-    assert {b["id"] for b in first["plan"]["selected"]}.isdisjoint(
-        b["id"] for b in second["plan"]["selected"]
-    )
-    execute(engine, first)
-    assert engine.status()["status"] == "completed"
-    with pytest.raises(MigrationError) as error:
-        execute(engine, second)
-    assert error.value.code == Code.VERIFICATION_PENDING
-    assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
-    assert engine.verify(first["id"])["outcome"] == "verified_success"
-    assert execute(engine, second)["task"]["status"] == "running"
 
 
 @pytest.mark.parametrize("field,value", [("id", "other-cluster"), ("identity", "re-enrolled")])

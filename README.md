@@ -34,9 +34,10 @@ has the complete workflow, attestations, exit codes and qualification limits.
 
 API completion is not verified success: it can hide skipped data. Verification
 requires complete, agreeing counts and accounts for pre-existing data and new
-ingest. Active exclusions remain visible. Overlapping windows and previously sent
-buckets are refused, including on 9.1.1 where no destination bucket store exists.
-A later disjoint transfer does not prevent verifying an earlier run.
+ingest. Active exclusions remain visible. Buckets already received (or in flight)
+are refused, including on 9.1.1 where no destination bucket store exists.
+Verification is cumulative per destination, so a later transfer never invalidates
+an earlier success.
 
 Configuration migration (forwarding, partition, masking and filter rules) is the
 next delivery. This delivery only compares partitions and 9.1.1 extracted fields;

@@ -24,12 +24,20 @@ appliance evidence, which is separate from this engine's test results.
    active data; it does not substitute for current API status or authorize removal
    of uncopied source data.
 
-A small local sent-window/bucket record prevents overlap, including adjacent
-windows selecting the same wide bucket. It is retained after cancellation or a
-lost response. There is no local task state machine, close/reconcile procedure or
-tail-rerun bypass. Earlier disjoint runs remain verifiable after the API starts a
-later task, using each run's own baseline. A transfer whose whole-bucket coverage
-intersects an earlier unverified transfer is refused until that run verifies.
+A small local bucket-ID ledger prevents sending a bucket twice, including
+adjacent windows selecting the same wide bucket. While a task runs, or if its POST
+response was lost, its whole selection is held. Once the API reports the task
+finished, the ledger keeps only the buckets it actually transferred, so a stopped,
+cancelled or failed task leaves the remainder free to plan again. Ledger updates
+happen when `plan`, `copy`, `verify` or a journal-backed `status`/`stop` observes
+the finished task. There is no local task state machine, close/reconcile procedure
+or tail-rerun bypass.
+
+Verification is cumulative per destination: one result for everything the API has
+reported as received so far, with expected counts attributed per received bucket.
+Re-running it after a later transfer recomputes the cumulative result and never
+turns an earlier success into a discrepancy. The result lists covered and
+not-received buckets and covered days; a running transfer makes it incomplete.
 
 Active buckets may never seal after ingestion moves away. Leave uncopied data
 available under the operator's retention plan. Fixup is set aside and hidden until

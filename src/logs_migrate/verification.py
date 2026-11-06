@@ -31,6 +31,20 @@ def stable_counts(
     raise MigrationError(Code.INCOMPLETE)
 
 
+def combine(parts: list[Counts], scope: str) -> Counts:
+    daily: Counter = Counter()
+    identities: Counter = Counter()
+    for part in parts:
+        daily.update(dict(part.daily))
+        identities.update(dict(part.identities))
+    return Counts(
+        all(part.complete for part in parts),
+        tuple(sorted(daily.items())),
+        tuple(sorted(identities.items())),
+        scope,
+    )
+
+
 def reconcile(source: Counts, baseline: Counts, actual: Counts, ingest: Counts) -> dict:
     require(
         all(c.complete for c in (source, baseline, actual, ingest)),

@@ -86,6 +86,8 @@ def main(argv=None):
         if args.command in {"plan", "copy", "verify", "report"}:
             require(args.journal is not None, Code.INVALID_INPUT)
             journal = Journal(args.journal)
+        elif args.command in {"status", "stop"} and args.journal is not None:
+            journal = Journal(args.journal)
         if args.command == "report":
             run, events = journal.load(args.run_id), journal.events(args.run_id)
             if args.format == "markdown":

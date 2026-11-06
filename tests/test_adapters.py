@@ -97,8 +97,6 @@ def test_all_non_fixture_mutations_are_release_gated():
     with pytest.raises(MigrationError, match="unsupported"):
         client.cancel_migration()
     with pytest.raises(MigrationError, match="unsupported"):
-        client.create_partition({})
-    with pytest.raises(MigrationError, match="unsupported"):
         client.call("POST", "/api/v2/data-migrations", {})
 
 

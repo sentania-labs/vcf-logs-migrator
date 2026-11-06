@@ -38,6 +38,14 @@ def markdown(run, events):
         f"Last fully sealed day: {plan['last_fully_sealed_day'] or 'unknown'}.",
         "",
     ]
+    if "buckets" in verification:
+        buckets = verification["buckets"]
+        lines += [
+            f"Covered buckets: {len(buckets['covered'])}; "
+            f"selected but not received: {', '.join(buckets['not_received']) or 'none'}.",
+            f"Covered days: {', '.join(verification['covered_days']) or 'none'}.",
+            "",
+        ]
     if verification.get("reason"):
         lines += [f"Reason: {verification['reason']}.", ""]
     if "daily" in verification:

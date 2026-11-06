@@ -1,14 +1,22 @@
 """Thin migration API wrapper. The destination owns task state and progress."""
 
 from collections import Counter
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from uuid import uuid4
 
 from .errors import Code, MigrationError, require, safe_boundary
-from .models import ACTIVE_ACK, Counts, Policy, Verification, Window, digest
+from .models import ACTIVE_ACK, EVERYTHING_END, Counts, Policy, Verification, Window, digest
 from .planning import build_plan, partition_diff
 from .ports import SystemClock
-from .verification import reconcile, stable_counts
+from .verification import combine, reconcile, stable_counts
+
+TERMINAL = {"idle", "completed", "cancelled", "failed"}
+EVERYTHING = Window(0, EVERYTHING_END)
+
+
+def _ids(keys):
+    return {key.rsplit("/", 1)[-1] for key in keys}
 
 
 class Engine:
@@ -26,23 +34,40 @@ class Engine:
             except Exception:
                 pass  # Presentation observers cannot interrupt an authorized API operation.
 
+    @contextmanager
+    def _exclusive(self):
+        with ExitStack() as stack:
+            if self.journal is not None:
+                stack.enter_context(self.journal.exclusive())
+            stack.enter_context(self.env.exclusive())
+            yield
+
+    def _record(self, task, destination):
+        """Ledger what the API reports as transferred once a task has finished."""
+        if self.journal is None or task.status not in TERMINAL:
+            return
+        received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
+        for row in self.journal.transfers(destination):
+            if not row["closed"]:
+                matched = task.destination == destination and set(row["keys"]) == set(
+                    task.bucket_keys
+                )
+                self.journal.settle_transfer(row["run"], sorted(received) if matched else [])
+
+    def _settle(self, destination):
+        task = self.env.transfer()
+        self._record(task, destination)
+        return task
+
     def _overlap(self, plan):
         destination = plan["destination"]["id"]
-        window = Window(**plan["window"])
-        coverage = Window(**plan["coverage"])
         selected = {b["id"] for b in plan["selected"]}
         for prior in self.journal.transfers(destination):
-            require(not window.overlaps(Window(prior["start"], prior["end"])), Code.OVERLAP)
-            require(not selected.intersection(prior["bucket_ids"]), Code.OVERLAP)
-            # Whole-bucket coverage is what verify counts; an unverified earlier run's totals
-            # would absorb the new transfer's events.
-            if coverage.overlaps(Window(**prior["coverage"])):
-                outcome = self.journal.load(prior["run"])["verification"]["outcome"]
-                require(outcome == Verification.SUCCESS, Code.VERIFICATION_PENDING)
+            held = prior["received"] if prior["closed"] else prior["keys"]
+            require(not selected.intersection(_ids(held)), Code.OVERLAP)
         # Include transfers started outside this journal, wherever the appliance exposes them.
         for prior in self.env.history():
             if prior.destination == destination:
-                require(not window.overlaps(prior.window), Code.OVERLAP)
                 require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
 
     @safe_boundary
@@ -56,9 +81,10 @@ class Engine:
 
     @safe_boundary
     def plan(self, window, policy=None):
-        with self.journal.exclusive(), self.env.exclusive():
+        with self._exclusive():
             source, destination = self.env.discover()
             plan = build_plan(source, destination, window)
+            self._settle(destination.id)
             self._overlap(plan)
             run = {
                 "schema_version": 2,
@@ -75,40 +101,40 @@ class Engine:
             self._audit(run, "plan_previewed")
             return run
 
-    def _counts(self, run, scope):
-        plan = run["plan"]
-        counts = stable_counts(
-            self.env,
-            self.clock,
-            Policy(**run["query_policy"]),
-            scope,
-            Window(**plan["coverage"]),
-            tuple(b["node"] + "/" + b["id"] for b in plan["selected"]),
-        )
-        if scope != "ingest":
-            return counts
-        # Only arrivals beyond THIS run's baseline count as new ingest. The destination's
-        # current task can already refer to another window; it never selects our baseline.
-        require(counts.identity_complete, Code.INCOMPLETE)
-        baseline = Counts.from_dict(run["baseline"])
-        require(baseline.identity_complete, Code.INCOMPLETE)
+    def _counts(self, policy, scope, window, keys):
+        return stable_counts(self.env, self.clock, policy, scope, window, keys)
+
+    def _ingest(self, policy, baseline):
+        # Only arrivals beyond the destination's pre-transfer baseline count as new ingest.
+        counts = self._counts(policy, "ingest", EVERYTHING, ())
+        require(counts.identity_complete and baseline.identity_complete, Code.INCOMPLETE)
         identities = Counter(dict(counts.identities)) - Counter(dict(baseline.identities))
         daily = Counter()
         for identity, count in identities.items():
             daily[identity[:10]] += count
         return Counts(
-            counts.complete, tuple(sorted(daily.items())), tuple(sorted(identities.items())), scope
+            counts.complete,
+            tuple(sorted(daily.items())),
+            tuple(sorted(identities.items())),
+            "ingest",
         )
 
     @safe_boundary
     def run(self, run_id, *, backup_ack=False, active_ack=""):
         # The CLI has no live Environment yet. Transport qualification remains separate.
         require(self.env.mode == "simulation", Code.UNSUPPORTED)
-        with self.journal.exclusive(), self.env.exclusive():
+        with self._exclusive():
             run = self.journal.load(run_id)
             require(run.get("schema_version") == 2, Code.SCHEMA)
             require(backup_ack, Code.ACK)
             require(not run["plan"]["active_skipped"] or active_ack == ACTIVE_ACK, Code.ACK)
+            require(
+                all(
+                    t["run"] != run_id
+                    for t in self.journal.transfers(run["plan"]["destination"]["id"])
+                ),
+                Code.STATE,
+            )
             source, destination = self.env.discover()
             fresh = build_plan(source, destination, Window(**run["plan"]["window"]))
             require(
@@ -117,20 +143,23 @@ class Engine:
                 and fresh["selected"] == run["plan"]["selected"],
                 Code.INVENTORY_CHANGED,
             )
+            task = self._settle(destination.id)
             self._overlap(fresh)
             require(fresh["capacity"]["fits"], Code.CAPACITY)
             difference = fresh["partition_diff"]
             require(not difference["missing"] and not difference["different"], Code.PARTITIONS)
             require(not difference["missing_fields"], Code.FIELDS)
-            require(
-                self.env.transfer().status in {"idle", "completed", "cancelled", "failed"},
-                Code.BUSY,
-            )
+            require(task.status in TERMINAL, Code.BUSY)
             for node in source.nodes:
                 self.env.test_source_credentials(node.id)
             self.env.test_mover()
-            run["source_counts"] = asdict(self._counts(run, "source"))
-            run["baseline"] = asdict(self._counts(run, "baseline"))
+            policy = Policy(**run["query_policy"])
+            coverage = Window(**run["plan"]["coverage"])
+            run["source_by_bucket"] = {
+                key: asdict(self._counts(policy, "source", coverage, (key,)))
+                for key in (b["node"] + "/" + b["id"] for b in run["plan"]["selected"])
+            }
+            run["baseline"] = asdict(self._counts(policy, "baseline", EVERYTHING, ()))
             run["backup_ack"] = True
             run["active_ack"] = active_ack == ACTIVE_ACK
             self._audit(run, "transfer_authorized", {"snapshot_verified": False})
@@ -174,25 +203,30 @@ class Engine:
 
     @safe_boundary
     def status(self):
-        with self.env.exclusive():
-            return self._progress(self.env.transfer())
+        with self._exclusive():
+            task = self.env.transfer()
+            self._record(task, task.destination)
+            return self._progress(task)
 
     @safe_boundary
     def stop(self, task_id):
         """Explicit API cancellation, including tasks whose POST acknowledgment was lost."""
         require(self.env.mode == "simulation", Code.UNSUPPORTED)
-        with self.env.exclusive():
+        with self._exclusive():
             task = self.env.transfer()
             require(task.id == task_id, Code.UNCERTAIN)
             if task.status == "running":
                 self.env.cancel()
-            return self._progress(self.env.transfer())
+                task = self.env.transfer()
+            self._record(task, task.destination)
+            return self._progress(task)
 
     @safe_boundary
     def verify(self, run_id):
-        with self.journal.exclusive(), self.env.exclusive():
+        """Cumulative per destination: everything the API has reported as received so far."""
+        with self._exclusive():
             run = self.journal.load(run_id)
-            require("baseline" in run and "source_counts" in run, Code.STATE)
+            require("baseline" in run and "source_by_bucket" in run, Code.STATE)
             try:
                 _, destination = self.env.discover()
                 planned = run["plan"]["destination"]
@@ -200,28 +234,10 @@ class Engine:
                     destination.id == planned["id"] and destination.identity == planned["identity"],
                     Code.TOPOLOGY,
                 )
-                task = self.env.transfer()
-                window = Window(**run["plan"]["coverage"])
-                # An overlapping active or unknown task can still change these counts.
-                require(
-                    task.status in {"idle", "running", "completed", "failed", "cancelled"},
-                    Code.UNCERTAIN,
-                )
-                if task.status == "running":
-                    require(task.window is not None and not task.window.overlaps(window), Code.BUSY)
-                actual = self._counts(run, "destination")
-                ingest = self._counts(run, "ingest")
-                require(
-                    actual == self._counts(run, "destination")
-                    and ingest == self._counts(run, "ingest"),
-                    Code.INCOMPLETE,
-                )
-                result = reconcile(
-                    Counts.from_dict(run["source_counts"]),
-                    Counts.from_dict(run["baseline"]),
-                    actual,
-                    ingest,
-                )
+                task = self._settle(destination.id)
+                require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
+                require(task.status != "running", Code.BUSY)
+                result = self._reconcile(run, destination.id)
             except MigrationError as error:
                 result = {
                     "outcome": Verification.INCOMPLETE.value,
@@ -232,3 +248,34 @@ class Engine:
             run["verification"] = result
             self._audit(run, "daily_counts_verified", {"outcome": result["outcome"]})
             return result
+
+    def _reconcile(self, run, destination):
+        rows = self.journal.transfers(destination)
+        received = {key for row in rows for key in row["received"]}
+        require(bool(received), Code.INCOMPLETE)
+        selected = {key for row in rows for key in row["keys"]}
+        runs = {row["run"]: self.journal.load(row["run"]) for row in rows}
+        source = combine(
+            [
+                Counts.from_dict(runs[row["run"]]["source_by_bucket"][key])
+                for row in rows
+                for key in row["received"]
+            ],
+            "source",
+        )
+        baseline = Counts.from_dict(runs[rows[0]["run"]]["baseline"])
+        policy = Policy(**run["query_policy"])
+        actual = self._counts(policy, "destination", EVERYTHING, ())
+        ingest = self._ingest(policy, baseline)
+        require(
+            actual == self._counts(policy, "destination", EVERYTHING, ())
+            and ingest == self._ingest(policy, baseline),
+            Code.INCOMPLETE,
+        )
+        result = reconcile(source, baseline, actual, ingest)
+        result["buckets"] = {
+            "covered": sorted(received),
+            "not_received": sorted(selected - received),
+        }
+        result["covered_days"] = [day for day, _ in source.daily]
+        return result

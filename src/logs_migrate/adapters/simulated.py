@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ..errors import Code, MigrationError, require
 from ..journal import file_lock
-from ..models import Cluster, Counts, Partition, Window, canonical, digest
+from ..models import Cluster, Counts, Window, canonical, digest
 from ..ports import History, NodeTransfer, Transfer
 
 
@@ -142,17 +142,6 @@ class SimulatedEnvironment:
             for h in self.data["history"]
         )
 
-    def create_partition(self, partition: Partition):
-        self._trace("create_partition", partition=partition.id)
-        self._fault("create_partition.before")
-        require(
-            partition.name not in {p["name"] for p in self.data["destination"]["partitions"]},
-            Code.PARTITIONS,
-        )
-        self.data["destination"]["partitions"].append(asdict(partition))
-        self._persist()
-        self._fault("create_partition.after")
-
     def count(self, scope, window, bucket_keys):
         self._fault("query." + scope)
         if scope == "source":
@@ -278,7 +267,10 @@ class SimulatedEnvironment:
             if self.data["poll"] >= self.data.get("complete_after_polls", 1):
                 source, dest = self.discover()
                 skip = set(self.data.get("skip_buckets", []))
+                limit = self.data.get("cancel_after")
                 for key in task["keys"]:
+                    if limit is not None and len(task["completed"]) >= limit:
+                        break
                     b = next(b for b in source.buckets if b.key == key)
                     if key in skip:
                         task["skipped"].append(key)
@@ -294,6 +286,7 @@ class SimulatedEnvironment:
                         task["skipped"].append(key)
                         task["bytes_transferred"] += partial.size
                         task["status"] = "failed"
+                        self._close_history()
                         self._persist()
                         return self._transfer()
                     if not dest.preview:
@@ -307,18 +300,28 @@ class SimulatedEnvironment:
                         if n["id"] == node:
                             n["used"] += b.size
                             n["repository_available"] -= b.size
-                task["status"] = self.data.get("terminal_status", "completed")
-                self.data["history"][-1]["complete"] = not task["skipped"]
+                cancelled = limit is not None and len(task["completed"]) >= limit
+                task["status"] = (
+                    "cancelled" if cancelled else self.data.get("terminal_status", "completed")
+                )
+                self._close_history()
                 self.data["destination_events"].extend(self.data.get("ingest_during_run", []))
                 self._persist()
                 self._fault("poll.after_complete")
         return self._transfer()
+
+    def _close_history(self):
+        """Once finished, history names only the buckets the task actually transferred."""
+        entry = self.data["history"][-1]
+        entry["complete"] = not self.data["task"]["skipped"]
+        entry["bucket_ids"] = [k.split("/")[-1] for k in self.data["task"]["completed"]]
 
     def cancel(self):
         self._trace("cancel")
         self._fault("cancel.before")
         if self.data["task"]:
             self.data["task"]["status"] = "cancelled"
+            self._close_history()
         self._persist()
         self._fault("cancel.after")
 

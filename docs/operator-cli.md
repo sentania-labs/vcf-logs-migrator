@@ -77,11 +77,11 @@ produces null estimates. These are relative estimates, not promises. The simulat
 uses configured poll intervals as synthetic elapsed time, not measured throughput.
 An API completion does not itself claim verified success.
 
-The local journal stores plans, sent windows/bucket IDs, pre-transfer source and
+The local journal stores plans, the sent-bucket ledger, pre-transfer source and
 destination counts, verification evidence and operator audit events. It does not
 maintain running/stopped/recovery task states. Reports are historical evidence;
-query `status` for current progress. A later transfer replacing the current API
-task does not invalidate earlier count evidence.
+query `status` for current progress. With `--journal`, `status` and `stop` also
+record into the ledger which buckets the finished task actually transferred.
 
 An interrupted client or lost POST response does not imply a stopped task. Query
 status. Explicit cancellation uses the currently observed **API task ID**:
@@ -99,15 +99,13 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
 
 - Source operations are read-only. No source stop, bucket delete, overwrite or
   manual-copy fallback exists in the engine path.
-- Sent windows and bucket IDs remain recorded even when the POST response was
-  lost or a transfer was cancelled. Repeating them is refused. Preserve the journal
-  for each destination; external transfer history must also be known. Do not start
-  overlapping transfers from another client. Adjacent windows selecting the same
-  whole bucket are also refused, especially on 9.1.1 where bucket IDs disappear.
-- A new transfer is also refused (`verification_pending`, exit 3) while its whole-bucket
-  coverage intersects an earlier transfer that has not verified successfully, because
-  `verify` counts every destination event in a run's coverage. Verify the earlier run
-  first; once it verifies, the new transfer is allowed.
+- A new transfer may not select a source bucket the destination already received or
+  that an in-flight task holds. Once the API reports a task finished, only the
+  buckets it transferred stay recorded, so a stopped, cancelled or failed task's
+  remainder can be planned again (use a window that excludes what landed). Preserve
+  the journal for each destination; external transfer history must also be known.
+  Adjacent windows selecting the same whole bucket are refused too, especially on
+  9.1.1 where destination bucket IDs disappear. A run starts at most once.
 - A plan is checked against fresh inventory and the planned source and destination
   identities before start. `verify` re-checks the destination identity and reports
   incomplete verification if it changed; source retention after a completed transfer
@@ -115,13 +113,19 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   bucket collisions, unknown history and incompatible partitions block transfer.
 - Verification uses complete=true and two agreeing count responses, then confirms
   destination and ingest observations still agree. Missing or unstable evidence
-  returns incomplete, never success. An active overlapping or unknown API task
-  also prevents a successful verification.
-- For every UTC day in the copied bucket coverage, expected destination count is
-  source count plus pre-existing destination count plus new ingest. Pre-existing
-  ingest identities and their multiplicities are subtracted from the ingest cohort
-  using this run's own baseline. The fixture adapter supplies attribution;
-  unverifiable attribution must remain incomplete on a future live adapter.
+  returns incomplete, never success. Any running or unknown API task also prevents
+  a successful verification.
+- `verify RUN_UUID` is cumulative for that run's destination: all buckets the API
+  has reported as received across every run, as one result. For every UTC day the
+  expected destination count is source count of the received buckets (recorded per
+  bucket at copy time) plus the destination's pre-transfer baseline plus new ingest.
+  The baseline is the destination's counts before the first transfer; arrivals
+  beyond it are ingest, so nothing is counted twice when coverage intersects.
+  Re-running after a later transfer recomputes the result and never invalidates an
+  earlier success. The result lists covered buckets and days and buckets selected
+  but not received (for example API-skipped); those are reported, not verified.
+  The fixture adapter supplies attribution; unverifiable attribution must remain
+  incomplete on a future live adapter.
 - Daily count equality is count evidence, not proof of identical message content,
   partition routing or field extraction. A report preserves active exclusions and
   does not authorize retiring source data that was not copied.
