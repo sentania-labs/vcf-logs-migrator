@@ -523,7 +523,13 @@ class Engine:
                 return run
             require(run["transfer_intent"], Code.STATE)
             require(
-                run["state"] in {State.RUNNING, State.MONITOR_DETACHED, State.RECOVERY_REQUIRED},
+                run["state"]
+                in {
+                    State.AUTHORIZED,
+                    State.RUNNING,
+                    State.MONITOR_DETACHED,
+                    State.RECOVERY_REQUIRED,
+                },
                 Code.STATE,
             )
             require(not run["service_obligations"], Code.RECOVERY)
@@ -569,7 +575,7 @@ class Engine:
                 }
                 self._save(run, "verification_deferred_for_recovery")
                 return run
-            require(run["state"] != State.MONITOR_DETACHED, Code.BUSY)
+            require(run["state"] not in {State.RUNNING, State.MONITOR_DETACHED}, Code.BUSY)
             require(run["transfer_intent"] and not run["service_obligations"], Code.STATE)
             try:
                 require(

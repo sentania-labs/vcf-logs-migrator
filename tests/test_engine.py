@@ -724,3 +724,18 @@ def test_resume_and_stop_reject_terminal_runs_without_changing_them(rig, termina
             actor.resume(run["id"])
     assert journal.load(run["id"]) == before
     assert operations(env).count("cancel") == cancels
+
+
+def test_verify_refuses_a_run_whose_monitor_died_and_resume_reattaches(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["faults"] = {"poll.after_complete": "crash"}
+    with pytest.raises(SystemExit):
+        execute(engine, run)
+    env.data["faults"] = {}
+    assert journal.load(run["id"])["state"] == State.RUNNING
+    with pytest.raises(MigrationError, match="destination_busy"):
+        engine.verify(run["id"])
+    assert journal.load(run["id"])["state"] == State.RUNNING
+    assert engine.resume(run["id"])["state"] == State.VERIFYING
+    assert engine.verify(run["id"])["state"] == State.VERIFIED
