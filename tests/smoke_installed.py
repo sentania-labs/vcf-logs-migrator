@@ -73,9 +73,62 @@ def smoke(fixture: Path, executable: str) -> None:
         print(f"{fixture.name}: installed CLI verified {expected} fixture events")
 
 
+def config_smoke(executable: str) -> None:
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    with tempfile.TemporaryDirectory(prefix="logs-config-smoke-") as directory:
+        base = [
+            executable,
+            "--fixture",
+            str(FIXTURES / "config.fixture"),
+            "--remote-state",
+            str(Path(directory) / "remote"),
+        ]
+
+        def invoke(*args):
+            response = subprocess.run(
+                [*base, "config", *args],
+                cwd=directory,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            return json.loads(response.stdout)
+
+        before = invoke("compare")
+        assert {r["status"] for r in before["rules"]} == {"missing", "identical", "differs"}
+        result = invoke(
+            "apply",
+            "--select",
+            "partitions:Archive",
+            "--select",
+            "filters:drop-debug",
+            "--select",
+            "masking:mask-secret",
+            "--select",
+            "forwarding:archive",
+        )
+        assert result["complete"] and result["restart_required"]
+        assert {r["status"] for r in result["rules"]} == {"created", "updated", "skipped"}
+        after = invoke("compare")
+        assert all(
+            r["status"] == "identical"
+            for r in after["rules"]
+            if r["selector"] != "filters:drop-test"
+        )
+        assert after["destination_only"] == [{"type": "filters", "name": "local-only"}]
+        state = json.loads((Path(directory) / "remote").read_text())
+        assert state["source"] == json.loads((FIXTURES / "config.fixture").read_text())["source"]
+        assert all(t["operation"] == "config.write" for t in state["trace"])
+        print("config.fixture: installed CLI compared and applied all four rule types")
+
+
 if __name__ == "__main__":
     executable = shutil.which("logs-migrate")
     if not executable:
         raise SystemExit("Install the package before running the console-script smoke check.")
     for name in ("sealed-populated.fixture", "sealed-911.fixture"):
         smoke(FIXTURES / name, executable)
+    config_smoke(executable)

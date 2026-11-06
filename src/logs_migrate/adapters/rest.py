@@ -136,13 +136,38 @@ class Logs90:
             ("GET", "/api/v1/partitioning"),
             ("POST", "/api/v1/partitioning"),
         }
+        config_paths = {
+            "/api/v1/" + name
+            for name in ("partitioning", "log-filter", "log-mask", "log-forwarder")
+        }
+        config_call = (
+            (method in {"GET", "POST"} and path in config_paths)
+            or (method == "POST" and path == "/api/v1/log-forwarder/batch")
+            or (
+                method == "PUT"
+                and any(
+                    path.startswith(base + "/")
+                    and bool(path[len(base) + 1 :])
+                    and "/" not in path[len(base) + 1 :]
+                    and "?" not in path
+                    and "#" not in path
+                    for base in config_paths
+                )
+            )
+        )
         require(
             (method, path) in allowed
+            or config_call
             or (method == "GET" and path.startswith("/api/v1/aggregated-events/timestamp/")),
             Code.UNSUPPORTED,
         )
-        if method != "GET":
+        if method != "GET" or config_call:
             require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
+        if config_call:
+            require(
+                isinstance(getattr(self, "ops_transport", self.transport), RecordedTransport),
+                Code.UNSUPPORTED,
+            )
         try:
             return self.transport.request(method, path, body, self.headers())
         except MigrationError as error:

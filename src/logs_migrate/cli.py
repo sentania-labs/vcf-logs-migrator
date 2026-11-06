@@ -45,6 +45,17 @@ def parser():
         "--remote-state", type=Path, help="Persisted simulated appliance; independent of journal"
     )
     sub = p.add_subparsers(dest="command", required=True)
+    config = sub.add_parser("config", help="Compare/apply selected configuration rules")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    config_sub.add_parser("compare")
+    apply = config_sub.add_parser("apply")
+    apply.add_argument(
+        "--select",
+        action="append",
+        required=True,
+        metavar="TYPE:NAME",
+        help="Exact selector from compare; repeat for each create or update",
+    )
     sub.add_parser("discover")
     sub.add_parser("partitions", help="Compare partitions (and extracted fields on 9.1.1)")
     sub.add_parser("status", help="Read current task and per-node progress directly from the API")
@@ -102,7 +113,13 @@ def main(argv=None):
         require(remote is not None, Code.INVALID_INPUT)
         env = SimulatedEnvironment.from_file(args.fixture, remote)
         engine = Engine(env, journal, SimulatedClock())
-        if args.command in {"discover", "partitions"}:
+        if args.command == "config":
+            result = (
+                engine.config_compare()
+                if args.config_command == "compare"
+                else engine.config_apply(args.select)
+            )
+        elif args.command in {"discover", "partitions"}:
             result = engine.discover()
             if args.command == "partitions":
                 result = result["partition_diff"]
@@ -117,6 +134,10 @@ def main(argv=None):
         else:
             result = engine.verify(args.run_id)
         print(json.dumps(result, sort_keys=True))
+        if args.command == "config" and args.config_command == "apply":
+            if any(r["status"] == "uncertain" for r in result["rules"]):
+                return 8
+            return 0 if result["complete"] else 7
         if args.command == "verify":
             return {
                 Verification.SUCCESS: 0,

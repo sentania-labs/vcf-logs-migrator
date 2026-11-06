@@ -6,10 +6,12 @@ import json
 import os
 from collections import Counter
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..config import RULE_TYPES, indexed, write_body
 from ..errors import Code, MigrationError, require
 from ..journal import file_lock
 from ..models import Cluster, Counts, Window, canonical, digest
@@ -101,6 +103,8 @@ class SimulatedEnvironment:
         self._persist()
         if kind == "crash":
             raise SystemExit(97)
+        if kind == "invalid_input":
+            raise MigrationError(Code.INVALID_INPUT)
         if kind == "auth":
             raise MigrationError(Code.AUTH)
         if kind == "secret":
@@ -127,7 +131,70 @@ class SimulatedEnvironment:
 
     def discover(self):
         self._fault("discover")
-        return Cluster.from_dict(self.data["source"]), Cluster.from_dict(self.data["destination"])
+
+        def cluster(scope):
+            data = dict(self.data[scope])
+            data.pop("config", None)
+            data.pop("hosts", None)
+            return Cluster.from_dict(data)
+
+        return cluster("source"), cluster("destination")
+
+    def config_rules(self, scope, kind):
+        require(scope in {"source", "destination"} and kind in RULE_TYPES, Code.INVALID_INPUT)
+        self._fault("config.read." + scope + "." + kind)
+        cluster = self.data[scope]
+        # Partition inventory is shared with data-migration preflight.
+        rules = (
+            cluster.get("partitions", [])
+            if kind == "partitions"
+            else cluster.get("config", {}).get(kind, [])
+        )
+        return deepcopy(rules)
+
+    def config_write(self, kind, rule, existing):
+        require(kind in RULE_TYPES, Code.INVALID_INPUT)
+        destination = self.data["destination"]
+        version = destination["version"]
+        require(version.startswith(("9.0.", "9.1.1")), Code.UNSUPPORTED)
+        body = write_body(kind, rule, existing)
+        if kind == "forwarding" and version.startswith("9.0."):
+            hosts = [
+                destination["id"],
+                *destination.get("hosts", []),
+                *(n["id"] for n in destination["nodes"]),
+            ]
+            require(
+                str(body.get("host", "")).lower().rstrip(".")
+                not in {h.lower().rstrip(".") for h in hosts},
+                Code.INVALID_INPUT,
+            )
+        self._fault("config.write." + kind + ".before")
+        if kind == "partitions":
+            rules = destination.setdefault("partitions", [])
+        else:
+            rules = destination.setdefault("config", {}).setdefault(kind, [])
+        current = indexed(rules).get(rule["name"])
+        require(current == existing, Code.INVENTORY_CHANGED)
+        if kind == "forwarding":
+            if body.pop("acceptCert", False):
+                certificates = self.data.setdefault("trusted_forwarder_hosts", [])
+                if body["host"] not in certificates:
+                    certificates.append(body["host"])
+            body.pop("testConnection", None)
+            if "transportProtocol" in body:
+                body["transportProtocol"] = body["transportProtocol"].lower()
+        if existing is None:
+            rules.append(body)
+        else:
+            rules[rules.index(current)] = body
+        self._trace(
+            "config.write",
+            type=kind,
+            name=rule["name"],
+            action="create" if existing is None else "update",
+        )
+        self._fault("config.write." + kind + ".after")
 
     def history(self):
         return tuple(
