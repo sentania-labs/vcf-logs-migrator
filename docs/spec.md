@@ -68,6 +68,31 @@ tested the open questions. These override the sections below where they disagree
     9.0 the partition and creation-time fix-up. Our own stage/commit stays as
     the fallback for buckets the API cannot place correctly.
 
+14. **The 9.0 fix-up is optional** (decided 2026-11-06). The API always
+    registers into Default with createTime = now; that is in the code, see
+    [`validation-2026-11-06-official-api.md`](validation-2026-11-06-official-api.md).
+    Re-registering partitions and creation times is a separate `fixup` phase
+    (4.4). It can be turned on in the import config before the migration
+    runs, or run later against a completed migration. `plan` recommends it
+    only when a source partition's retention or archive settings differ from
+    Default's, or when the destination's space budget is tight enough that
+    retirement order matters.
+15. **Source host is any cluster member.** The API reads the cluster list
+    from that node's newest `loginsight-config.xml`, so any member works and
+    every member listed there must answer on 22. The addresses come out of
+    the config as the nodes were joined (IP or FQDN). `plan` resolves and
+    checks every one of them before the run.
+16. **Bucket selection is by range overlap.** One stray old event makes a
+    bucket's range wide, and the whole bucket comes along (lab: six buckets
+    with one 2025 event each and months of 2026 data). `plan` lists buckets
+    whose range is much wider than the window and the events they add
+    outside it.
+17. **Active buckets are skipped.** The tail of the window still in an
+    active source bucket stays behind (lab: Jun 9 to 22, 207,065 events).
+    The preview names the last fully sealed day; a later run of the same
+    window collects the rest once those buckets seal, provided the
+    destination's node count has not changed.
+
 ## 1. Why
 
 Broadcom's Log Data Transfer stops at 90 days, and the stock
@@ -116,6 +141,7 @@ logs-migrate plan    --source <host> --target <host> --since 2026-05-01 [--until
 logs-migrate copy    --plan plan.json [--allow-source-stop] [--dry-run]
 logs-migrate verify  --plan plan.json [--samples 3]
 logs-migrate status  --plan plan.json
+logs-migrate fixup   --plan plan.json [--dry-run]     # 9.0 only, optional, see 4.4
 ```
 
 Credentials from environment or a prompt, never argv:
@@ -214,8 +240,69 @@ moves:
 4. Exit 0 only on an exact per-day match and identical samples. Writes
    `verify.json` and a short Markdown report.
 
+### 4.4 `fixup` (9.0 destinations, optional)
+
+Re-registers migrated buckets with their source partition and a creation
+time equal to the source bucket's data end time. Never needed on 9.1, which
+routes each event through the partition filters during the migration.
+
+**When it is configured.** Either:
+
+- in the import config, before the migration: `fixup: {enabled: true,
+  partitions: true, creation_time: true}` in `plan.json`; it runs
+  automatically after the API task reports COMPLETED and `verify` passes; or
+- afterwards, against a completed migration: `logs-migrate fixup --plan
+  plan.json`, or `--task <data-migration task id>` when there is no plan
+  (the tool rebuilds the bucket-to-partition map from the source listings
+  and the destination listings, matching by bucket id, since ids are kept).
+
+**Inputs.** The bucket id to partition and end-time map comes from the
+source listings (`bucket-index show` on every source node, read-only). Which
+destination node holds which bucket comes from the destination listings, not
+from the task, so a fixup run later still finds them.
+
+**Credentials per node.** The fix-up needs root SSH on every destination
+node that received buckets, and read access to every source node. Members
+of one cluster do not always share a root password (rebuilt nodes, rotated
+passwords, different build teams). So:
+
+1. Discover members first, from the `<distributed>` section of each
+   cluster's newest `loginsight-config.xml` (the same file the API reads on
+   the source). One SSH login to any member is enough to list the rest.
+2. Ask once per cluster: "Same root password on all N nodes?" Yes: one
+   prompt, applied to all. No: one prompt per node, labelled with the node's
+   address and hostname.
+3. Test every credential (SSH login plus `bucket-index show`) before any
+   node is stopped. One failure stops the fix-up before it starts.
+4. Credentials live in memory for the run only. `plan.json` records which
+   nodes use shared or per-node credentials, never the values. Non-interactive
+   runs take them from a credentials file the operator names
+   (`--creds-file`, mode 600, `{"<node>": {"user": "root", "password_env":
+   "VAR"}}` or a key path), never from argv.
+
+**Steps, one destination node at a time:**
+
+1. Create any missing partitions on the destination by REST (same names, so
+   same ids), and restart once before the first node if any were created.
+2. On the node: stop `loginsight` (refuse to continue if it is already stopped
+   for an unknown reason), run PartitionBucketAdd for that node's buckets
+   (`<partitionId> archived <createTimeMillis> <ids>`, grouped by partition),
+   start `loginsight`.
+3. Confirm in `bucket-index show` that every id shows the expected partition
+   and creation time. Never trust the exit code.
+4. Wait for `complete=true` and re-run the per-day count for that node's
+   window; it must match the pre-fix-up count.
+5. Next node. A node's stop is an ingest blip for that node only; the
+   preview states it ("about 1 minute per node, N nodes").
+
+**Resumable.** Each node's state (pending, stopped, registered, verified)
+goes to `plan.json`. A rerun skips verified nodes and finishes a node left
+mid-way (start the service if the tool stopped it).
+
 ## 5. Safety rules
 
+- `fixup` stops at most one destination node at a time and always starts it
+  again in a `finally`.
 - Never call `bucket-index delete`, `--bucketMigrationStart`, or anything that
   writes to the source store.
 - Stop the source only with `--allow-source-stop`, and only for the copy of

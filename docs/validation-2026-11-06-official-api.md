@@ -128,3 +128,13 @@ Read from the shipped 9.0.2 jars and the 9.1.1 `ops-logs` service jar (decompile
 
 1. On 9.1.1, create a partition whose filter matches one synthetic dataset, migrate a short window, and confirm it lands in that partition's data stream.
 2. On 9.1.1, confirm whether a masking rule applies to migrated events.
+
+## Run: secops data through the 9.0 API (2026-11-06 PM)
+
+Source 3-node 8.18.7 with partition `secops` (`appname="Vpxa"`), destination 3-node 9.0.2 with the same partition. 5,414,021 synthetic Vpxa events dated 2025-01-01 to 2025-06-22 were ingested on the source. Every new source bucket landed in secops on all three source nodes (88 sealed buckets, 5,359,572 by listing).
+
+`POST /api/v2/data-migrations` with the source primary and the 2025 window scheduled 88 buckets (26/30/32 across the destination nodes) and finished in about 4 minutes.
+
+- **All 88 buckets registered in Default** (an empty `partition=` in the 9.0 listing), `created` = the migration time. This matches the code reading above.
+- **Per-day counts exact from Jan 1 to Jun 8.** Jun 9 to 22 is short by 207,065, which is the data still in the source's six active secops buckets. The API copies sealed buckets only.
+- **Wide buckets came along.** Six secops buckets from an earlier test each held one event dated 2025-01-01 plus months of 2026 data. Their range overlapped the window, so they were copied whole. The listing sum (5,359,572) therefore overstates the 2025 events moved. The query count is the real measure.
