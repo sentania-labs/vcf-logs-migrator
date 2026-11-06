@@ -150,6 +150,10 @@ class Journal:
             ),
         )
 
+    def release_transfer(self, run_id: str):
+        """Only for a run proven never to have reached the appliance."""
+        self.db.execute("DELETE FROM transfers WHERE run=?", (run_id,))
+
     def transfers(self, destination: str) -> list[dict]:
         return [
             {"run": r, "source": s, "start": a, "end": b, **json.loads(body)}
@@ -179,12 +183,13 @@ class Journal:
         return pending
 
     def awaiting_verification(self, destination: str) -> list[str]:
-        """The current appliance task is needed until its transfer is fully accounted for."""
-        return [
-            transfer["run"]
-            for transfer in self.transfers(destination)
-            if self.load(transfer["run"])["verification"].get("complete") is not True
-        ]
+        """The current appliance task is needed until its transfer is accounted for or closed."""
+        pending = []
+        for transfer in self.transfers(destination):
+            run = self.load(transfer["run"])
+            if run["verification"].get("complete") is not True and not run.get("closed"):
+                pending.append(transfer["run"])
+        return pending
 
     def events(self, run_id: str) -> list[dict]:
         return [

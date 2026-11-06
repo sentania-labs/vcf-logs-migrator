@@ -60,6 +60,14 @@ class Verification(StrEnum):
     FAILURE = "verification_failure"
 
 
+_LABEL = re.compile(r"[A-Za-z0-9._:-]{0,128}")
+
+
+def _label(value: object, *, empty: bool = False) -> bool:
+    """Inventory identifiers can become host names, unit names or arguments; keep them inert."""
+    return isinstance(value, str) and bool(_LABEL.fullmatch(value)) and (empty or bool(value))
+
+
 @dataclass(frozen=True)
 class Window:
     start: int
@@ -104,6 +112,7 @@ class Bucket:
             bool(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", self.id)), Code.SCHEMA
         )
         require(self.status in {"active", "archived", "inactive"}, Code.SCHEMA)
+        require(_label(self.node) and _label(self.partition, empty=True), Code.SCHEMA)
         require(type(self.size) is int and self.size >= 0, Code.SCHEMA)
         require(type(self.messages) is int and self.messages >= 0, Code.SCHEMA)
         if self.manifest is not None:
@@ -133,6 +142,13 @@ class Partition:
     order: int = 0
 
     def __post_init__(self):
+        require(_label(self.name) and _label(self.id, empty=True), Code.SCHEMA)
+        require(
+            isinstance(self.criteria, str)
+            and len(self.criteria) <= 1024
+            and (self.criteria == "" or self.criteria.isprintable()),
+            Code.SCHEMA,
+        )
         require(type(self.retention_seconds) is int and self.retention_seconds >= 0, Code.SCHEMA)
         require(type(self.order) is int and self.order >= 0, Code.SCHEMA)
 
@@ -147,6 +163,7 @@ class Node:
     service_epoch: str = "unknown"
 
     def __post_init__(self):
+        require(_label(self.id), Code.SCHEMA)
         require(
             all(type(n) is int for n in (self.capacity, self.used, self.repository_available)),
             Code.SCHEMA,
@@ -169,6 +186,7 @@ class Cluster:
     history_complete: bool = False
 
     def __post_init__(self):
+        require(_label(self.id) and _label(self.version), Code.SCHEMA)
         require(type(self.history_complete) is bool, Code.SCHEMA)
         require(
             bool(self.nodes) and len({n.id for n in self.nodes}) == len(self.nodes), Code.SCHEMA

@@ -420,7 +420,9 @@ class SimulatedEnvironment:
     def start_service(self, node):
         self._trace("start_service", node=node)
         self._fault("restart.before." + node)
-        next(n for n in self.data["destination"]["nodes"] if n["id"] == node)["service"] = "running"
+        target = next(n for n in self.data["destination"]["nodes"] if n["id"] == node)
+        target["service"] = "running"
+        target["service_epoch"] = digest([target.get("service_epoch", "unknown"), "restart"])[:12]
         self._persist()
         self._fault("restart.after." + node)
 

@@ -50,7 +50,7 @@ class Credentials:
     def get(self, key: str) -> Secret:
         if key not in self._values:
             require(self.interactive and sys.stdin.isatty(), Code.AUTH)
-            self._values[key] = Secret(getpass.getpass("Credential required: "))
+            self._values[key] = Secret(getpass.getpass(f"Credential required for {key}: "))
         return self._values[key]
 
     def destination_nodes(self, nodes: tuple[str, ...], same_password: bool):

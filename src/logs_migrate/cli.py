@@ -7,6 +7,7 @@ import json
 import signal
 import sys
 from pathlib import Path
+from uuid import UUID
 
 from . import __version__
 from .adapters.simulated import SimulatedClock, SimulatedEnvironment
@@ -27,6 +28,16 @@ class Parser(argparse.ArgumentParser):
         )
 
 
+def uuid_arg(value):
+    """Ids are generated UUIDs; anything else is never echoed back to a terminal or log."""
+    try:
+        if str(UUID(value)) == value:
+            return value
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("invalid run id")
+
+
 def parser():
     p = Parser(
         prog="logs-migrate", description="Historical log migration engine (fixture delivery)"
@@ -42,7 +53,9 @@ def parser():
     plan = sub.add_parser("plan")
     plan.add_argument("--since", required=True, help="ISO 8601 with explicit timezone")
     plan.add_argument("--until", required=True, help="Exclusive ISO 8601 end with timezone")
-    plan.add_argument("--tail-of", help="Verified prior 9.0 run; never permitted on 9.1.1")
+    plan.add_argument(
+        "--tail-of", type=uuid_arg, help="Verified prior 9.0 run; never permitted on 9.1.1"
+    )
     plan.add_argument("--fixup-existing", action="store_true", help="Plan a standalone 9.0 fixup")
     plan.add_argument(
         "--create-missing", action="store_true", help="Consent to displayed routing/retention"
@@ -62,18 +75,18 @@ def parser():
     )
     for command in ("run", "copy"):
         run = sub.add_parser(command)
-        run.add_argument("run_id")
+        run.add_argument("run_id", type=uuid_arg)
         run.add_argument("--plan-hash", required=True)
         run.add_argument("--ack-backup", action="store_true")
         run.add_argument("--ack-active", default="", help="Exact active-bucket acknowledgment")
-    for command in ("status", "verify", "resume", "stop", "recover-services"):
+    for command in ("status", "verify", "resume", "stop", "recover-services", "close"):
         s = sub.add_parser(command)
-        s.add_argument("run_id")
+        s.add_argument("run_id", type=uuid_arg)
     report = sub.add_parser("report")
-    report.add_argument("run_id")
+    report.add_argument("run_id", type=uuid_arg)
     report.add_argument("--format", choices=("json", "markdown"), default="markdown")
     fixup = sub.add_parser("fixup")
-    fixup.add_argument("run_id")
+    fixup.add_argument("run_id", type=uuid_arg)
     fixup.add_argument("--consent-node", action="append", default=[])
     fixup.add_argument("--ack-backup", action="store_true")
     fixup.add_argument("--plan-hash", required=True)
@@ -176,6 +189,9 @@ def main(argv=None):
             result = engine.resume(args.run_id)
         elif args.command == "recover-services":
             result = engine.recover_services(args.run_id)
+        elif args.command == "close":
+            print(json.dumps(engine.close(args.run_id), sort_keys=True))
+            return 0
         else:
             result = engine.fixup(
                 args.run_id,

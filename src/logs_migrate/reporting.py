@@ -24,9 +24,21 @@ def next_actions(run: dict) -> list[str]:
             "Reconcile the run-owned recovery marker and catalog backup before recovery.",
             "A damaged catalog requires manual restoration from its backup; do not delete buckets.",
         ]
+    if run.get("closed"):
+        if not run["closed"]["task_started"]:
+            return [
+                "Closed: the destination proved the transfer never started. "
+                "Rediscover and review a new immutable plan.",
+            ]
+        return [
+            "Closed as incomplete; this run is never a successful migration.",
+            "Landed and uncertain buckets stay protected from re-copy. Plan a disjoint window, "
+            "or follow the manual recovery steps for the buckets listed under Closure.",
+        ]
     if run["reason"] == "verification_pending":
         return [
-            "Complete verification of earlier transfers to this destination.",
+            "Complete verification of earlier transfers to this destination, or close an "
+            "earlier stopped or partial run with close RUN_ID.",
             "Then retry this run with its reviewed plan; no new transfer has started.",
         ]
     if run["reason"] == "bucket_identity_conflict":
@@ -61,6 +73,12 @@ def next_actions(run: dict) -> list[str]:
             return [
                 "Partition creation had an unknown outcome and no transfer was started.",
                 "Run resume to reconcile the partitions against the destination.",
+            ]
+        if run["transfer_intent"] and run["transfer"] is None:
+            return [
+                "The start request was never acknowledged. Run close: it clears the run only "
+                "when the destination proves the start had no effect; otherwise reconcile by hand.",
+                "Do not repeat the POST.",
             ]
         return [
             "Run resume to reattach to the existing task and inspect live state. "
@@ -157,6 +175,24 @@ def markdown(run: dict, events: list[dict], timezone: str = "America/Chicago") -
                 )
                 + " |"
             )
+    if run.get("closed"):
+        closed = run["closed"]
+        lines += [
+            "",
+            "## Closure",
+            "",
+            f"Closed incomplete at {local(closed['at'])}; this run is never a successful "
+            "migration. Event reconciliation was not completed.",
+            "",
+            f"Appliance task started: {closed['task_started']}. Task status at close: "
+            f"{closed['task_status']}. Overlap protection: {closed['overlap_protection']}.",
+            "",
+            "| Bucket | Destination evidence |",
+            "|---|---|",
+        ]
+        lines += [f"| `{key}` | {value} |" for key, value in closed["buckets"].items()]
+    if run.get("drift"):
+        lines += ["", "## Observed drift", ""] + [f"- {fact}" for fact in run["drift"]]
     lines += ["", "## Service interventions", ""]
     service_events = [e for e in events if e["kind"].startswith(("service_", "catalog_", "fixup_"))]
     lines += [

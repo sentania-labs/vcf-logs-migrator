@@ -1,5 +1,6 @@
 import json
 import os
+import traceback
 
 import pytest
 from conftest import FIXTURES, execute, planned
@@ -117,6 +118,8 @@ def test_error_text_and_journal_never_contain_remote_secrets(rig, point):
     with pytest.raises(MigrationError) as error:
         execute(engine, run)
     assert "DO-NOT-PRINT" not in str(error.value)
+    assert error.value.__context__ is None and error.value.__cause__ is None
+    assert "DO-NOT-PRINT" not in "".join(traceback.format_exception(error.value, chain=True))
     assert "DO-NOT-PRINT" not in json.dumps(journal.load(run["id"]))
     assert "DO-NOT-PRINT" not in json.dumps(journal.events(run["id"]))
 
@@ -264,3 +267,86 @@ def test_exit_code_is_recovery_required_when_post_start_integrity_fails(
     )
     assert main([*base, "status", run["id"]]) == 0
     assert json.loads(capsys.readouterr().out)["run"]["state"] == "RECOVERY_REQUIRED"
+
+
+@pytest.mark.parametrize("command", ["verify", "stop", "close", "report"])
+def test_cli_never_echoes_a_pasted_secret_in_place_of_a_run_id(tmp_path, capsys, command):
+    with pytest.raises(SystemExit) as exit_:
+        main(["--journal", str(tmp_path / "j.sqlite"), command, "Hunter2-pasted-by-mistake"])
+    assert exit_.value.code == 2
+    output = capsys.readouterr()
+    assert "Hunter2" not in output.out + output.err
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--journal",
+                str(tmp_path / "j.sqlite"),
+                "plan",
+                "--since",
+                "2026-03-01T00:00:00Z",
+                "--until",
+                "2026-04-01T00:00:00Z",
+                "--tail-of",
+                "Hunter2-pasted-by-mistake",
+            ]
+        )
+    assert "Hunter2" not in "".join(capsys.readouterr())
+
+
+@pytest.mark.parametrize(
+    "point", ["discover", "test_mover", "start.after", "poll.before", "query.source", "attest"]
+)
+def test_canary_never_reaches_any_cli_output_report_journal_or_remote_state(
+    tmp_path, capsys, point
+):
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    path = tmp_path / "canary.fixture"
+    path.write_text(json.dumps(data))
+    journal = tmp_path / "j.sqlite"
+    base = ["--journal", str(journal), "--fixture", str(path)]
+    run = _plan(base, capsys)
+    data["faults"] = {point: "secret"}
+    path.write_text(json.dumps(data))
+    state = journal.with_suffix(".simulated-state")
+    if state.exists():
+        state.unlink()
+    assert _copy(base, run) != 0
+    captured = capsys.readouterr()
+    outputs = [captured.out, captured.err]
+    main([*base, "report", run["id"]])
+    main([*base, "report", run["id"], "--format", "json"])
+    main([*base, "status", run["id"]])
+    reported = capsys.readouterr()
+    outputs += [reported.out, reported.err]
+    blobs = [o.encode() for o in outputs]
+    for artifact in tmp_path.iterdir():
+        if artifact.is_file():
+            blobs.append(artifact.read_bytes())
+    assert not any(b"DO-NOT-PRINT" in blob for blob in blobs)
+
+
+def test_close_command_exits_zero_and_leaves_the_run_marked_incomplete(tmp_path, capsys):
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.engine import Engine
+
+    fixture = _long_running_fixture(tmp_path)
+    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture)]
+    run = _plan(base, capsys)
+    env = SimulatedEnvironment.from_file(fixture, tmp_path / "j.simulated-state")
+    journal = Journal(tmp_path / "j.sqlite")
+    engine = Engine(env, journal, SimulatedClock())
+    engine.on_event = lambda e: (
+        engine.request_detach() if e["kind"] == "transfer_start_observed" else None
+    )
+    assert execute(engine, run)["state"] == "MONITOR_DETACHED"
+    journal.close()
+    assert main([*base, "stop", run["id"]]) == 4
+    capsys.readouterr()
+    assert main([*base, "close", run["id"]]) == 0
+    closed = json.loads(capsys.readouterr().out)
+    assert closed["state"] == "STOPPED" and closed["closed"]["task_started"] is True
+    assert main([*base, "status", run["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["run"]["closed"]["landed"] == []
+    assert main([*base, "report", run["id"]]) == 0
+    assert "never a successful migration" in capsys.readouterr().out
+    assert main([*base, "close", run["id"]]) == 4

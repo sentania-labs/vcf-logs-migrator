@@ -123,9 +123,13 @@ migration plan. Unresolved preparation blocks other writes to the destination.
 An unacknowledged POST remains recovery-required when the returned task cannot
 be unambiguously attributed. Raw task correlation fields are not yet captured.
 `stop RUN_ID` requests cancellation of this run's known task and waits for a
-terminal observation. It cancels even when the source inventory has changed, and a
-confirmed cancellation records `PARTIAL` with the revalidation reason rather than
-`RECOVERY_REQUIRED`. During `copy`, `resume` and `stop`, Ctrl-C only detaches the
+terminal observation. The request is honored as soon as the task identity matches,
+before any landed bucket is attested, so a bucket that fails attestation cannot keep
+a task running. Every bucket the task landed, including one that finished while the
+stop was in flight, is attested and recorded before the run becomes `STOPPED`. `stop`
+cancels even when revalidation fails, and a confirmed cancellation after a real
+cohort change records `PARTIAL` with the revalidation reason rather than
+`RECOVERY_REQUIRED`. A task that failed on its own records `PARTIAL`, not `STOPPED`. During `copy`, `resume` and `stop`, Ctrl-C only detaches the
 monitor, including while waiting out a lost connection: the run records
 `MONITOR_DETACHED` (exit 9), the appliance task keeps running, and `resume RUN_ID`
 reattaches by reading the server task. Ctrl-C before the task is started aborts
@@ -133,6 +137,15 @@ with `interrupted_before_start` and starts nothing. Other commands keep the defa
 interrupt behavior. Closing or losing the workstation does not
 stop an appliance task. Cancel never means rollback and never removes partial
 destination data.
+
+Only changes that affect the selected cohort or its target nodes cancel a running
+task: a changed selected source bucket or source topology, a changed destination
+identity, partition or extracted-field routing, and insufficient capacity. Routine
+destination events (the destination retiring one of its own buckets, a service
+restart, a changed destination retention setting) never interrupt a healthy
+transfer. They are recorded on the run as drift facts, listed in the report, and
+accounted for by `verify`. Other revalidation failures leave the task running and
+record `RECOVERY_REQUIRED`; `resume` or `stop` handles it.
 
 A task that is still running is an expected state, not an uncertain one. The
 monitor polls every plan `--monitor-poll-seconds` (default 30) for as long as the
@@ -153,6 +166,41 @@ own running task and the overlap ledger do. `verify` refuses a detached run.
 Use `resume` for live revalidation through the selected adapter. Unknown service
 state or an unresolved effect outranks ordinary progress and prevents new writes.
 
+### Closing a run that cannot complete
+
+`close RUN_ID` is the explicit operator step for a run that ended `STOPPED`,
+`PARTIAL`, `FAILED` or `RECOVERY_REQUIRED` and cannot be completed, so that it does
+not block the destination forever. It never deletes or overwrites anything and
+never reports success. It:
+
+1. Re-reads the destination and refuses (`destination_busy`) while the task is
+   running.
+2. Attests each planned bucket against the destination and records, per bucket,
+   `landed`, `unverified_destination_copy` or `absent`, plus whether the appliance
+   task started and its status. The run keeps its state and an unchanged
+   verification outcome, and `closed` appears in `status`, `report` and the JSON
+   export with the next actions "closed as incomplete". Its exit code stays
+   non-zero when reported by other commands; `close` itself exits 0.
+3. Releases only the `verification_pending` dependency, so a disjoint window may
+   start. Overlap protection stays for every bucket that landed or whose outcome
+   is uncertain, so the same window and shared bucket IDs remain refused.
+
+A run whose transfer fully landed is refused (`verification_pending`) because real
+verification is the way out: run `verify`. The exception is a run that was already
+verified successfully before an engine fix-up reset it; it can be closed, and a
+later successful `verify` supersedes the closure.
+
+A run in `RECOVERY_REQUIRED` whose start was never acknowledged (a crash or lost
+connection around the POST) is cleared only when the appliance task is unchanged
+since preflight, no selected bucket exists on any destination node, and no
+transfer history mentions a selected bucket. Then the run becomes `FAILED` and its
+window is released, because the start provably had no effect. On 9.1.1, where the
+inventory cannot prove absence, and in every other case the run stays
+`RECOVERY_REQUIRED` with `remote_outcome_uncertain` and needs manual reconciliation.
+The engine cannot yet attribute or cancel an unacknowledged running task, because
+raw task correlation fields are not captured; that remains a live-adapter
+prerequisite.
+
 For a conflicting or partial destination bucket:
 
 1. Preserve the directory, catalog, journal, and manifests.
@@ -170,8 +218,8 @@ advance without sleeping. Verification query retries are bounded by the plan's
 `--attempts`; this is separate from task monitoring.
 
 Plan gates bind the endpoint identities, retention, partitions, extracted fields and
-the exact selected buckets (presence, status, size, counts and manifest). Active
-bucket rotation is informational. A bucket that seals inside the window after
+the exact selected buckets (presence, status, size, counts and manifest) until the
+transfer starts and while it runs. Active bucket rotation is informational. A bucket that seals inside the window after
 planning is recorded as tail data and reported as not copied; it blocks only before
 the task starts, because the appliance would otherwise select it. On 9.0 plan the
 same window with `--tail-of`; on 9.1.1 plan a later run that selects no previously
@@ -182,9 +230,22 @@ the captured pre-existing destination baseline plus independently attributed new
 ingest. Events already in that run's baseline are excluded from its ingest cohort,
 including ingest retained from earlier runs. A new transfer to the same destination
 is blocked with `verification_pending` until earlier transfers have complete
-verification evidence, even for disjoint windows. Retry `verify` on the earlier run
-before starting the next transfer. A complete discrepancy report remains a discrepancy;
-it is not relabeled as success to release this guard.
+verification evidence or were closed, even for disjoint windows. Retry `verify` on
+a fully transferred earlier run, or `close` one that cannot complete, before starting
+the next transfer. A complete discrepancy report remains a discrepancy; it is not
+relabeled as success to release this guard.
+
+`verify` stands on the evidence persisted for the run: the terminal task observation,
+the source counts from the two agreeing pre-copy reads, and the captured baseline.
+It does not need the appliance's latest task to still be this run's. Routine drift
+after the copy is recorded rather than fatal: source retention aging out a migrated
+bucket, the destination restarting (including the engine's own fix-up), nodes added,
+or changed destination retention. A changed selected source bucket, a removed
+destination node, or any missing, unexpected or duplicated event still prevents
+verified success. A destination bucket retired by the destination's own retention
+shows up as missing pre-existing events, a verified discrepancy, because the engine
+cannot tell that from loss. A standalone `plan --fixup-existing` run is checked only
+by the fix-up's own before/after count equality; it cannot be passed to `verify`.
 
 The simulator verifies daily counts and event-and-field identity
 multiplicity. A missing event replaced by a duplicate fails even when totals
@@ -210,6 +271,8 @@ Exit codes:
 | 7 | Operation or verification failure |
 | 8 | Recovery required or uncertain remote outcome |
 | 9 | Monitor detached; the appliance task is still running |
+
+`close` exits 0 when it recorded the closure; the run itself remains incomplete.
 
 When a command fails after a run has reached a partial, stopped, detached, failed or
 recovery-required state, the exit code follows that persisted state rather than the
@@ -254,6 +317,11 @@ contract test, not evidence that the vendor catalog supports that update.
 
 ## Security and remaining release gates
 
+Run identifiers are generated UUIDs. Any other value for a run identifier argument
+is rejected without being echoed, so a mistakenly pasted secret never reaches the
+terminal, shell history output or CI logs. Errors that cross the engine boundary
+carry only a static code and no chained remote exception text.
+
 No passwords are accepted in argv or environment variables. Library credential
 providers use masked prompts or an input stream and keep values in memory only.
 Source SSH has a fixed read allowlist and no write/service-control method. HTTPS
@@ -273,6 +341,22 @@ source passwords. Credential leakage and destination-to-source host validation
 inside the vendor mover are not established by this client. Credential tests are
 sequential, stop at the first failure, and never retry failed SSH authentication.
 Check the source lockout policy before a future qualified run.
+
+Known prerequisites before any live adapter (not addressed in this fixture delivery):
+
+- The execution release gate is an `env.mode` check and the REST mutation allowlist
+  is host-agnostic. A live delivery needs a positive adapter qualification, a
+  source-only read client with no non-GET method, a destination-only client that
+  holds the mutations, and a test that no non-GET request reaches a source endpoint.
+- Restoration surviving loss of the controlling workstation, helper integrity
+  (hash verification, removal, build allowlist) and the `PROJECTS_ROOT` check are
+  simulator behavior only until real adapter code and lab tests exist.
+- Attribution and cancellation of an unacknowledged running task, space-based
+  retirement checks for fix-up, a guaranteed primary-node ordering from the adapter,
+  and OS crash-report suppression on Windows and macOS (packaging gate).
+- A fix-up count check that tolerates late in-window ingest. Today such ingest
+  fails closed with `integrity_mismatch`, leaves the nodes restored, and requires
+  `verify` and a fix-up re-run.
 
 Before enabling real operations, retain evidence for:
 

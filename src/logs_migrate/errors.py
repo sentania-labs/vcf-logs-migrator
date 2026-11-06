@@ -49,9 +49,13 @@ def safe_boundary(function):
     def wrapped(*args, **kwargs):
         try:
             return function(*args, **kwargs)
-        except MigrationError:
+        except MigrationError as error:
+            # Remote text may sit anywhere in the chain; only the static code crosses.
+            error.__context__ = None
+            error.__cause__ = None
             raise
         except Exception:
-            raise MigrationError(Code.CONNECTION) from None
+            pass
+        raise MigrationError(Code.CONNECTION)
 
     return wrapped

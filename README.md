@@ -27,7 +27,7 @@ logs-migrate --journal /private/migration/run.sqlite \
 ```
 
 Use the returned run ID and plan fingerprint with `run`/`copy`, then `verify`.
-`status`, `resume`, `stop`, `report`, `fixup`, and `recover-services` share the same
+`status`, `resume`, `stop`, `report`, `fixup`, `close`, and `recover-services` share the same
 engine and journal. Full commands, exit codes, recovery guidance, and release
 gates are in the [CLI operator guide](docs/operator-cli.md).
 

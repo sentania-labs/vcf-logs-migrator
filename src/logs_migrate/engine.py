@@ -12,6 +12,9 @@ from .planning import build_plan, capacity, compatible, partition_diff, preparat
 from .ports import Environment, SystemClock
 from .verification import reconcile, stable_counts
 
+_CANCEL_ON = {Code.CAPACITY, Code.INVENTORY_CHANGED, Code.TOPOLOGY, Code.PARTITIONS, Code.FIELDS}
+_TERMINAL = {"idle", "completed", "cancelled", "failed"}
+
 
 class _Detach(Exception):
     pass
@@ -100,6 +103,8 @@ class Engine:
                 "backup_ack": False,
                 "backup_verified": False,
                 "service_obligations": {},
+                "closed": None,
+                "drift": [],
                 "bucket_outcomes": {},
                 "tail_data": [],
                 "verification": {"outcome": Verification.PENDING.value},
@@ -111,7 +116,7 @@ class Engine:
                     self._execution_gate()
                     require(not self.journal.unresolved(destination.id), Code.RECOVERY)
                     require(
-                        self.env.transfer().status in {"idle", "completed", "cancelled", "failed"},
+                        self.env.transfer().status in _TERMINAL,
                         Code.BUSY,
                     )
                     require(backup_ack, Code.ACK)
@@ -241,40 +246,79 @@ class Engine:
             run["tail_data"] = sorted(found)
             self._save(run, "tail_data_observed", {"buckets": run["tail_data"]})
 
-    def _live(self, run, *, during=False):
+    def _live(self, run, *, during=False, verifying=False):
+        """Revalidate. Only changes that affect the selected cohort or its targets can stop a copy.
+
+        Routine destination events (retention retiring its own buckets, a restart, node growth)
+        and post-copy source aging are recorded as drift facts, never as reasons to interrupt
+        a healthy transfer or to make verification unreachable.
+        """
         plan = run["plan"]
         require(digest(plan) == run["plan_hash"], Code.INTEGRITY)
         source, destination = self.env.discover()
         compatible(source, destination)
         previous = Cluster.from_dict(plan["destination"])
-        require(destination.identity_fingerprint == previous.identity_fingerprint, Code.TOPOLOGY)
-        require(
-            source.cohort_fingerprint(plan["api_selected"]) == plan["source_fingerprint"],
-            Code.INVENTORY_CHANGED,
-        )
-        self._tail(run, source, strict=not during)
-        require(
-            destination.retention_fingerprint == previous.retention_fingerprint,
-            Code.INVENTORY_CHANGED,
-        )
-        require(
-            {n.id: n.service_epoch for n in destination.nodes}
-            == {n.id: n.service_epoch for n in previous.nodes},
-            Code.SERVICE,
-        )
+        strict = not (during or verifying)
+        drift: list[str] = []
+
+        def drifted(name, code):
+            require(not strict, code)
+            drift.append(name)
+
+        if verifying:
+            require(
+                destination.id == previous.id
+                and {n.id for n in previous.nodes} <= {n.id for n in destination.nodes},
+                Code.TOPOLOGY,
+            )
+            if destination.identity_fingerprint != previous.identity_fingerprint:
+                drift.append("destination_topology_changed")
+            current = {b.key: b for b in source.buckets}
+            planned = {f"{b['node']}/{b['id']}": b for b in plan["source"]["buckets"]}
+            for key in plan["api_selected"]:
+                if key not in current:
+                    drift.append("source_bucket_aged_out")
+                else:
+                    require(asdict(current[key]) == planned[key], Code.INVENTORY_CHANGED)
+        else:
+            require(
+                destination.identity_fingerprint == previous.identity_fingerprint, Code.TOPOLOGY
+            )
+            require(
+                source.cohort_fingerprint(plan["api_selected"]) == plan["source_fingerprint"],
+                Code.INVENTORY_CHANGED,
+            )
+        self._tail(run, source, strict=strict)
+        if destination.retention_fingerprint != previous.retention_fingerprint:
+            drifted("destination_retention_changed", Code.INVENTORY_CHANGED)
+        if {n.id: n.service_epoch for n in destination.nodes} != {
+            n.id: n.service_epoch for n in previous.nodes
+        }:
+            drifted("destination_service_restarted", Code.SERVICE)
         difference = partition_diff(source, destination)
-        require(not difference["missing"] and not difference["different"], Code.PARTITIONS)
-        require(not difference["missing_fields"], Code.FIELDS)
-        # All destination baseline buckets must still exist unchanged, across every node.
-        live = {b.key: b for b in destination.buckets}
+        if verifying:
+            if difference["missing"] or difference["different"]:
+                drift.append("partitions_changed")
+            if difference["missing_fields"]:
+                drift.append("extracted_fields_changed")
+        else:
+            require(not difference["missing"] and not difference["different"], Code.PARTITIONS)
+            require(not difference["missing_fields"], Code.FIELDS)
+        present = {b.key: b for b in destination.buckets}
         for before in previous.buckets:
-            if before.status != "active":
-                require(before.key in live and live[before.key] == before, Code.INVENTORY_CHANGED)
+            if before.status != "active" and present.get(before.key) != before:
+                drifted("destination_baseline_bucket_changed", Code.INVENTORY_CHANGED)
         selected = tuple(Bucket(**b) for b in plan["selected"])
-        if not during:
+        if strict:
             self._overlap(plan)
             for b in selected:
                 require(not any(d.id == b.id for d in destination.buckets), Code.COLLISION)
+        known = set(run.get("drift", []))
+        if set(drift) - known:
+            run["drift"] = sorted(known | set(drift))
+            self._save(run, "destination_drift_observed", {"facts": sorted(set(drift) - known)})
+        if verifying:
+            return source, destination, None
         policy = Policy(**plan["policy"])
         remaining = tuple(b for b in selected if run["bucket_outcomes"].get(b.key) != "complete")
         return source, destination, capacity(destination, remaining, policy)
@@ -311,7 +355,7 @@ class Engine:
                 require(not run["plan"]["active_skipped"] or active_ack == ACTIVE_ACK, Code.ACK)
                 _, _, reservations = self._live(run)
                 remote = self.env.transfer()
-                require(remote.status in {"idle", "completed", "cancelled", "failed"}, Code.BUSY)
+                require(remote.status in _TERMINAL, Code.BUSY)
                 require(not run["service_obligations"], Code.RECOVERY)
                 source = self._counts(run, "source")
                 require(
@@ -327,6 +371,7 @@ class Engine:
                     self.env.test_source_credentials(node["id"])
                 self._save(run, "mover_test_intent")
                 self.env.test_mover()
+                self._save(run, "reserve_intent")
                 self.env.reserve(reservations, run["plan"]["policy"]["ceiling_percent"])
                 self._live(run)
                 run["baseline"] = asdict(baseline)
@@ -405,6 +450,8 @@ class Engine:
             require(
                 transfer.status in {"running", "completed", "cancelled", "failed"}, Code.UNCERTAIN
             )
+            if self.stop_requested and transfer.status == "running":
+                return self._cancel(run)
             require(
                 set(transfer.completed) | set(transfer.skipped) <= set(run["plan"]["api_selected"]),
                 Code.INTEGRITY,
@@ -431,21 +478,12 @@ class Engine:
                 sum(len(n.completed) for n in transfer.nodes) == len(set(transfer.completed)),
                 Code.COLLISION,
             )
-            run["transfer"] = asdict(transfer)
-            for b in (Bucket(**b) for b in run["plan"]["selected"]):
-                if b.key in transfer.completed:
-                    require(
-                        self._contact(run, lambda b=b: self.env.attest_transfer(b)),
-                        Code.INTEGRITY,
-                    )
-                    run["bucket_outcomes"][b.key] = "complete"
-                elif b.key in transfer.skipped:
-                    run["bucket_outcomes"][b.key] = "skipped"
+            self._account(run, transfer)
             self._save(run, "transfer_observed")
             try:
                 self._contact(run, lambda: self._live(run, during=True))
             except MigrationError as error:
-                if error.code == Code.UNCERTAIN:
+                if error.code not in _CANCEL_ON:
                     raise
                 if transfer.status == "running":
                     self._cancel(run)
@@ -471,36 +509,50 @@ class Engine:
                 return run
             self.clock.sleep(policy.monitor_poll_seconds)
 
+    def _account(self, run, transfer, *, detachable=True):
+        """Record what landed, attesting every landed bucket before it counts as complete."""
+        run["transfer"] = asdict(transfer)
+        for b in (Bucket(**b) for b in run["plan"]["selected"]):
+            if b.key in transfer.completed:
+                require(
+                    self._contact(
+                        run, lambda b=b: self.env.attest_transfer(b), detachable=detachable
+                    ),
+                    Code.INTEGRITY,
+                )
+                run["bucket_outcomes"][b.key] = "complete"
+            elif b.key in transfer.skipped:
+                run["bucket_outcomes"][b.key] = "skipped"
+
     def _cancel(self, run):
         observed = self._contact(run, self.env.transfer, detachable=False)
         require(
             run["transfer"] is not None and observed.id == run["transfer"]["id"], Code.UNCERTAIN
         )
-        if observed.status != "running":
-            require(observed.status in {"completed", "cancelled", "failed"}, Code.UNCERTAIN)
-            run["transfer"] = asdict(observed)
+        if observed.status == "running":
+            run["cancel_intent"] = True
+            self._save(run, "cancel_intent")
+            try:
+                self.env.cancel()
+                policy = Policy(**run["plan"]["policy"])
+                for _ in range(policy.attempts):
+                    observed = self.env.transfer()
+                    require(observed.id == run["transfer"]["id"], Code.UNCERTAIN)
+                    if observed.status in {"cancelled", "completed", "failed"}:
+                        break
+                    self.clock.sleep(policy.poll_seconds)
+                else:
+                    raise MigrationError(Code.UNCERTAIN)
+            except Exception:
+                self.journal.transition(run, State.RECOVERY_REQUIRED, Code.UNCERTAIN)
+                raise MigrationError(Code.UNCERTAIN) from None
+        require(observed.status in {"completed", "cancelled", "failed"}, Code.UNCERTAIN)
+        self._account(run, observed, detachable=False)
+        if observed.status == "failed":
+            self.journal.transition(run, State.PARTIAL, Code.INCOMPLETE)
+        else:
             self.journal.transition(run, State.STOPPED)
-            return run
-        run["cancel_intent"] = True
-        self._save(run, "cancel_intent")
-        try:
-            self.env.cancel()
-            policy = Policy(**run["plan"]["policy"])
-            for _ in range(policy.attempts):
-                transfer = self.env.transfer()
-                require(
-                    run["transfer"] is not None and transfer.id == run["transfer"]["id"],
-                    Code.UNCERTAIN,
-                )
-                run["transfer"] = asdict(transfer)
-                if transfer.status in {"cancelled", "completed", "failed"}:
-                    self.journal.transition(run, State.STOPPED)
-                    return run
-                self.clock.sleep(policy.poll_seconds)
-            raise MigrationError(Code.UNCERTAIN)
-        except Exception:
-            self.journal.transition(run, State.RECOVERY_REQUIRED, Code.UNCERTAIN)
-            raise MigrationError(Code.UNCERTAIN) from None
+        return run
 
     @safe_boundary
     def resume(self, run_id: str) -> dict:
@@ -547,7 +599,8 @@ class Engine:
                     return run
                 except MigrationError as error:
                     if (
-                        error.code != Code.UNCERTAIN
+                        (self.stop_requested or error.code in _CANCEL_ON)
+                        and error.code != Code.UNCERTAIN
                         and run["transfer"] is not None
                         and run["state"]
                         in {
@@ -588,25 +641,23 @@ class Engine:
                 require(
                     all(v == "complete" for v in run["bucket_outcomes"].values()), Code.INCOMPLETE
                 )
-                self._contact(run, lambda: self._live(run, during=True), detachable=False)
-                transfer = self._contact(run, self.env.transfer, detachable=False)
+                self._contact(run, lambda: self._live(run, verifying=True), detachable=False)
+                # The appliance reports only its latest task; the terminal evidence persisted
+                # at the moment it was observed is what this run's verification stands on.
+                transfer = run["transfer"]
                 require(
-                    run["transfer"] is not None
-                    and transfer.id == run["transfer"]["id"]
-                    and transfer.status == "completed"
-                    and not transfer.skipped,
+                    transfer is not None
+                    and transfer["status"] == "completed"
+                    and not transfer["skipped"],
                     Code.INCOMPLETE,
                 )
                 require(
-                    len(transfer.nodes) == len(run["plan"]["destination"]["nodes"])
-                    and all(n.status == "completed" for n in transfer.nodes),
+                    len(transfer["nodes"]) == len(run["plan"]["destination"]["nodes"])
+                    and all(n["status"] == "completed" for n in transfer["nodes"]),
                     Code.INCOMPLETE,
                 )
                 self.journal.transition(run, State.VERIFYING)
-                source = self._counts(run, "source")
-                require(
-                    digest(asdict(source)) == digest(run["source_evidence"]), Code.INVENTORY_CHANGED
-                )
+                source = Counts.from_dict(run["source_evidence"])
                 actual = self._counts(run, "destination")
                 ingest = self._counts(run, "ingest")
                 # Query again as a set; independently stable queries may refer to different moments.
@@ -619,7 +670,9 @@ class Engine:
                 result["at"] = self.clock.now()
                 result["window"] = run["plan"]["coverage"]
                 run["verification"] = result
-                self._contact(run, lambda: self._live(run, during=True), detachable=False)
+                self._contact(run, lambda: self._live(run, verifying=True), detachable=False)
+                if result["outcome"] == Verification.SUCCESS:
+                    run["closed"] = None
                 self.journal.transition(
                     run,
                     State.VERIFIED if result["outcome"] == Verification.SUCCESS else State.PARTIAL,
@@ -638,6 +691,84 @@ class Engine:
                     "reason": Code.CONNECTION.value,
                 }
                 self.journal.transition(run, State.FAILED, Code.CONNECTION)
+            return run
+
+    @safe_boundary
+    def close(self, run_id: str) -> dict:
+        """Operator close of a run that cannot complete. Never success, never a deletion.
+
+        Re-reads the destination, confirms the run's task is not active, records exactly which
+        planned buckets landed, and releases only the verification dependency. Overlap
+        protection is kept for every bucket that landed or whose outcome is uncertain; it is
+        released only for a run proven never to have reached the appliance.
+        """
+        self._execution_gate()
+        with self.journal.exclusive(), self.env.exclusive():
+            run = self.journal.load(run_id)
+            require(run["transfer_intent"] and not run["closed"], Code.STATE)
+            require(
+                run["state"]
+                in {State.STOPPED, State.PARTIAL, State.FAILED, State.RECOVERY_REQUIRED},
+                Code.STATE,
+            )
+            require(not run["service_obligations"], Code.RECOVERY)
+            plan = run["plan"]
+            _, destination = self._contact(run, self.env.discover, detachable=False)
+            remote = self._contact(run, self.env.transfer, detachable=False)
+            require(remote.status != "running", Code.BUSY)
+            selected = tuple(Bucket(**b) for b in plan["selected"])
+            started = run["transfer"] is not None
+            buckets = {}
+            for b in selected:
+                copies = [d for d in destination.buckets if d.id == b.id]
+                if copies and self._contact(
+                    run, lambda b=b: self.env.attest_transfer(b), detachable=False
+                ):
+                    buckets[b.key] = "landed"
+                elif copies:
+                    buckets[b.key] = "unverified_destination_copy"
+                else:
+                    buckets[b.key] = "absent"
+            if not started:
+                previous = run["previous_task"]
+                history = (
+                    h
+                    for h in self.env.history()
+                    if h.destination == destination.id
+                    and set(h.bucket_ids) & {b.id for b in selected}
+                )
+                # An unchanged appliance task and no trace of any selected bucket prove that
+                # the lost POST never took effect; 9.1.1 inventory cannot prove absence.
+                require(
+                    not destination.preview
+                    and (remote.id, remote.status) == (previous["id"], previous["status"])
+                    and all(v == "absent" for v in buckets.values())
+                    and next(history, None) is None,
+                    Code.UNCERTAIN,
+                )
+            elif all(v == "landed" for v in buckets.values()):
+                require(
+                    run.get("fixup", {}).get("prior_verification") == Verification.SUCCESS.value,
+                    Code.VERIFICATION_PENDING,
+                )
+            self._save(run, "close_intent")
+            if not started:
+                self.journal.release_transfer(run["id"])
+            run["closed"] = {
+                "at": self.clock.now(),
+                "task_status": remote.status,
+                "task_started": started,
+                "buckets": buckets,
+                "landed": sorted(k for k, v in buckets.items() if v == "landed"),
+                "event_reconciliation": False,
+                "verification_outcome": run["verification"]["outcome"],
+                "overlap_protection": "retained" if started else "released_never_started",
+            }
+            if run["state"] == State.RECOVERY_REQUIRED:
+                reason = Code(run["reason"]) if run["reason"] else None
+                self.journal.transition(run, State.PARTIAL if started else State.FAILED, reason)
+            else:
+                self._save(run, "run_closed")
             return run
 
     @safe_boundary
@@ -671,7 +802,7 @@ class Engine:
             difference = partition_diff(source, destination)
             require(not difference["missing"] and not difference["different"], Code.PARTITIONS)
             require(
-                self.env.transfer().status in {"idle", "completed", "cancelled", "failed"},
+                self.env.transfer().status in _TERMINAL,
                 Code.BUSY,
             )
             capacity(destination, (), Policy(**run["plan"]["policy"]))
@@ -709,8 +840,9 @@ class Engine:
             before_counts = self._counts(run, "destination")
             run["backup_ack"] = True
             run["fixup_consent"] = {"plan_hash": plan_hash, "nodes": list(consent_nodes)}
+            prior = run["verification"]["outcome"]
             run["verification"] = {"outcome": Verification.PENDING.value}
-            run["fixup"] = {"outcome": "in_progress"}
+            run["fixup"] = {"outcome": "in_progress", "prior_verification": prior}
             self._save(run, "fixup_authorized")
             if run["plan"]["kind"] == "migration":
                 self.journal.transition(run, State.PARTIAL)
@@ -719,7 +851,7 @@ class Engine:
                 for other in destination.nodes:
                     require(all(self.env.readiness(other.id)), Code.SERVICE)
                 require(
-                    self.env.transfer().status in {"idle", "completed", "cancelled", "failed"},
+                    self.env.transfer().status in _TERMINAL,
                     Code.BUSY,
                 )
                 buckets = targets[node]
@@ -733,6 +865,7 @@ class Engine:
                 "counts_unchanged": True,
                 "count": after_counts.total,
                 "at": self.clock.now(),
+                "prior_verification": prior,
             }
             self._save(run, "fixup_complete")
             run["verification"] = {"outcome": Verification.PENDING.value}
@@ -835,8 +968,7 @@ class Engine:
                 try:
                     if owns:
                         require(
-                            self.env.transfer().status
-                            in {"idle", "completed", "cancelled", "failed"},
+                            self.env.transfer().status in _TERMINAL,
                             Code.BUSY,
                         )
                         self.env.start_service(node)
