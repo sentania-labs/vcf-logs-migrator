@@ -35,7 +35,9 @@ class EngineWorker(QObject):
     def stop(self) -> None:
         self._queued.emit("disconnect", "disconnect", {})
         self.thread.quit()
-        self.thread.wait(5000)
+        if not self.thread.wait(5000):
+            self.thread.terminate()
+            self.thread.wait(2000)
 
     def submit(self, job: str, method: str, **kwargs) -> bool:
         """Queue a call unless the same job is already in flight."""

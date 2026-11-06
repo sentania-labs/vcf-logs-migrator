@@ -24,6 +24,7 @@ class AppState:
     status_error: str | None = None
     status_at: str | None = None
     start_error: str | None = None
+    started_run_id: str | None = None
     verification: dict | None = None
     verify_error: str | None = None
     report: dict | None = None
@@ -63,6 +64,7 @@ class AppState:
         self.status_error = None
         self.status_at = None
         self.start_error = None
+        self.started_run_id = None
         self.verification = None
         self.verify_error = None
         self.report = None

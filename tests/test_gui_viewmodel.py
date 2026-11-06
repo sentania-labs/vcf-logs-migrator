@@ -145,7 +145,10 @@ def test_verification_view_states(rig):
     view = vm.verification_view(result, status, 1, False)
     assert view["banner"][0] == "ok" and view["tiles"][0][1] == "8"
     assert view["rows"] and all(r[3] == "Match" for r in view["rows"])
-    assert dict(view["checks"])["API task"] == "COMPLETED; checked separately from counts"
+    assert (
+        dict(view["checks"])["Destination API task now"]
+        == "COMPLETED; checked separately from counts"
+    )
     pending = vm.verification_view(None, None, 0, True)
     assert pending["outcome"] == "pending" and pending["rows"] == []
     assert dict(pending["checks"])["Query method"] == "9.1 query API · Preview"
@@ -295,3 +298,12 @@ def test_history_extent_covers_sealed_buckets(name):
     assert extent is not None and extent[1] > extent[0]
     assert vm.history_extent({"buckets": []}) is None
     assert Path(name).suffix == ".fixture"
+
+
+def test_start_notes_only_promise_no_post_for_pre_post_refusals():
+    assert vm.start_note("acknowledgment_required").endswith("No API request was submitted.")
+    assert "Do not submit again" in vm.start_note("remote_outcome_uncertain")
+    assert "Do not submit again" in vm.start_note("operation_failed")
+    view = {"blockers": [], "needs_ack": False}
+    assert vm.start_state(view, True, True, started=True)[0] is False
+    assert "already submitted" in vm.start_state(view, True, True, started=True)[1]

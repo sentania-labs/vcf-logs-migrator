@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QProgressBar
+from PySide6.QtWidgets import QMessageBox, QProgressBar
 
 from .. import viewmodel as vm
 from ..widgets import KeyValues, Page, Table, banner, card, columns, label, metric, set_banner
@@ -48,11 +48,26 @@ class MigrationPage(Page):
         self.verify_button = self.add_action("Verify imported history", "primary", self.verify)
 
     def poll(self) -> None:
-        self.app.poll_status()
+        if self.app.state.stale:
+            self.app.reconnect_environments()
+        else:
+            self.app.poll_status()
 
-    def cancel(self) -> None:
+    def cancel(self, confirmed: bool | None = None) -> None:
         status = self.app.state.status
-        if status and status["status"] == "running":
+        if not status or status["status"] != "running":
+            return
+        if confirmed is None:
+            answer = QMessageBox.question(
+                self,
+                "Cancel API task",
+                f"Ask the destination to cancel task {status['id']}? Buckets already received "
+                "stay on the destination; the cancellation cannot be undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            confirmed = answer == QMessageBox.StandardButton.Yes
+        if confirmed:
             self.app.submit("stop", "stop", task_id=status["id"])
 
     def verify(self) -> None:

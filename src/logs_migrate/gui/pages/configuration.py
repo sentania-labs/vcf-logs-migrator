@@ -17,6 +17,8 @@ class ConfigurationPage(Page):
         self.rows: list[dict] = []
         self.boxes: list[QCheckBox] = []
         self.applying = False
+        self._rendered: dict | None = None  # The comparison the checkboxes were built from.
+        self._bound: dict[int, object] = {}
         self.stack = QStackedWidget()
         self.body.addWidget(self.stack)
         self.stack.addWidget(self._compare_view())
@@ -26,8 +28,10 @@ class ConfigurationPage(Page):
             "Creates missing rules and updates only the selected difference. Nothing is deleted; "
             "source rules are unchanged."
         )
-        self.secondary = self.add_action("Plan history", "", lambda: self.app.show_page("plan"))
-        self.primary = self.add_action("Apply selected rules", "primary", self.apply)
+        self.secondary = self.add_action("Plan history")
+        self.primary = self.add_action("Apply selected rules", "primary")
+        self._bind(self.secondary, self._plan)
+        self._bind(self.primary, self.apply)
 
     def _compare_view(self) -> QWidget:
         holder = QWidget()
@@ -133,6 +137,15 @@ class ConfigurationPage(Page):
         layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
         return holder
 
+    def _bind(self, button, slot) -> None:
+        """Give a footer button exactly one handler."""
+        if self._bound.get(id(button)) is slot:
+            return
+        if id(button) in self._bound:
+            button.clicked.disconnect()
+        button.clicked.connect(slot)
+        self._bound[id(button)] = slot
+
     def selection(self) -> list[str]:
         return [
             row["selector"]
@@ -183,8 +196,8 @@ class ConfigurationPage(Page):
             return
         self.stack.setCurrentIndex(0)
         self.secondary.setText("Plan history")
-        self.secondary.clicked.disconnect()
-        self.secondary.clicked.connect(lambda: self.app.show_page("plan"))
+        self._bind(self.secondary, self._plan)
+        self._bind(self.primary, self.apply)
         self.primary.show()
         discovered = state.discovered
         if discovered is None:
@@ -218,6 +231,11 @@ class ConfigurationPage(Page):
             self.notice.show()
         else:
             self.notice.hide()
+        if state.comparison is self._rendered and self.boxes:
+            # Same comparison: keep whatever the operator ticked or unticked.
+            self._update_actions()
+            return
+        self._rendered = state.comparison
         self.rows = vm.config_rows(state.comparison)
         self.boxes = []
         widgets = {}
@@ -265,14 +283,14 @@ class ConfigurationPage(Page):
             "other successful rules."
         )
         self.secondary.setText("Compare again")
-        self.secondary.clicked.disconnect()
-        self.secondary.clicked.connect(self.compare)
+        self._bind(self.secondary, self.compare)
         self.primary.setText("Plan history")
         self.primary.setEnabled(True)
-        self.primary.clicked.disconnect()
-        self.primary.clicked.connect(lambda: self.app.show_page("plan"))
+        self._bind(self.primary, self._plan)
         self.primary.show()
-        self._results_primary_bound = True
+
+    def _plan(self) -> None:
+        self.app.show_page("plan")
 
     def showEvent(self, event):  # noqa: N802 (Qt override)
         super().showEvent(event)

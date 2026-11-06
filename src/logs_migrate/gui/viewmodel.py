@@ -253,7 +253,8 @@ def connection_checks(discovered: dict | None, compatible: str | None) -> list[t
     return [
         (
             "Source and destination API inventory",
-            f"Passed · {cluster_summary(source)} → {cluster_summary(destination)}",
+            f"Passed · {cluster_summary(source)} → {cluster_summary(destination)} "
+            "(simulator fixture; the typed addresses were not contacted)",
         ),
         (
             "Version compatibility",
@@ -364,12 +365,54 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
     }
 
 
-def start_state(view: dict | None, acknowledged: bool, connected: bool) -> tuple[bool, str]:
+# Refusals the engine raises before any POST; every other failure may have reached the API.
+PRE_POST_CODES = {
+    Code.INVALID_INPUT,
+    Code.UNSUPPORTED,
+    Code.INVENTORY_CHANGED,
+    Code.CAPACITY,
+    Code.OVERLAP,
+    Code.TOPOLOGY,
+    Code.COLLISION,
+    Code.PARTITIONS,
+    Code.FIELDS,
+    Code.ACK,
+    Code.AUTH,
+    Code.BUSY,
+    Code.SERVICE,
+    Code.STATE,
+    Code.SCHEMA,
+}
+
+
+def start_note(code: str) -> str:
+    """Footer text after a failed Start; only pre-POST refusals promise nothing was sent."""
+    try:
+        before_post = Code(code) in PRE_POST_CODES
+    except ValueError:
+        before_post = False
+    if before_post:
+        return describe_error(code) + " No API request was submitted."
+    return (
+        describe_error(code)
+        + " The request may have reached the API; status is being refreshed. Do not submit again."
+    )
+
+
+def start_state(
+    view: dict | None, acknowledged: bool, connected: bool, started: bool = False
+) -> tuple[bool, str]:
     """Whether Start is enabled and the footer sentence explaining why."""
     if not connected:
         return False, "Connect both environments before planning."
     if view is None:
         return False, "Refresh the preview to select whole sealed groups by date."
+    if started:
+        return (
+            False,
+            "This plan was already submitted to the API. Watch Migration; preview a new window "
+            "to migrate more history.",
+        )
     if view["blockers"]:
         return False, "Start is unavailable until the checks pass. " + {
             "storage": "A destination node cannot hold the selection.",
@@ -382,7 +425,11 @@ def start_state(view: dict | None, acknowledged: bool, connected: bool) -> tuple
             "Latest-data acknowledgment is required. "
             "Start submits this window to the destination API.",
         )
-    return True, "Start submits the displayed window; there is no undo."
+    return (
+        True,
+        "Start records the snapshot reminder as acknowledged and submits the displayed window; "
+        "there is no undo.",
+    )
 
 
 # Migration --------------------------------------------------------------------------------
@@ -582,7 +629,7 @@ def verification_view(
 ) -> dict:
     api = status["status"].upper() if status else "Not observed"
     checks = [
-        ("API task", f"{api}; checked separately from counts"),
+        ("Destination API task now", f"{api}; checked separately from counts"),
         ("Query method", "9.1 query API · Preview" if preview else "Logs REST daily counts"),
     ]
     if result is None:
@@ -844,7 +891,10 @@ def report_view(run: dict, events: list[dict], status: dict | None, zone: str) -
                 f"{format_day_range(plan['window']['start'], plan['window']['end'], suffix='')}"
                 f" / {format_day_range(plan['coverage']['start'], plan['coverage']['end'])}",
             ),
-            ("API task / state", f"{status.get('id') if status else UNAVAILABLE} / {task_state}"),
+            (
+                "Destination API task now",
+                f"{status.get('id') if status else UNAVAILABLE} / {task_state}",
+            ),
             (
                 "Selected groups",
                 f"{len(plan['selected'])} sealed · {len(plan['active_skipped'])} open excluded",

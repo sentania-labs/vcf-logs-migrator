@@ -53,6 +53,9 @@ class MainWindow(QMainWindow):
         self.worker.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_status)
+        # Results from a previous connection are dropped instead of landing in a reset state.
+        self.generation = 0
+        self.job_generation: dict[str, int] = {}
 
         root = QWidget()
         root.setObjectName("lattice-root")
@@ -159,14 +162,23 @@ class MainWindow(QMainWindow):
 
     def _theme_changed(self, index: int) -> None:
         self.state.settings.theme = THEMES[index]
-        self.apply_settings(self.state.settings)
+        self.apply_settings(self.state.settings, reload_page=False)
+        self.pages["settings"].theme.setCurrentIndex(index)
 
-    def apply_settings(self, settings: Settings) -> None:
+    def apply_settings(self, settings: Settings, *, reload_page: bool = True) -> None:
+        previous = self.state.settings
         self.state.settings = settings
         theme.apply_theme(QApplication.instance(), settings.theme)
         self.timer.setInterval(settings.refresh_seconds * 1000)
         self.save_settings()
-        self.pages["settings"].load()
+        if reload_page:
+            self.pages["settings"].load()
+        if self.state.connected and (
+            previous.fixture_path != settings.fixture_path
+            or previous.journal_path != settings.journal_path
+        ):
+            # A new fixture or journal only takes effect through a fresh connection.
+            self.disconnect_environments()
         self.refresh_all()
 
     def save_settings(self) -> None:
@@ -178,10 +190,14 @@ class MainWindow(QMainWindow):
     # Engine jobs -------------------------------------------------------------------------
 
     def submit(self, job: str, method: str, **kwargs) -> bool:
-        return self.worker.submit(job, method, **kwargs)
+        accepted = self.worker.submit(job, method, **kwargs)
+        if accepted:
+            self.job_generation[job] = self.generation
+        return accepted
 
     def connect_environments(self, credentials: dict[str, str]) -> None:
         settings = self.state.settings
+        self.generation += 1
         self.state.reset_connection()
         self.submit(
             "connect",
@@ -191,8 +207,16 @@ class MainWindow(QMainWindow):
             credentials=credentials,
         )
 
+    def reconnect_environments(self) -> None:
+        """Re-open the session after a lost connection, keeping what was observed so far."""
+        settings = self.state.settings
+        self.submit(
+            "connect", "reconnect", fixture=settings.fixture_path, journal=settings.journal_path
+        )
+
     def disconnect_environments(self) -> None:
         self.timer.stop()
+        self.generation += 1
         self.state.reset_connection()
         self.submit("disconnect", "disconnect")
         self.refresh_all()
@@ -203,15 +227,25 @@ class MainWindow(QMainWindow):
 
     def select_run(self, run_id: str) -> None:
         self.state.run_id = run_id
+        self.state.report = None
         self.state.verification = None
         self.state.verify_error = None
         self.state.exported = []
         self.state.export_error = None
-        self.submit("report", "report", run_id=run_id)
+        self.load_report(run_id)
+
+    def load_report(self, run_id: str) -> None:
+        self.submit("report:" + run_id, "report", run_id=run_id)
+
+    def _settle(self, job: str) -> bool:
+        """Clear the job and say whether its result belongs to the current connection."""
+        self.worker.pending.discard(job)
+        return self.job_generation.pop(job, self.generation) == self.generation
 
     def _done(self, job: str, result) -> None:
         state = self.state
-        self.worker.pending.discard(job)
+        if not self._settle(job):
+            return
         if job == "connect":
             state.connected = True
             state.discovered = result
@@ -239,13 +273,14 @@ class MainWindow(QMainWindow):
             state.exported = []
             state.export_error = None
             self.submit("runs", "runs")
-            self.submit("report", "report", run_id=result["id"])
+            self.load_report(result["id"])
         elif job == "start":
             state.status = result["task"]
             state.status_at = vm.now_iso()
             state.status_error = None
             state.start_error = None
-            self.submit("report", "report", run_id=result["run_id"])
+            state.started_run_id = result["run_id"]
+            self.load_report(result["run_id"])
             self.show_page("migration")
         elif job in {"status", "stop"}:
             previous = state.status["status"] if state.status else None
@@ -253,23 +288,25 @@ class MainWindow(QMainWindow):
             state.status_at = vm.now_iso()
             state.status_error = None
             if previous == "running" and result["status"] != "running" and state.run_id:
-                self.submit("report", "report", run_id=state.run_id)
+                self.load_report(state.run_id)
         elif job == "verify":
             state.verification = result
             state.verify_error = None
             if state.run_id:
-                self.submit("report", "report", run_id=state.run_id)
+                self.load_report(state.run_id)
                 self.submit("runs", "runs")
         elif job == "runs":
             state.runs = result
             if state.run_id is None and result:
                 state.run_id = result[-1]["id"]
-                self.submit("report", "report", run_id=state.run_id)
-        elif job == "report":
+                self.load_report(state.run_id)
+        elif job.startswith("report:"):
             if result["run"]["id"] == state.run_id:
                 state.report = result
                 if state.plan_run is None or state.plan_run["id"] != state.run_id:
-                    state.plan_run = result["run"] if state.plan_run is None else state.plan_run
+                    # The selected run is the plan every page describes.
+                    state.plan_run = result["run"]
+                    state.plan_error = None
                 verification = result["run"]["verification"]
                 if state.verification is None and verification["outcome"] != "verification_pending":
                     state.verification = verification
@@ -280,7 +317,8 @@ class MainWindow(QMainWindow):
 
     def _failed(self, job: str, code: str) -> None:
         state = self.state
-        self.worker.pending.discard(job)
+        if not self._settle(job):
+            return
         if job == "connect":
             state.connected = False
             state.discovered = None
@@ -298,6 +336,13 @@ class MainWindow(QMainWindow):
             state.plan_error = code
         elif job == "start":
             state.start_error = code
+            try:
+                before_post = vm.Code(code) in vm.PRE_POST_CODES
+            except ValueError:
+                before_post = False
+            if not before_post and state.plan_run:
+                # The POST may have landed; never offer this plan again.
+                state.started_run_id = state.plan_run["id"]
             self.poll_status()
         elif job in {"status", "stop"}:
             state.status_error = code
@@ -305,7 +350,7 @@ class MainWindow(QMainWindow):
             state.verify_error = code
         elif job == "export":
             state.export_error = code
-        elif job == "report":
+        elif job.startswith("report:"):
             state.report = None
         self.refresh_all()
 

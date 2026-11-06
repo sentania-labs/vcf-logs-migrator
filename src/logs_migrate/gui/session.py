@@ -45,6 +45,11 @@ class Session:
         )
         return self.discover()
 
+    def reconnect(self, *, fixture: str, journal: str) -> dict:
+        """Re-open the same environment after a lost connection; credentials stay in memory."""
+        credentials = self.credentials.snapshot() if self.credentials is not None else {}
+        return self.connect(fixture=fixture, journal=journal, credentials=credentials)
+
     def disconnect(self) -> None:
         if self.journal is not None:
             self.journal.close()

@@ -278,12 +278,22 @@ class PlanPage(Page):
     def _update_actions(self) -> None:
         state = self.app.state
         view = vm.plan_view(state.plan_run, state.discovered) if state.plan_run else None
-        enabled, note = vm.start_state(view, state.acknowledged, state.connected)
+        # Started in this session, or recorded by the engine at copy time in the journal.
+        started = bool(state.plan_run) and (
+            state.started_run_id == state.plan_run["id"] or "source_by_bucket" in state.plan_run
+        )
+        enabled, note = vm.start_state(view, state.acknowledged, state.connected, started)
         if state.start_error:
-            note = vm.describe_error(state.start_error) + " No API request was submitted."
+            note = vm.start_note(state.start_error)
         self.note.setText(note)
         self.start_button.setEnabled(enabled and "start" not in self.app.worker.pending)
-        self.start_button.setText("Start migration" if enabled else "Start migration · unavailable")
+        self.start_button.setText(
+            "Start migration"
+            if enabled
+            else "Start migration · submitted"
+            if started
+            else "Start migration · unavailable"
+        )
         self.refresh_button.setEnabled(state.connected and "plan" not in self.app.worker.pending)
 
     def refresh(self) -> None:

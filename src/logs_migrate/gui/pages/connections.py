@@ -153,6 +153,13 @@ class ConnectionsPage(Page):
         self.app.connect_environments(self.credentials())
 
     def disconnect(self) -> None:
+        for widget in (
+            self.ssh_password,
+            self.source_password,
+            self.destination_password,
+            self.ops_token,
+        ):
+            widget.clear()
         self.app.disconnect_environments()
 
     def refresh(self) -> None:
@@ -178,9 +185,9 @@ class ConnectionsPage(Page):
             self.set_heading("Connections", "Use a member address for each cluster")
         else:
             source, destination = discovered["source"], discovered["destination"]
-            self.source_badge.setText(f"{vm.format_version(source['version'])} · connected")
+            self.source_badge.setText(f"{vm.format_version(source['version'])} · simulator")
             self.destination_badge.setText(
-                f"{vm.format_version(destination['version'])} · connected"
+                f"{vm.format_version(destination['version'])} · simulator"
             )
             for widget in (self.source_badge, self.destination_badge):
                 widget.setProperty("status", "ok")
