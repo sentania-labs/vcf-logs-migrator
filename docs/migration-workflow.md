@@ -6,8 +6,8 @@ Logs 9.0 is meant to run with `logs-migrate`.
 **Status:** `logs-migrate` exists as an engine and CLI run against deterministic
 fixtures; real appliance mutation is disabled pending lab qualification. See
 [`operator-cli.md`](operator-cli.md) for the shipped commands and
-[`spec.md`](spec.md) for the design. The transfer API underneath it, Broadcom's `/api/v2/data-migrations`, exists
-today and has been tested (see
+[`spec.md`](spec.md) for the design. The transfer API underneath it,
+Broadcom's `/api/v2/data-migrations`, exists today and has been tested (see
 [`validation-2026-11-06-official-api.md`](validation-2026-11-06-official-api.md)).
 
 The example has two 3-node clusters and six months of history on 1 TB. The
