@@ -97,6 +97,15 @@ def exit_code(run):
     }.get(run["state"], 0)
 
 
+_PERSISTED_OUTCOMES = {
+    State.RECOVERY_REQUIRED,
+    State.PARTIAL,
+    State.STOPPED,
+    State.FAILED,
+    State.MONITOR_DETACHED,
+}
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     journal = None
@@ -177,11 +186,17 @@ def main(argv=None):
         print(json.dumps(result, sort_keys=True))
         return exit_code(result) if "state" in result else 0
     except MigrationError as error:
-        print(
-            json.dumps({"error": error.code.value, "run_id": getattr(error, "run_id", None)}),
-            file=sys.stderr,
-        )
-        return {Code.INVALID_INPUT: 2, Code.RECOVERY: 8, Code.UNCERTAIN: 8}.get(error.code, 3)
+        run_id = getattr(error, "run_id", None) or getattr(args, "run_id", None)
+        print(json.dumps({"error": error.code.value, "run_id": run_id}), file=sys.stderr)
+        code = {Code.INVALID_INPUT: 2, Code.RECOVERY: 8, Code.UNCERTAIN: 8}.get(error.code, 3)
+        if run_id and journal is not None:
+            try:
+                persisted = journal.load(run_id)
+            except Exception:
+                return code
+            if persisted["state"] in _PERSISTED_OUTCOMES:
+                return exit_code(persisted)
+        return code
     except KeyboardInterrupt:
         print(
             '{"error":"observation_interrupted; remote state must be reconciled"}', file=sys.stderr

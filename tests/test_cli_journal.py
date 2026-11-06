@@ -164,3 +164,103 @@ def test_cli_workflow_on_the_911_preview_fixture(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["state"] == "VERIFYING"
     assert main([*base, "verify", run["id"]]) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "VERIFIED"
+
+
+def _long_running_fixture(tmp_path):
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    data["complete_after_polls"] = 100
+    path = tmp_path / "long.fixture"
+    path.write_text(json.dumps(data))
+    return path
+
+
+def _plan(base, capsys):
+    since, until = "2026-03-01T00:00:00Z", "2026-04-01T00:00:00Z"
+    assert main([*base, "plan", "--since", since, "--until", until]) == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def _copy(base, run):
+    return main(
+        [
+            *base,
+            "copy",
+            run["id"],
+            "--plan-hash",
+            run["plan_hash"],
+            "--ack-backup",
+            "--ack-active",
+            ACTIVE_ACK,
+        ]
+    )
+
+
+def test_exit_code_follows_persisted_state_when_capacity_drops_mid_copy(
+    tmp_path, capsys, monkeypatch
+):
+    from logs_migrate.adapters.simulated import SimulatedEnvironment
+
+    base = [
+        "--journal",
+        str(tmp_path / "j.sqlite"),
+        "--fixture",
+        str(_long_running_fixture(tmp_path)),
+    ]
+    run = _plan(base, capsys)
+    original = SimulatedEnvironment.transfer
+
+    def transfer(self):
+        result = original(self)
+        if result.status == "running":
+            self.data["destination"]["nodes"][0]["repository_available"] = 1
+        return result
+
+    monkeypatch.setattr(SimulatedEnvironment, "transfer", transfer)
+    assert _copy(base, run) == 5
+    error = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert error == {"error": "insufficient_capacity", "run_id": run["id"]}
+    assert main([*base, "status", run["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["run"]["state"] == "PARTIAL"
+
+
+def test_exit_code_after_stop_with_source_drift_is_partial(tmp_path, capsys):
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.engine import Engine
+
+    fixture = _long_running_fixture(tmp_path)
+    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture)]
+    run = _plan(base, capsys)
+    state = tmp_path / "j.simulated-state"
+    env = SimulatedEnvironment.from_file(fixture, state)
+    journal = Journal(tmp_path / "j.sqlite")
+    engine = Engine(env, journal, SimulatedClock())
+    engine.on_event = lambda e: (
+        engine.request_detach() if e["kind"] == "transfer_start_observed" else None
+    )
+    assert execute(engine, run)["state"] == "MONITOR_DETACHED"
+    journal.close()
+    env.data["source"]["retention_fingerprint"] = "changed"
+    env._persist()
+    assert main([*base, "stop", run["id"]]) == 5
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["run_id"] == run["id"]
+
+
+def test_exit_code_is_recovery_required_when_post_start_integrity_fails(
+    tmp_path, capsys, monkeypatch
+):
+    from logs_migrate.adapters.simulated import SimulatedEnvironment
+
+    base = [
+        "--journal",
+        str(tmp_path / "j.sqlite"),
+        "--fixture",
+        str(FIXTURES / "sealed-populated.fixture"),
+    ]
+    run = _plan(base, capsys)
+    monkeypatch.setattr(SimulatedEnvironment, "attest_transfer", lambda self, bucket: False)
+    assert _copy(base, run) == 8
+    assert json.loads(capsys.readouterr().err.strip().splitlines()[-1])["error"] == (
+        "integrity_mismatch"
+    )
+    assert main([*base, "status", run["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["run"]["state"] == "RECOVERY_REQUIRED"

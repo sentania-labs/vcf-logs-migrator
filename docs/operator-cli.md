@@ -203,6 +203,10 @@ Exit codes:
 | 8 | Recovery required or uncertain remote outcome |
 | 9 | Monitor detached; the appliance task is still running |
 
+When a command fails after a run has reached a partial, stopped, detached, failed or
+recovery-required state, the exit code follows that persisted state rather than the
+error reason, and the stderr error names the run.
+
 `verify` returns zero only on verified success. `status` and `report` return zero
 when reading/exporting an unsuccessful run successfully; inspect their contents.
 Skipped active data is always reported separately from the verified sealed scope.
