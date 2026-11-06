@@ -404,7 +404,7 @@ def test_resume_precheck_failure_still_cancels_running_task(rig):
     saved = journal.load(run["id"])
     assert saved["state"] == State.PARTIAL
     assert saved["reason"] == "inventory_changed"
-    with pytest.raises(MigrationError, match="inventory_changed"):
+    with pytest.raises(MigrationError, match="invalid_state_transition"):
         stopper.resume(run["id"])
     assert journal.load(run["id"])["state"] == State.PARTIAL
     assert operations(env).count("cancel") == 1
@@ -663,3 +663,64 @@ def test_detach_interrupts_contact_loss_wait(rig):
     assert engine.clock.seconds < Policy().contact_loss_seconds
     assert env.data["task"]["status"] == "running"
     assert "cancel" not in operations(env)
+
+
+def test_partition_creation_blocked_while_detached_task_runs(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    detach_on(engine, "transfer_start_observed")
+    assert execute(engine, run)["state"] == State.MONITOR_DETACHED
+    env.data["source"]["partitions"].append(
+        {
+            "name": "secops",
+            "id": "secops-id",
+            "criteria": 'appname="Vpxa"',
+            "retention_seconds": 0,
+            "order": 1,
+        }
+    )
+    other = Engine(env, journal, engine.clock)
+    with pytest.raises(MigrationError, match="destination_busy"):
+        other.plan(
+            Window(**run["plan"]["window"]),
+            create_missing=True,
+            backup_ack=True,
+            partition_hash=other.discover()["partition_preparation_hash"],
+        )
+    assert "create_partition" not in operations(env)
+
+
+@pytest.mark.parametrize("terminal", ["verified", "partial", "stopped"])
+def test_resume_and_stop_reject_terminal_runs_without_changing_them(rig, terminal):
+    engine, env, journal = rig
+    run = planned(engine)
+    if terminal == "verified":
+        execute(engine, run)
+        engine.verify(run["id"])
+    elif terminal == "partial":
+        env.data["complete_after_polls"] = 100
+        detach_on(engine, "transfer_start_observed")
+        execute(engine, run)
+        env.data["source"]["retention_fingerprint"] = "changed"
+        stopper = Engine(env, journal, engine.clock)
+        stopper.request_stop()
+        with pytest.raises(MigrationError):
+            stopper.resume(run["id"])
+    else:
+        env.data["complete_after_polls"] = 100
+        detach_on(engine, "transfer_start_observed")
+        execute(engine, run)
+        stopper = Engine(env, journal, engine.clock)
+        stopper.request_stop()
+        assert stopper.resume(run["id"])["state"] == State.STOPPED
+    before = journal.load(run["id"])
+    cancels = operations(env).count("cancel")
+    for stop in (False, True):
+        actor = Engine(env, journal, engine.clock)
+        if stop:
+            actor.request_stop()
+        with pytest.raises(MigrationError, match="invalid_state_transition"):
+            actor.resume(run["id"])
+    assert journal.load(run["id"]) == before
+    assert operations(env).count("cancel") == cancels

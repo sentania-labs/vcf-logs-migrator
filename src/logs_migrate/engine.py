@@ -110,6 +110,10 @@ class Engine:
                 if create_missing:
                     self._execution_gate()
                     require(not self.journal.unresolved(destination.id), Code.RECOVERY)
+                    require(
+                        self.env.transfer().status in {"idle", "completed", "cancelled", "failed"},
+                        Code.BUSY,
+                    )
                     require(backup_ack, Code.ACK)
                     difference = partition_diff(source, destination)
                     require(partition_hash == preparation_hash(source, destination), Code.ACK)
@@ -518,6 +522,10 @@ class Engine:
                 self.journal.transition(run, State.BLOCKED, Code.PARTITIONS)
                 return run
             require(run["transfer_intent"], Code.STATE)
+            require(
+                run["state"] in {State.RUNNING, State.MONITOR_DETACHED, State.RECOVERY_REQUIRED},
+                Code.STATE,
+            )
             require(not run["service_obligations"], Code.RECOVERY)
             try:
                 try:

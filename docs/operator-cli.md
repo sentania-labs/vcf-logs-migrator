@@ -140,6 +140,9 @@ progress. It records `RECOVERY_REQUIRED` only when the task state is genuinely
 unknown, or when the destination stays unreachable for `--contact-loss-seconds`.
 Task polls, inventory revalidation and bucket attestation all retry through that
 same window; a transient connection error never cancels a healthy task.
+`resume` and `stop` accept only running, detached or recovery-required runs; any
+other state is rejected unchanged. Partition creation (`plan --create-missing`) also
+refuses while the destination reports a running task.
 A detached run does not block other destination runs by itself; the appliance's
 own running task and the overlap ledger do. `verify` refuses a detached run.
 
