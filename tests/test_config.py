@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from conftest import execute, planned
 
 from logs_migrate.adapters.config import ROUTES, RestConfigEnvironment
 from logs_migrate.adapters.rest import Logs90, Logs911, RecordedTransport
@@ -378,3 +379,48 @@ def test_create_omits_source_id_and_destination_assigns_one(config_env, kind, na
     created = next(r for r in config_env.config_rules("destination", kind) if r["name"] == name)
     source_id = next(r for r in source_rules if r["name"] == name)["id"]
     assert isinstance(created["id"], str) and created["id"] and created["id"] != source_id
+
+
+@pytest.mark.parametrize("version", ["9.0.2.0200", "9.1.1-preview"])
+def test_applied_archive_partition_unblocks_migration_preflight(config_env, rig, version):
+    engine, env, _ = rig
+    archive = next(
+        p for p in config_env.config_rules("source", "partitions") if p["name"] == "Archive"
+    )
+    env.data["source"]["partitions"].append(archive)
+    env.data["source"]["buckets"][0]["partition"] = archive["id"]
+    env.data["destination"]["version"] = version
+    assert engine.config_apply(["partitions:Archive"])["complete"]
+    destination_archive = next(
+        p for p in env.config_rules("destination", "partitions") if p["name"] == "Archive"
+    )
+    assert destination_archive["id"] != archive["id"]
+    comparison = next(
+        r for r in engine.config_compare()["rules"] if r["selector"] == "partitions:Archive"
+    )
+    assert comparison["status"] == "identical"
+    assert engine.discover()["partition_diff"] == {
+        "missing": [],
+        "different": [],
+        "missing_fields": [],
+    }
+    run = planned(engine)
+    assert execute(engine, run)["task"]["status"] == "running"
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("criteria", 'appname="different"'),
+        ("retention_seconds", 123),
+        ("order", 2),
+    ],
+)
+def test_archive_preflight_still_detects_configuration_changes(config_env, setting, value):
+    engine = Engine(config_env, None)
+    assert engine.config_apply(["partitions:Archive"])["complete"]
+    archive = next(
+        p for p in config_env.data["destination"]["partitions"] if p["name"] == "Archive"
+    )
+    archive[setting] = value
+    assert engine.discover()["partition_diff"]["different"] == ["Archive"]

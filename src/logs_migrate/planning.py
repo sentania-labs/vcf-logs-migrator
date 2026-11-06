@@ -1,6 +1,6 @@
 """Pure planning and capacity checks. No date restriction or 90-day cap."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from .errors import Code, require
 from .models import Bucket, Cluster, Window, last_sealed_day
@@ -19,7 +19,11 @@ def partition_diff(source: Cluster, destination: Cluster) -> dict:
     return {
         "missing": [asdict(p) for p in source.partitions if p.name not in target],
         "different": [
-            p.name for p in source.partitions if p.name in target and p != target[p.name]
+            p.name
+            for p in source.partitions
+            # Match by name and all configuration settings, as config compare does.
+            # Destination-assigned IDs need not equal the source fixture/API ID.
+            if p.name in target and replace(p, id=target[p.name].id) != target[p.name]
         ],
         "missing_fields": sorted(set(source.fields) - set(destination.fields))
         if destination.preview
