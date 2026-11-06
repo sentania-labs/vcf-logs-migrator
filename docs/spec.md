@@ -1,6 +1,8 @@
 # Spec: `logs-migrate`, an 8.x to 9 migration helper
 
-Date: 2026-11-06. Status: draft, nothing built yet.
+Date: 2026-11-06. Status: design draft. The engine and CLI landed as a fixture
+delivery with real appliance mutation disabled; shipped commands, flags and exit
+codes are in [`operator-cli.md`](operator-cli.md), which wins over this draft.
 Basis: [`research-guide.md`](research-guide.md), [`lab-runs.md`](lab-runs.md),
 and the 2026-11-06 validation docs. The principal's 2026-11-06 interview
 decisions supersede the earlier manual copy design, kept in Appendix A.

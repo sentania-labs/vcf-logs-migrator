@@ -3,8 +3,10 @@
 How a migration from Aria Operations for Logs 8.18 to VCF Operations for
 Logs 9.0 is meant to run with `logs-migrate`.
 
-**Status:** `logs-migrate` is planned, not built; see [`spec.md`](spec.md).
-The transfer API underneath it, Broadcom's `/api/v2/data-migrations`, exists
+**Status:** `logs-migrate` exists as an engine and CLI run against deterministic
+fixtures; real appliance mutation is disabled pending lab qualification. See
+[`operator-cli.md`](operator-cli.md) for the shipped commands and
+[`spec.md`](spec.md) for the design. The transfer API underneath it, Broadcom's `/api/v2/data-migrations`, exists
 today and has been tested (see
 [`validation-2026-11-06-official-api.md`](validation-2026-11-06-official-api.md)).
 
@@ -50,8 +52,7 @@ numbers in the diagram are the order of work.
      real creation times.
    - It stops one destination node at a time, for about a minute each.
 6. **Retire the old cluster** once the active-bucket tail is handled (see
-   below): either copied with the source stopped, or left on the old cluster
-   until it ages out.
+   below).
 
 ## Things to know
 
@@ -61,14 +62,11 @@ numbers in the diagram are the order of work.
   to the new cluster, the source's active buckets stop growing, so waiting
   and re-running the transfer will never collect them. On a quiet partition
   that tail can be days or weeks of events; in the lab it was two weeks.
-  Two ways to finish:
-  - **Copy the active buckets with the source stopped.** This is proven:
-    stop `loginsight` on each source node, copy its active buckets to the new
-    cluster, register them, start the source again. It took about 30 seconds
-    of source downtime per node in the lab
-    ([`research-guide.md`](research-guide.md) section 4.2). After the cutover
-    the source takes no new events, so nothing is lost while it is down. This
-    is the case for the tool's fallback copy path.
+  The tool never stops the source or copies active buckets. Ways to finish:
+  - **Re-run the same window** after the buckets seal. On 9.0 this needs
+    `plan --tail-of` and unchanged topology; on 9.1.1 it is blocked, and a
+    later window must select no previously imported bucket
+    ([`operator-cli.md`](operator-cli.md)).
   - **Leave the tail on the old cluster** and keep it read-only until that
     data ages out.
 - **COMPLETED does not mean everything moved.** At 95% disk use a node
@@ -84,10 +82,11 @@ numbers in the diagram are the order of work.
 - **Wide buckets.** A bucket is selected when its time range overlaps the
   window. One stray old event can stretch a bucket's range, and the whole
   bucket comes along. The plan lists them.
-- **9.1 destinations** are out of scope for the first version. Reading the
-  code suggests the transfer routes each event through the partition filters
-  there, so no fix-up would be needed; this is not yet proven live. On 9.1,
-  retention runs from the import day, not the event date.
+- **9.1.1 destinations** are supported as a preview. Reading the code
+  suggests the transfer routes each event through the partition filters
+  there, so no fix-up is needed; this is not yet proven live, and a
+  9.0-to-9.1 lab run is still owed. Matching partitions must exist first.
+  On 9.1, retention runs from the import day, not the event date.
 
 Details and evidence: [`spec.md`](spec.md) and
 [`validation-2026-11-06-official-api.md`](validation-2026-11-06-official-api.md).
