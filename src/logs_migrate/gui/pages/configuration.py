@@ -18,7 +18,6 @@ class ConfigurationPage(Page):
         self.boxes: list[QCheckBox] = []
         self.applying = False
         self._rendered: dict | None = None  # The comparison the checkboxes were built from.
-        self._bound: dict[int, object] = {}
         self.stack = QStackedWidget()
         self.body.addWidget(self.stack)
         self.stack.addWidget(self._compare_view())
@@ -30,8 +29,8 @@ class ConfigurationPage(Page):
         )
         self.secondary = self.add_action("Plan history")
         self.primary = self.add_action("Apply selected rules", "primary")
-        self._bind(self.secondary, self._plan)
-        self._bind(self.primary, self.apply)
+        self.secondary.clicked.connect(self._secondary_action)
+        self.primary.clicked.connect(self._primary_action)
 
     def _compare_view(self) -> QWidget:
         holder = QWidget()
@@ -137,14 +136,20 @@ class ConfigurationPage(Page):
         layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
         return holder
 
-    def _bind(self, button, slot) -> None:
-        """Give a footer button exactly one handler."""
-        if self._bound.get(id(button)) is slot:
-            return
-        if id(button) in self._bound:
-            button.clicked.disconnect()
-        button.clicked.connect(slot)
-        self._bound[id(button)] = slot
+    def _showing_results(self) -> bool:
+        return self.stack.currentIndex() == 1
+
+    def _secondary_action(self) -> None:
+        if self._showing_results():
+            self.compare()
+        else:
+            self._plan()
+
+    def _primary_action(self) -> None:
+        if self._showing_results():
+            self._plan()
+        else:
+            self.apply()
 
     def selection(self) -> list[str]:
         return [
@@ -196,8 +201,6 @@ class ConfigurationPage(Page):
             return
         self.stack.setCurrentIndex(0)
         self.secondary.setText("Plan history")
-        self._bind(self.secondary, self._plan)
-        self._bind(self.primary, self.apply)
         self.primary.show()
         discovered = state.discovered
         if discovered is None:
@@ -281,10 +284,8 @@ class ConfigurationPage(Page):
             "other successful rules."
         )
         self.secondary.setText("Compare again")
-        self._bind(self.secondary, self.compare)
         self.primary.setText("Plan history")
         self.primary.setEnabled(True)
-        self._bind(self.primary, self._plan)
         self.primary.show()
 
     def _plan(self) -> None:
