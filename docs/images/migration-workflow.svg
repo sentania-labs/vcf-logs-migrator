@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>Operations for Logs 8.18 to 9.0 migration workflow with logs-migrate (planned)</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3d4450"/></marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1f6feb"/></marker>
+    <marker id="arrowGrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9aa3ae"/></marker>
+    <marker id="arrowGold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#a16207"/></marker>
+    <style>
+      .bg { fill: #f6f8fa; }
+      .box { fill: #ffffff; stroke: #3d4450; stroke-width: 1.5; }
+      .src { fill: #fff7ed; stroke: #c2410c; }
+      .dst { fill: #eff6ff; stroke: #1d4ed8; }
+      .tool { fill: #fefce8; stroke: #a16207; stroke-width: 2; }
+      .pill { fill: #ffffff; stroke: #a16207; stroke-width: 1.2; }
+      .opt { fill: #ffffff; stroke: #a16207; stroke-width: 1.2; stroke-dasharray: 5 4; }
+      .cfg { fill: #ffffff; stroke: #57606a; stroke-width: 1.5; stroke-dasharray: 6 4; }
+      .t { font-size: 15px; fill: #1f2328; text-anchor: middle; }
+      .tb { font-size: 15px; fill: #1f2328; text-anchor: middle; font-weight: 600; }
+      .small { font-size: 12.5px; fill: #57606a; text-anchor: middle; }
+      .smallL { font-size: 12.5px; fill: #57606a; text-anchor: start; }
+      .blueL { font-size: 12.5px; fill: #1f6feb; text-anchor: start; font-weight: 600; }
+      .goldL { font-size: 12px; fill: #a16207; text-anchor: start; }
+      .lane { font-size: 13px; fill: #57606a; font-weight: 600; letter-spacing: 0.06em; }
+      .h1 { font-size: 22px; fill: #1f2328; font-weight: 600; }
+      .sub { font-size: 14px; fill: #57606a; }
+      .num { fill: #1f6feb; }
+      .numt { font-size: 13px; fill: #ffffff; font-weight: 700; text-anchor: middle; }
+      .step { font-size: 14.5px; fill: #1f2328; font-weight: 600; }
+      .stepd { font-size: 12.5px; fill: #57606a; }
+      .line { stroke: #3d4450; stroke-width: 1.6; fill: none; }
+      .flow { stroke: #1f6feb; stroke-width: 2.4; fill: none; }
+      .ctl { stroke: #a16207; stroke-width: 1.4; fill: none; stroke-dasharray: 4 4; }
+      .old { stroke: #9aa3ae; stroke-width: 1.6; fill: none; stroke-dasharray: 6 5; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="700" rx="12"/>
+  <text class="h1" x="32" y="44">Migrating Operations for Logs 8.18 to 9.0 with logs-migrate</text>
+  <text class="sub" x="32" y="68">logs-migrate is planned (see spec.md); the transfer API it drives exists today. Numbers are the order of work.</text>
+
+  <text class="lane" x="468" y="132">SOURCE (old cluster)</text>
+  <text class="lane" x="468" y="392">DESTINATION (new cluster)</text>
+
+  <!-- source row -->
+  <rect class="box src" x="232" y="130" width="200" height="84" rx="8"/>
+  <text class="tb" x="332" y="164">Aria Operations</text>
+  <text class="tb" x="332" y="183">for Logs 8.18.x</text>
+  <text class="small" x="332" y="202">(Log Insight)</text>
+  <rect class="box src" x="468" y="142" width="140" height="60" rx="8"/>
+  <text class="t" x="538" y="177">3-node cluster</text>
+  <rect class="box src" x="644" y="142" width="140" height="60" rx="8"/>
+  <text class="t" x="714" y="177">1 TB storage</text>
+  <rect class="box src" x="820" y="142" width="150" height="60" rx="8"/>
+  <text class="t" x="895" y="168">6 months</text>
+  <text class="t" x="895" y="187">of history</text>
+  <path class="line" d="M432,172 H466" marker-end="url(#arrow)"/>
+  <path class="line" d="M608,172 H642" marker-end="url(#arrow)"/>
+  <path class="line" d="M784,172 H818" marker-end="url(#arrow)"/>
+
+  <!-- destination row -->
+  <rect class="box dst" x="232" y="402" width="200" height="84" rx="8"/>
+  <text class="tb" x="332" y="436">VCF Operations</text>
+  <text class="tb" x="332" y="455">for Logs 9.0.x</text>
+  <text class="small" x="332" y="474">new deployment</text>
+  <rect class="box dst" x="468" y="414" width="140" height="60" rx="8"/>
+  <text class="t" x="538" y="449">3-node cluster</text>
+  <rect class="box dst" x="644" y="414" width="140" height="60" rx="8"/>
+  <text class="t" x="714" y="440">More than 1 TB</text>
+  <text class="small" x="714" y="459">history + live growth</text>
+  <rect class="box dst" x="820" y="414" width="150" height="60" rx="8"/>
+  <text class="t" x="895" y="440">6 months</text>
+  <text class="t" x="895" y="459">retention target</text>
+  <path class="line" d="M432,444 H466" marker-end="url(#arrow)"/>
+  <path class="line" d="M608,444 H642" marker-end="url(#arrow)"/>
+  <path class="line" d="M784,444 H818" marker-end="url(#arrow)"/>
+
+  <!-- replaced by -->
+  <path class="line" d="M332,214 V400" marker-end="url(#arrow)"/>
+  <text class="smallL" x="342" y="305">replaced by</text>
+
+  <!-- data: destination pulls sealed buckets straight from the source -->
+  <path class="flow" d="M895,202 V412" marker-end="url(#arrowBlue)"/>
+  <text class="blueL" x="905" y="296">sealed buckets</text>
+  <text class="smallL" x="905" y="314">destination nodes pull</text>
+  <text class="smallL" x="905" y="330">from every source node</text>
+  <text class="smallL" x="905" y="346">over SSH</text>
+
+  <!-- VIP -->
+  <rect class="box" x="32" y="274" width="160" height="64" rx="8"/>
+  <text class="tb" x="112" y="302">logs.example.com</text>
+  <text class="small" x="112" y="322">ingest VIP / DNS name</text>
+  <path class="old" d="M192,292 C212,292 212,190 230,186" marker-end="url(#arrowGrey)"/>
+  <path class="flow" d="M192,320 C214,320 212,432 230,438" marker-end="url(#arrowBlue)"/>
+  <text class="small" x="214" y="240">before</text>
+
+  <!-- helper (control plane only) -->
+  <rect class="tool" x="1060" y="112" width="196" height="376" rx="12"/>
+  <text class="tb" x="1158" y="142">logs-migrate</text>
+  <text class="small" x="1158" y="161">planned helper</text>
+  <rect class="pill" x="1076" y="178" width="164" height="56" rx="8"/>
+  <text class="t" x="1158" y="202">Plan and preview</text>
+  <text class="small" x="1158" y="221">date, buckets, size, tail</text>
+  <rect class="pill" x="1076" y="248" width="164" height="56" rx="8"/>
+  <text class="t" x="1158" y="272">Start transfer</text>
+  <text class="small" x="1158" y="291">data-migrations API</text>
+  <rect class="pill" x="1076" y="318" width="164" height="56" rx="8"/>
+  <text class="t" x="1158" y="342">Verify</text>
+  <text class="small" x="1158" y="361">per-day counts</text>
+  <rect class="opt" x="1076" y="388" width="164" height="80" rx="8"/>
+  <text class="t" x="1158" y="412">Fix-up (optional)</text>
+  <text class="small" x="1158" y="431">9.0: partitions and</text>
+  <text class="small" x="1158" y="447">creation times</text>
+  <path class="line" d="M1158,234 V246" marker-end="url(#arrow)"/>
+  <path class="line" d="M1158,304 V316" marker-end="url(#arrow)"/>
+  <path class="line" d="M1158,374 V386" marker-end="url(#arrow)"/>
+  <!-- control lines -->
+  <path class="ctl" d="M1060,190 H972" marker-end="url(#arrowGold)"/>
+  <text class="goldL" x="978" y="226">reads listings</text>
+  <path class="ctl" d="M1060,452 H972" marker-end="url(#arrowGold)"/>
+  <text class="goldL" x="978" y="404">starts, counts,</text>
+  <text class="goldL" x="978" y="420">re-labels</text>
+
+  <!-- config (separate phase, not the tool) -->
+  <rect class="cfg" x="468" y="534" width="300" height="122" rx="10"/>
+  <text class="tb" x="618" y="560">Configuration (separate phase)</text>
+  <text class="small" x="618" y="582">1. auth and identity, by hand</text>
+  <text class="small" x="618" y="600">2. partitions, then one restart</text>
+  <text class="small" x="618" y="618">3. filters, masking, content, alerts</text>
+  <text class="small" x="618" y="636">4. forwarders after cutover</text>
+  <path class="line" d="M538,534 V476" marker-end="url(#arrow)"/>
+
+  <!-- steps -->
+  <g><circle class="num" cx="44" cy="520" r="12"/><text class="numt" x="44" y="525">1</text>
+    <text class="step" x="64" y="525">Build the new cluster</text>
+    <text class="stepd" x="64" y="544">bigger than the source</text></g>
+  <g><circle class="num" cx="44" cy="580" r="12"/><text class="numt" x="44" y="585">2</text>
+    <text class="step" x="64" y="585">Prepare: configuration</text>
+    <text class="stepd" x="64" y="604">partitions must exist before data</text></g>
+  <g><circle class="num" cx="44" cy="384" r="12"/><text class="numt" x="44" y="389">3</text>
+    <text class="step" x="64" y="389">Cut over the VIP</text>
+    <text class="stepd" x="64" y="408">new events land on 9.0</text></g>
+  <g><circle class="num" cx="660" cy="98" r="12"/><text class="numt" x="660" y="103">4</text>
+    <text class="step" x="680" y="103">Migrate history</text>
+    <text class="stepd" x="680" y="122">plan, preview, start the transfer</text></g>
+  <g><circle class="num" cx="820" cy="560" r="12"/><text class="numt" x="820" y="565">5</text>
+    <text class="step" x="840" y="565">Validate</text>
+    <text class="stepd" x="840" y="584">counts up to the last sealed day;</text>
+    <text class="stepd" x="840" y="600">optional fix-up on 9.0</text></g>
+  <g><circle class="num" cx="820" cy="630" r="12"/><text class="numt" x="820" y="635">6</text>
+    <text class="step" x="840" y="635">Retire the old cluster</text>
+    <text class="stepd" x="840" y="654">after a re-run picks up the active-bucket tail</text></g>
+</svg>
