@@ -119,3 +119,26 @@ def test_error_text_and_journal_never_contain_remote_secrets(rig, point):
     assert "DO-NOT-PRINT" not in str(error.value)
     assert "DO-NOT-PRINT" not in json.dumps(journal.load(run["id"]))
     assert "DO-NOT-PRINT" not in json.dumps(journal.events(run["id"]))
+
+
+def test_sigint_handler_is_installed_only_for_monitoring_commands(tmp_path, monkeypatch, capsys):
+    import signal
+
+    installed = []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.append(sig))
+    base = [
+        "--journal",
+        str(tmp_path / "journal.sqlite"),
+        "--fixture",
+        str(FIXTURES / "sealed-populated.fixture"),
+    ]
+    assert main([*base, "discover"]) == 0
+    assert (
+        main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
+        == 0
+    )
+    run = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert not installed
+    args = [*base, "copy", run["id"], "--plan-hash", run["plan_hash"], "--ack-backup"]
+    assert main([*args, "--ack-active", ACTIVE_ACK]) == 0
+    assert signal.SIGINT in installed

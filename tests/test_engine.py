@@ -5,10 +5,32 @@ import pytest
 from conftest import execute, planned, verified
 
 from logs_migrate.engine import Engine
-from logs_migrate.errors import MigrationError
+from logs_migrate.errors import Code, MigrationError
 from logs_migrate.models import ACTIVE_ACK, Bucket, Policy, State, Window, digest, parse_time
 from logs_migrate.planning import build_plan, capacity
 from logs_migrate.reporting import markdown, report_data
+
+
+def detach_on(engine, kind):
+    def hook(event):
+        if event["kind"] == kind:
+            engine.request_detach()
+
+    engine.on_event = hook
+
+
+def flaky_discover(env, failures):
+    original = env.discover
+    left = {"n": failures}
+
+    def discover():
+        task = env.data["task"]
+        if task and task["status"] == "running" and env.data["poll"] >= 1 and left["n"]:
+            left["n"] -= 1
+            raise MigrationError(Code.CONNECTION)
+        return original()
+
+    env.discover = discover
 
 
 def operations(env):
@@ -255,7 +277,7 @@ def test_detach_leaves_task_running_and_resume_reattaches_without_repost(rig):
     engine, env, journal = rig
     run = planned(engine)
     env.data["complete_after_polls"] = 100
-    engine.request_detach()
+    detach_on(engine, "transfer_start_observed")
     result = execute(engine, run)
     assert result["state"] == State.MONITOR_DETACHED
     assert env.data["task"]["status"] == "running"
@@ -276,7 +298,7 @@ def test_stop_cancels_a_detached_task(rig):
     engine, env, journal = rig
     run = planned(engine)
     env.data["complete_after_polls"] = 100
-    engine.request_detach()
+    detach_on(engine, "transfer_start_observed")
     execute(engine, run)
     stopper = Engine(env, journal, engine.clock)
     stopper.request_stop()
@@ -369,7 +391,7 @@ def test_resume_precheck_failure_still_cancels_running_task(rig):
     engine, env, journal = rig
     env.data["complete_after_polls"] = 100
     run = planned(engine)
-    engine.request_detach()
+    detach_on(engine, "transfer_start_observed")
     assert execute(engine, run)["state"] == State.MONITOR_DETACHED
     assert env.data["task"]["status"] == "running"
     env.data["source"]["retention_fingerprint"] = "changed"
@@ -548,7 +570,7 @@ def test_resume_monitor_failure_after_confirmed_cancel_stays_partial(rig, monkey
     engine, env, journal = rig
     run = planned(engine)
     env.data["complete_after_polls"] = 100
-    engine.request_detach()
+    detach_on(engine, "transfer_start_observed")
     execute(engine, run)
     original = env.transfer
 
@@ -565,3 +587,79 @@ def test_resume_monitor_failure_after_confirmed_cancel_stays_partial(rig, monkey
     assert saved["state"] == State.PARTIAL
     assert saved["reason"] == "insufficient_capacity"
     assert saved["transfer"]["status"] == "cancelled"
+
+
+def test_transient_inventory_blip_during_monitoring_does_not_cancel(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 3
+    flaky_discover(env, 2)
+    assert execute(engine, run)["state"] == State.VERIFYING
+    assert "cancel" not in operations(env)
+    assert engine.verify(run["id"])["state"] == State.VERIFIED
+
+
+def test_persistent_inventory_outage_is_uncertain_and_leaves_task_running(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    flaky_discover(env, 10**6)
+    with pytest.raises(MigrationError, match="uncertain"):
+        execute(engine, run)
+    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
+    assert env.data["task"]["status"] == "running"
+    assert "cancel" not in operations(env)
+
+
+def test_resume_precheck_blip_does_not_cancel_running_task(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    detach_on(engine, "transfer_start_observed")
+    assert execute(engine, run)["state"] == State.MONITOR_DETACHED
+    env.data["complete_after_polls"] = 3
+    flaky_discover(env, 2)
+    assert Engine(env, journal, engine.clock).resume(run["id"])["state"] == State.VERIFYING
+    assert "cancel" not in operations(env)
+
+
+def test_attest_connection_blip_does_not_strand_the_run(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    original = env.attest_transfer
+    left = {"n": 2}
+
+    def attest(bucket):
+        if env.data["task"] and env.data["task"]["status"] == "running" and left["n"]:
+            left["n"] -= 1
+            raise MigrationError(Code.CONNECTION)
+        return original(bucket)
+
+    env.attest_transfer = attest
+    assert execute(engine, run)["state"] == State.VERIFYING
+
+
+def test_interrupt_before_start_aborts_without_starting_and_can_retry(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    engine.request_detach()
+    with pytest.raises(MigrationError, match="interrupted_before_start"):
+        execute(engine, run)
+    assert "start" not in operations(env)
+    saved = journal.load(run["id"])
+    assert saved["state"] == State.BLOCKED and not saved["transfer_intent"]
+    assert not journal.transfers(run["plan"]["destination"]["id"])
+    assert execute(Engine(env, journal, engine.clock), run)["state"] == State.VERIFYING
+
+
+def test_detach_interrupts_contact_loss_wait(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    env.data["faults"] = {"poll.before": [""] + ["disconnect"] * 1000}
+    detach_on(engine, "monitor_contact_lost")
+    result = execute(engine, run)
+    assert result["state"] == State.MONITOR_DETACHED
+    assert engine.clock.seconds < Policy().contact_loss_seconds
+    assert env.data["task"]["status"] == "running"
+    assert "cancel" not in operations(env)

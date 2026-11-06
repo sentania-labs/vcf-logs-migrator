@@ -13,6 +13,10 @@ from .ports import Environment, SystemClock
 from .verification import reconcile, stable_counts
 
 
+class _Detach(Exception):
+    pass
+
+
 class Engine:
     def __init__(self, environment: Environment, journal: Journal, clock=None, on_event=None):
         self.env = environment
@@ -324,6 +328,7 @@ class Engine:
                 run["backup_ack"] = True
                 run["active_ack"] = bool(active_ack == ACTIVE_ACK)
                 self.journal.transition(run, State.AUTHORIZED)
+                require(not self.detach_requested, Code.INTERRUPTED)
                 # The permanent overlap ledger is intentionally conservative across crashes.
                 self.journal.record_transfer(run)
                 run["transfer_intent"] = True
@@ -351,14 +356,17 @@ class Engine:
                 self.journal.transition(run, State.RECOVERY_REQUIRED, Code.UNCERTAIN)
                 raise MigrationError(Code.UNCERTAIN) from None
 
-    def _poll(self, run, policy):
+    def _contact(self, run, call, *, detachable=True):
+        policy = Policy(**run["plan"]["policy"])
         lost = None
         while True:
             try:
-                return self.env.transfer()
+                return call()
             except MigrationError as error:
                 if error.code != Code.CONNECTION:
                     raise
+            if detachable and self.detach_requested:
+                raise _Detach
             now = self.clock.monotonic()
             if lost is None:
                 lost = now
@@ -367,11 +375,18 @@ class Engine:
             self.clock.sleep(policy.monitor_poll_seconds)
 
     def _monitor(self, run):
-        policy = Policy(**run["plan"]["policy"])
         if run["state"] in {State.MONITOR_DETACHED, State.RECOVERY_REQUIRED}:
             self.journal.transition(run, State.RUNNING)
+        try:
+            return self._watch(run)
+        except _Detach:
+            self.journal.transition(run, State.MONITOR_DETACHED)
+            return run
+
+    def _watch(self, run):
+        policy = Policy(**run["plan"]["policy"])
         while True:
-            transfer = self._poll(run, policy)
+            transfer = self._contact(run, self.env.transfer)
             if run["transfer"] is not None:
                 require(transfer.id == run["transfer"]["id"], Code.UNCERTAIN)
                 require(
@@ -411,14 +426,19 @@ class Engine:
             run["transfer"] = asdict(transfer)
             for b in (Bucket(**b) for b in run["plan"]["selected"]):
                 if b.key in transfer.completed:
-                    require(self.env.attest_transfer(b), Code.INTEGRITY)
+                    require(
+                        self._contact(run, lambda b=b: self.env.attest_transfer(b)),
+                        Code.INTEGRITY,
+                    )
                     run["bucket_outcomes"][b.key] = "complete"
                 elif b.key in transfer.skipped:
                     run["bucket_outcomes"][b.key] = "skipped"
             self._save(run, "transfer_observed")
             try:
-                self._live(run, during=True)
+                self._contact(run, lambda: self._live(run, during=True))
             except MigrationError as error:
+                if error.code == Code.UNCERTAIN:
+                    raise
                 if transfer.status == "running":
                     self._cancel(run)
                 self.journal.transition(run, State.PARTIAL, error.code)
@@ -426,8 +446,7 @@ class Engine:
             if self.stop_requested and transfer.status == "running":
                 return self._cancel(run)
             if self.detach_requested and transfer.status == "running":
-                self.journal.transition(run, State.MONITOR_DETACHED)
-                return run
+                raise _Detach
             if transfer.status != "running":
                 complete = all(v == "complete" for v in run["bucket_outcomes"].values())
                 if transfer.status == "cancelled":
@@ -445,7 +464,7 @@ class Engine:
             self.clock.sleep(policy.monitor_poll_seconds)
 
     def _cancel(self, run):
-        observed = self.env.transfer()
+        observed = self._contact(run, self.env.transfer, detachable=False)
         require(
             run["transfer"] is not None and observed.id == run["transfer"]["id"], Code.UNCERTAIN
         )
@@ -502,13 +521,20 @@ class Engine:
             require(not run["service_obligations"], Code.RECOVERY)
             try:
                 try:
-                    self._live(run, during=True)
+                    self._contact(run, lambda: self._live(run, during=True))
+                except _Detach:
+                    return run
                 except MigrationError as error:
-                    if run["transfer"] is not None and run["state"] in {
-                        State.RUNNING,
-                        State.MONITOR_DETACHED,
-                        State.RECOVERY_REQUIRED,
-                    }:
+                    if (
+                        error.code != Code.UNCERTAIN
+                        and run["transfer"] is not None
+                        and run["state"]
+                        in {
+                            State.RUNNING,
+                            State.MONITOR_DETACHED,
+                            State.RECOVERY_REQUIRED,
+                        }
+                    ):
                         self._cancel(run)
                         self.journal.transition(run, State.PARTIAL, error.code)
                     raise
@@ -541,8 +567,8 @@ class Engine:
                 require(
                     all(v == "complete" for v in run["bucket_outcomes"].values()), Code.INCOMPLETE
                 )
-                self._live(run, during=True)
-                transfer = self.env.transfer()
+                self._contact(run, lambda: self._live(run, during=True), detachable=False)
+                transfer = self._contact(run, self.env.transfer, detachable=False)
                 require(
                     run["transfer"] is not None
                     and transfer.id == run["transfer"]["id"]
@@ -572,7 +598,7 @@ class Engine:
                 result["at"] = self.clock.now()
                 result["window"] = run["plan"]["coverage"]
                 run["verification"] = result
-                self._live(run, during=True)
+                self._contact(run, lambda: self._live(run, during=True), detachable=False)
                 self.journal.transition(
                     run,
                     State.VERIFIED if result["outcome"] == Verification.SUCCESS else State.PARTIAL,

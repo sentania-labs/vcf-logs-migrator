@@ -125,9 +125,12 @@ be unambiguously attributed. Raw task correlation fields are not yet captured.
 `stop RUN_ID` requests cancellation of this run's known task and waits for a
 terminal observation. It cancels even when the source inventory has changed, and a
 confirmed cancellation records `PARTIAL` with the revalidation reason rather than
-`RECOVERY_REQUIRED`. Ctrl-C only detaches the monitor: the run records
+`RECOVERY_REQUIRED`. During `copy`, `resume` and `stop`, Ctrl-C only detaches the
+monitor, including while waiting out a lost connection: the run records
 `MONITOR_DETACHED` (exit 9), the appliance task keeps running, and `resume RUN_ID`
-reattaches by reading the server task. Closing or losing the workstation does not
+reattaches by reading the server task. Ctrl-C before the task is started aborts
+with `interrupted_before_start` and starts nothing. Other commands keep the default
+interrupt behavior. Closing or losing the workstation does not
 stop an appliance task. Cancel never means rollback and never removes partial
 destination data.
 
@@ -135,6 +138,8 @@ A task that is still running is an expected state, not an uncertain one. The
 monitor polls every `--monitor-poll-seconds` for as long as the task runs or makes
 progress. It records `RECOVERY_REQUIRED` only when the task state is genuinely
 unknown, or when the destination stays unreachable for `--contact-loss-seconds`.
+Task polls, inventory revalidation and bucket attestation all retry through that
+same window; a transient connection error never cancels a healthy task.
 A detached run does not block other destination runs by itself; the appliance's
 own running task and the overlap ledger do. `verify` refuses a detached run.
 

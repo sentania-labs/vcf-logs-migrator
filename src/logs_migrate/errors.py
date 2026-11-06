@@ -27,6 +27,7 @@ class Code(StrEnum):
     INTEGRITY = "integrity_mismatch"
     STATE = "invalid_state_transition"
     STORAGE = "journal_unavailable"
+    INTERRUPTED = "interrupted_before_start"
 
 
 class MigrationError(Exception):

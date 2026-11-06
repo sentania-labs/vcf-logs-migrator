@@ -131,7 +131,8 @@ def main(argv=None):
         env = SimulatedEnvironment.from_file(args.fixture, remote_state)
         clock = SimulatedClock()
         engine = Engine(env, journal, clock)
-        previous_signal = signal.signal(signal.SIGINT, lambda *_: engine.request_detach())
+        if args.command in {"run", "copy", "resume", "stop"}:
+            previous_signal = signal.signal(signal.SIGINT, lambda *_: engine.request_detach())
         if args.command == "discover":
             result = engine.discover()
         elif args.command == "plan":
