@@ -52,7 +52,21 @@ def next_actions(run: dict) -> list[str]:
     if run["state"] == State.VERIFYING:
         return ["Run verify; transfer completion is not verified migration success."]
     if run["state"] == State.RECOVERY_REQUIRED:
-        return ["Reattach to the existing task and inspect live state. Do not repeat the POST."]
+        if run.get("preparation", {}).get("pending") and not run["transfer_intent"]:
+            return [
+                "Partition creation had an unknown outcome and no transfer was started.",
+                "Run resume to reconcile the partitions against the destination.",
+            ]
+        return [
+            "Run resume to reattach to the existing task and inspect live state. "
+            "Do not repeat the POST."
+        ]
+    if run["transfer_intent"]:
+        return [
+            "A transfer was started; its buckets are recorded in the transfer ledger, "
+            "so re-planning the same window is refused as an overlap.",
+            "Run verify to account for the data already copied, then follow its outcome.",
+        ]
     return ["Resolve the recorded blocker, rediscover, and review a new immutable plan."]
 
 

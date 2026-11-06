@@ -766,3 +766,38 @@ def test_detach_inside_resume_precheck_records_detached_state(rig, stop):
     from logs_migrate.cli import exit_code
 
     assert exit_code(result) == 9
+
+
+def test_next_actions_for_started_transfer_point_to_verify_not_replan(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["skip_buckets"] = [next(iter(run["bucket_outcomes"]))]
+    execute(engine, run)
+    partial = engine.verify(run["id"])
+    assert partial["state"] == State.PARTIAL
+    actions = " ".join(report_data(partial, journal.events(run["id"]))["next_actions"])
+    assert "Run verify" in actions
+    assert "new immutable plan" not in actions
+
+    stopped = journal.load(run["id"])
+    stopped["state"] = State.STOPPED
+    actions = " ".join(report_data(stopped, journal.events(run["id"]))["next_actions"])
+    assert "Run verify" in actions
+    assert "new immutable plan" not in actions
+
+
+def test_next_actions_for_unstarted_run_say_replan(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    actions = report_data(run, journal.events(run["id"]))["next_actions"]
+    assert actions == ["Resolve the recorded blocker, rediscover, and review a new immutable plan."]
+
+
+def test_next_actions_for_uncertain_partition_create_say_resume(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    run["state"] = State.RECOVERY_REQUIRED
+    run["preparation"] = {"pending": True}
+    actions = " ".join(report_data(run, journal.events(run["id"]))["next_actions"])
+    assert "Run resume" in actions
+    assert "reattach" not in actions.lower()
