@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .models import State
+from .models import State, Verification
 
 
 def report_data(run: dict, events: list[dict]) -> dict:
@@ -62,6 +62,12 @@ def next_actions(run: dict) -> list[str]:
             "Do not repeat the POST."
         ]
     if run["transfer_intent"]:
+        if run["verification"]["outcome"] == Verification.DISCREPANCY:
+            return [
+                "Verification recorded discrepancies; inspect them in the report before "
+                "re-verifying, because verify re-reconciles the same counts.",
+                "Re-planning the same window is refused as an overlap.",
+            ]
         return [
             "A transfer was started; its buckets are recorded in the transfer ledger, "
             "so re-planning the same window is refused as an overlap.",

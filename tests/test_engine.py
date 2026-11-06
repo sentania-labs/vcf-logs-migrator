@@ -6,7 +6,16 @@ from conftest import execute, planned, verified
 
 from logs_migrate.engine import Engine
 from logs_migrate.errors import Code, MigrationError
-from logs_migrate.models import ACTIVE_ACK, Bucket, Policy, State, Window, digest, parse_time
+from logs_migrate.models import (
+    ACTIVE_ACK,
+    Bucket,
+    Policy,
+    State,
+    Verification,
+    Window,
+    digest,
+    parse_time,
+)
 from logs_migrate.planning import build_plan, capacity
 from logs_migrate.reporting import markdown, report_data
 
@@ -801,3 +810,15 @@ def test_next_actions_for_uncertain_partition_create_say_resume(rig):
     actions = " ".join(report_data(run, journal.events(run["id"]))["next_actions"])
     assert "Run resume" in actions
     assert "reattach" not in actions.lower()
+
+
+def test_next_actions_for_recorded_discrepancy_say_inspect_before_reverify(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    run = journal.load(run["id"])
+    run["state"] = State.PARTIAL
+    run["verification"] = {"outcome": Verification.DISCREPANCY.value}
+    actions = " ".join(report_data(run, journal.events(run["id"]))["next_actions"])
+    assert "inspect them in the report before re-verifying" in actions
+    assert "new immutable plan" not in actions
