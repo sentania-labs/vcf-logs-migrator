@@ -4,9 +4,9 @@ A shared Python engine and automation CLI for historical log migration from
 **Aria Operations for Logs 8.18.x** to **VCF Operations for Logs 9.0.x** and
 **9.1.1 preview**, including history older than 90 days.
 
-**Current delivery: engine and CLI with deterministic fixtures. Real appliance
-mutation is disabled pending safety and lab qualification.** The GUI and native
-installers are separate deliveries. This project is not supported by Broadcom.
+**Current delivery: engine, CLI and desktop GUI with deterministic fixtures. Real
+appliance mutation is disabled pending safety and lab qualification.** Native
+installers are a separate delivery. This project is not supported by Broadcom.
 
 The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
 sealed buckets by date, starts the transfer once, reads status directly from the
