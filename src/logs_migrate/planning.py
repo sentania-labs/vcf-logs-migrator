@@ -115,7 +115,7 @@ def build_plan(
         "kind": "fixup" if fixup_only else "migration",
         "source": asdict(source),
         "destination": asdict(destination),
-        "source_fingerprint": source.source_fingerprint,
+        "source_fingerprint": source.cohort_fingerprint([b.key for b in selected]),
         "window": asdict(window),
         "coverage": asdict(bounds),
         "policy": asdict(policy),

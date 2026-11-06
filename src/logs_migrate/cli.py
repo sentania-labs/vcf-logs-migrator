@@ -52,7 +52,14 @@ def parser():
     plan.add_argument("--ceiling-percent", type=int, default=90)
     plan.add_argument("--reserve-bytes", type=int, default=0)
     plan.add_argument("--growth-bytes", type=int, default=0)
-    plan.add_argument("--attempts", type=int, default=6)
+    plan.add_argument("--attempts", type=int, default=6, help="Bounded verification query retries")
+    plan.add_argument("--monitor-poll-seconds", type=float, default=30.0)
+    plan.add_argument(
+        "--contact-loss-seconds",
+        type=float,
+        default=600.0,
+        help="Unreachable-destination window before a running task becomes uncertain",
+    )
     for command in ("run", "copy"):
         run = sub.add_parser(command)
         run.add_argument("run_id")
@@ -81,9 +88,13 @@ def exit_code(run):
         return 5
     if outcome == Verification.INCOMPLETE:
         return 6
-    return {State.BLOCKED: 3, State.STOPPED: 4, State.PARTIAL: 5, State.FAILED: 7}.get(
-        run["state"], 0
-    )
+    return {
+        State.BLOCKED: 3,
+        State.STOPPED: 4,
+        State.PARTIAL: 5,
+        State.FAILED: 7,
+        State.MONITOR_DETACHED: 9,
+    }.get(run["state"], 0)
 
 
 def main(argv=None):
@@ -120,7 +131,7 @@ def main(argv=None):
         env = SimulatedEnvironment.from_file(args.fixture, remote_state)
         clock = SimulatedClock()
         engine = Engine(env, journal, clock)
-        previous_signal = signal.signal(signal.SIGINT, lambda *_: engine.request_stop())
+        previous_signal = signal.signal(signal.SIGINT, lambda *_: engine.request_detach())
         if args.command == "discover":
             result = engine.discover()
         elif args.command == "plan":
@@ -131,6 +142,8 @@ def main(argv=None):
                     args.reserve_bytes,
                     args.growth_bytes,
                     attempts=args.attempts,
+                    monitor_poll_seconds=args.monitor_poll_seconds,
+                    contact_loss_seconds=args.contact_loss_seconds,
                 ),
                 tail_of=args.tail_of,
                 create_missing=args.create_missing,

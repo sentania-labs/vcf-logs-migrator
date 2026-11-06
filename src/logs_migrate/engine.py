@@ -20,6 +20,7 @@ class Engine:
         self.clock = clock or SystemClock()
         self.on_event = on_event
         self.stop_requested = False
+        self.detach_requested = False
 
     def _execution_gate(self):
         # Deliberate release gate, not a user-overridable acknowledgment. Live lab qualification
@@ -29,6 +30,10 @@ class Engine:
     def request_stop(self):
         """Signal-safe intent; the monitor journals cancellation at its next checkpoint."""
         self.stop_requested = True
+
+    def request_detach(self):
+        """Signal-safe intent to stop observing. The appliance task is left running."""
+        self.detach_requested = True
 
     def _save(self, run, kind, details=None):
         self.journal.save(run, kind, details)
@@ -92,6 +97,7 @@ class Engine:
                 "backup_verified": False,
                 "service_obligations": {},
                 "bucket_outcomes": {},
+                "tail_data": [],
                 "verification": {"outcome": Verification.PENDING.value},
             }
             self._save(run, "created")
@@ -177,7 +183,7 @@ class Engine:
                 error.run_id = run["id"]
                 raise error from None
 
-    def _overlap(self, plan, own_run=None):
+    def _overlap(self, plan):
         destination = Cluster.from_dict(plan["destination"])
         require(destination.history_complete, Code.INCOMPLETE)
         window = Window(**plan["window"])
@@ -189,27 +195,17 @@ class Engine:
             ancestors.add(tail)
             tail = self.journal.load(tail)["plan"]["tail_of"]
         for h in self.journal.transfers(destination.id):
-            if h["run"] == own_run:
-                continue
             require(not (selected_ids & set(h["bucket_ids"])), Code.OVERLAP)
             require(set(h["destination_nodes"]) == {n.id for n in destination.nodes}, Code.TOPOLOGY)
             if window.overlaps(Window(h["start"], h["end"])):
                 require(h["run"] in ancestors, Code.OVERLAP)
-                require(
-                    set(h["destination_nodes"]) == {n.id for n in destination.nodes}, Code.TOPOLOGY
-                )
-                require(not (selected_ids & set(h["bucket_ids"])), Code.OVERLAP)
         for h in self.env.history():
             if h.destination != destination.id:
                 continue
-            own_ids = {b["id"] for b in plan["selected"]} if own_run else set()
-            require(not (selected_ids & set(h.bucket_ids) - own_ids), Code.OVERLAP)
+            require(not (selected_ids & set(h.bucket_ids)), Code.OVERLAP)
             if window.overlaps(h.window):
                 # External history may be reconciled only by a recorded run with the same IDs.
-                permitted = own_run is not None and set(h.bucket_ids) <= {
-                    b["id"] for b in plan["selected"]
-                }
-                permitted |= (
+                permitted = (
                     bool(ancestors)
                     and h.complete
                     and set(h.bucket_ids) <= set(plan["previously_copied"])
@@ -219,6 +215,24 @@ class Engine:
                     set(h.destination_nodes) == {n.id for n in destination.nodes}, Code.TOPOLOGY
                 )
 
+    def _tail(self, run, source, *, strict):
+        """Sealed in-window buckets the plan does not cover are tail data for a later run."""
+        plan = run["plan"]
+        window = Window(**plan["window"])
+        known = set(plan["api_selected"])
+        found = []
+        for b in source.buckets:
+            if b.status == "active" or b.key in known:
+                continue
+            if not b.bounds_proven or b.start is None or b.end is None:
+                require(not strict, Code.INVENTORY_CHANGED)
+            elif b.selected(window):
+                found.append(b.key)
+        require(not (strict and found), Code.INVENTORY_CHANGED)
+        if sorted(found) != run.get("tail_data", []):
+            run["tail_data"] = sorted(found)
+            self._save(run, "tail_data_observed", {"buckets": run["tail_data"]})
+
     def _live(self, run, *, during=False):
         plan = run["plan"]
         require(digest(plan) == run["plan_hash"], Code.INTEGRITY)
@@ -226,7 +240,11 @@ class Engine:
         compatible(source, destination)
         previous = Cluster.from_dict(plan["destination"])
         require(destination.identity_fingerprint == previous.identity_fingerprint, Code.TOPOLOGY)
-        require(source.source_fingerprint == plan["source_fingerprint"], Code.INVENTORY_CHANGED)
+        require(
+            source.cohort_fingerprint(plan["api_selected"]) == plan["source_fingerprint"],
+            Code.INVENTORY_CHANGED,
+        )
+        self._tail(run, source, strict=not during)
         require(
             destination.retention_fingerprint == previous.retention_fingerprint,
             Code.INVENTORY_CHANGED,
@@ -246,7 +264,7 @@ class Engine:
                 require(before.key in live and live[before.key] == before, Code.INVENTORY_CHANGED)
         selected = tuple(Bucket(**b) for b in plan["selected"])
         if not during:
-            self._overlap(plan, run["id"] if run["transfer_intent"] else None)
+            self._overlap(plan)
             for b in selected:
                 require(not any(d.id == b.id for d in destination.buckets), Code.COLLISION)
         policy = Policy(**plan["policy"])
@@ -333,10 +351,27 @@ class Engine:
                 self.journal.transition(run, State.RECOVERY_REQUIRED, Code.UNCERTAIN)
                 raise MigrationError(Code.UNCERTAIN) from None
 
+    def _poll(self, run, policy):
+        lost = None
+        while True:
+            try:
+                return self.env.transfer()
+            except MigrationError as error:
+                if error.code != Code.CONNECTION:
+                    raise
+            now = self.clock.monotonic()
+            if lost is None:
+                lost = now
+                self._save(run, "monitor_contact_lost")
+            require(now - lost < policy.contact_loss_seconds, Code.UNCERTAIN)
+            self.clock.sleep(policy.monitor_poll_seconds)
+
     def _monitor(self, run):
         policy = Policy(**run["plan"]["policy"])
-        for _ in range(policy.attempts):
-            transfer = self.env.transfer()
+        if run["state"] in {State.MONITOR_DETACHED, State.RECOVERY_REQUIRED}:
+            self.journal.transition(run, State.RUNNING)
+        while True:
+            transfer = self._poll(run, policy)
             if run["transfer"] is not None:
                 require(transfer.id == run["transfer"]["id"], Code.UNCERTAIN)
                 require(
@@ -390,6 +425,9 @@ class Engine:
                 raise
             if self.stop_requested and transfer.status == "running":
                 return self._cancel(run)
+            if self.detach_requested and transfer.status == "running":
+                self.journal.transition(run, State.MONITOR_DETACHED)
+                return run
             if transfer.status != "running":
                 complete = all(v == "complete" for v in run["bucket_outcomes"].values())
                 if transfer.status == "cancelled":
@@ -404,10 +442,7 @@ class Engine:
                 else:
                     self.journal.transition(run, State.PARTIAL, Code.INCOMPLETE)
                 return run
-            self.clock.sleep(policy.poll_seconds)
-        # Server can still be running; returning does not assert it was stopped.
-        self.journal.transition(run, State.RECOVERY_REQUIRED, Code.UNCERTAIN)
-        return run
+            self.clock.sleep(policy.monitor_poll_seconds)
 
     def _cancel(self, run):
         observed = self.env.transfer()
@@ -468,15 +503,21 @@ class Engine:
             try:
                 try:
                     self._live(run, during=True)
-                except MigrationError:
-                    if run["transfer"] is not None:
+                except MigrationError as error:
+                    if run["transfer"] is not None and run["state"] in {
+                        State.RUNNING,
+                        State.MONITOR_DETACHED,
+                        State.RECOVERY_REQUIRED,
+                    }:
                         self._cancel(run)
+                        self.journal.transition(run, State.PARTIAL, error.code)
                     raise
                 # An unacknowledged POST cannot be attributed by task state alone.
                 require(run["transfer"] is not None, Code.UNCERTAIN)
                 return self._monitor(run)
             except MigrationError as error:
-                self.journal.transition(run, State.RECOVERY_REQUIRED, error.code)
+                if run["state"] not in {State.RECOVERY_REQUIRED, State.PARTIAL, State.STOPPED}:
+                    self.journal.transition(run, State.RECOVERY_REQUIRED, error.code)
                 raise
             except Exception:
                 self.journal.transition(run, State.RECOVERY_REQUIRED, Code.UNCERTAIN)
@@ -494,6 +535,7 @@ class Engine:
                 }
                 self._save(run, "verification_deferred_for_recovery")
                 return run
+            require(run["state"] != State.MONITOR_DETACHED, Code.BUSY)
             require(run["transfer_intent"] and not run["service_obligations"], Code.STATE)
             try:
                 require(
@@ -570,7 +612,8 @@ class Engine:
             source, destination = self.env.discover()
             require(not self.journal.unresolved(destination.id, run_id), Code.RECOVERY)
             require(
-                source.source_fingerprint == run["plan"]["source_fingerprint"],
+                source.cohort_fingerprint(run["plan"]["api_selected"])
+                == run["plan"]["source_fingerprint"],
                 Code.INVENTORY_CHANGED,
             )
             require(destination.version.startswith("9.0."), Code.UNSUPPORTED)

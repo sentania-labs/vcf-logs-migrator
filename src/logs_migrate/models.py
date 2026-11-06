@@ -42,6 +42,7 @@ class State(StrEnum):
     PREFLIGHT_PASSED = "PREFLIGHT_PASSED"
     AUTHORIZED = "AUTHORIZED"
     RUNNING = "RUNNING"
+    MONITOR_DETACHED = "MONITOR_DETACHED"
     VERIFYING = "VERIFYING"
     VERIFIED = "VERIFIED"
     BLOCKED = "BLOCKED"
@@ -184,19 +185,17 @@ class Cluster:
     def identity_fingerprint(self) -> str:
         return digest([self.id, self.version, self.identity, sorted(n.id for n in self.nodes)])
 
-    @property
-    def source_fingerprint(self) -> str:
-        # Active content changes normally. Sealing, removal, or any sealed-content change do not.
+    def cohort_fingerprint(self, keys: tuple[str, ...] | list[str]) -> str:
+        # Binds the endpoint, retention, routing and the exact selected buckets. Other buckets,
+        # including a rotating active bucket, are deliberately outside the plan.
+        live = {b.key: asdict(b) for b in self.buckets}
         return digest(
             {
                 "identity": self.identity_fingerprint,
                 "retention": self.retention_fingerprint,
                 "partitions": [asdict(p) for p in self.partitions],
                 "fields": self.fields,
-                "buckets": [
-                    asdict(b) if b.status != "active" else {"key": b.key, "status": b.status}
-                    for b in sorted(self.buckets, key=lambda b: b.key)
-                ],
+                "cohort": [[key, live.get(key)] for key in sorted(keys)],
             }
         )
 
@@ -265,6 +264,8 @@ class Policy:
     attempts: int = 6
     poll_seconds: float = 30.0
     retention_margin_seconds: int = 86400
+    monitor_poll_seconds: float = 30.0
+    contact_loss_seconds: float = 600.0
 
     def __post_init__(self):
         require(1 <= self.ceiling_percent <= 94, Code.INVALID_INPUT)
@@ -279,6 +280,7 @@ class Policy:
             Code.INVALID_INPUT,
         )
         require(2 <= self.attempts <= 10000 and self.poll_seconds >= 0, Code.INVALID_INPUT)
+        require(self.monitor_poll_seconds > 0 and self.contact_loss_seconds > 0, Code.INVALID_INPUT)
 
 
 def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") -> str | None:

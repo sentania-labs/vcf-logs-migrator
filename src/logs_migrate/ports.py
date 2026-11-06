@@ -75,6 +75,7 @@ class Environment(Protocol):
 
 class Clock(Protocol):
     def now(self) -> str: ...
+    def monotonic(self) -> float: ...
     def sleep(self, seconds: float) -> None: ...
 
 
@@ -83,6 +84,11 @@ class SystemClock:
         from datetime import UTC, datetime
 
         return datetime.now(UTC).isoformat()
+
+    def monotonic(self) -> float:
+        import time
+
+        return time.monotonic()
 
     def sleep(self, seconds: float) -> None:
         import time

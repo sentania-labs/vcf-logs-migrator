@@ -23,6 +23,9 @@ class SimulatedClock:
     def now(self):
         return datetime.fromtimestamp(1_793_923_200 + self.seconds, UTC).isoformat()
 
+    def monotonic(self):
+        return self.seconds
+
     def sleep(self, seconds):
         self.seconds += seconds
 

@@ -123,9 +123,20 @@ migration plan. Unresolved preparation blocks other writes to the destination.
 An unacknowledged POST remains recovery-required when the returned task cannot
 be unambiguously attributed. Raw task correlation fields are not yet captured.
 `stop RUN_ID` requests cancellation of this run's known task and waits for a
-terminal observation. Ctrl-C requests the same cooperative stop while monitoring.
-Closing or losing the workstation does not stop an appliance task. Cancel never
-means rollback and never removes partial destination data.
+terminal observation. It cancels even when the source inventory has changed, and a
+confirmed cancellation records `PARTIAL` with the revalidation reason rather than
+`RECOVERY_REQUIRED`. Ctrl-C only detaches the monitor: the run records
+`MONITOR_DETACHED` (exit 9), the appliance task keeps running, and `resume RUN_ID`
+reattaches by reading the server task. Closing or losing the workstation does not
+stop an appliance task. Cancel never means rollback and never removes partial
+destination data.
+
+A task that is still running is an expected state, not an uncertain one. The
+monitor polls every `--monitor-poll-seconds` for as long as the task runs or makes
+progress. It records `RECOVERY_REQUIRED` only when the task state is genuinely
+unknown, or when the destination stays unreachable for `--contact-loss-seconds`.
+A detached run does not block other destination runs by itself; the appliance's
+own running task and the overlap ledger do. `verify` refuses a detached run.
 
 `status` reads the durable journal and labels it as journal-only observation.
 Use `resume` for live revalidation through the selected adapter. Unknown service
@@ -144,7 +155,16 @@ For a conflicting or partial destination bucket:
 The engine freezes the whole-bucket coverage and selected cohort, obtains two
 agreeing explicitly complete observations, and rejects missing completeness.
 The default separation is 30 seconds on the injected clock. Fixture clocks
-advance without sleeping. Polling is bounded by `--attempts` on the plan.
+advance without sleeping. Verification query retries are bounded by `--attempts` on the plan; this is separate
+from task monitoring.
+
+Plan gates bind the endpoint identities, retention, partitions, extracted fields and
+the exact selected buckets (presence, status, size, counts and manifest). Active
+bucket rotation is informational. A bucket that seals inside the window after
+planning is recorded as tail data and reported as not copied; it blocks only before
+the task starts, because the appliance would otherwise select it. On 9.0 plan the
+same window with `--tail-of`; on 9.1.1 plan a later run that selects no previously
+imported bucket.
 
 Expected destination content is the exact disjoint sealed source cohort plus
 the captured pre-existing destination baseline plus independently attributed new
@@ -171,6 +191,7 @@ Exit codes:
 | 6 | Incomplete verification |
 | 7 | Operation or verification failure |
 | 8 | Recovery required or uncertain remote outcome |
+| 9 | Monitor detached; the appliance task is still running |
 
 `verify` returns zero only on verified success. `status` and `report` return zero
 when reading/exporting an unsuccessful run successfully; inspect their contents.

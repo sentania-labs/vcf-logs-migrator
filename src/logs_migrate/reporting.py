@@ -31,8 +31,24 @@ def next_actions(run: dict) -> list[str]:
             "Use a clean destination or obtain a separately reviewed manual recovery procedure.",
             "The tool cannot repair this by deleting or overwriting destination data.",
         ]
+    if run["state"] == State.MONITOR_DETACHED:
+        return [
+            "The appliance task is still running; monitoring was detached, not stopped.",
+            "Run resume to reattach to the existing task, or stop to cancel it.",
+        ]
     if run["state"] == State.VERIFIED:
-        return ["Retain this evidence and the journal. Active buckets remain excluded."]
+        actions = ["Retain this evidence and the journal. Active buckets remain excluded."]
+        if run.get("tail_data"):
+            if run["plan"]["destination"]["version"].startswith("9.0."):
+                actions.append(
+                    "Sealed tail data was not copied; plan the same window with --tail-of."
+                )
+            else:
+                actions.append(
+                    "Sealed tail data was not copied; plan a later run whose window selects "
+                    "no previously imported bucket."
+                )
+        return actions
     if run["state"] == State.VERIFYING:
         return ["Run verify; transfer completion is not verified migration success."]
     if run["state"] == State.RECOVERY_REQUIRED:
@@ -81,6 +97,8 @@ def markdown(run: dict, events: list[dict], timezone: str = "America/Chicago") -
             "",
             f"Active buckets skipped: {len(plan['active_skipped'])}. Last fully sealed day: "
             f"{plan['last_fully_sealed_day'] or 'unknown because active bounds are unproven'}.",
+            "",
+            f"Tail data sealed after planning, not copied: {len(run.get('tail_data', []))}.",
             "",
             "## Bucket outcomes",
             "",

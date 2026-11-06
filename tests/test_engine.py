@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 import pytest
 from conftest import execute, planned, verified
 
+from logs_migrate.engine import Engine
 from logs_migrate.errors import MigrationError
 from logs_migrate.models import ACTIVE_ACK, Bucket, Policy, State, Window, digest, parse_time
 from logs_migrate.planning import build_plan, capacity
@@ -239,16 +240,116 @@ def test_lost_post_response_never_reposts(rig):
     assert operations(env).count("start") == 1
 
 
-def test_reattach_running_task_does_not_repost(rig):
+def test_long_running_task_is_monitored_not_uncertain(rig):
     engine, env, journal = rig
     run = planned(engine)
     env.data["complete_after_polls"] = 100
-    assert execute(engine, run)["state"] == State.RECOVERY_REQUIRED
-    env.data["complete_after_polls"] = 1
-    assert engine.resume(run["id"])["state"] == State.VERIFYING
+    result = execute(engine, run)
+    assert result["state"] == State.VERIFYING
+    assert env.data["poll"] == 100 > Policy().attempts
+    assert not journal.unresolved(run["plan"]["destination"]["id"])
     assert engine.verify(run["id"])["state"] == State.VERIFIED
+
+
+def test_detach_leaves_task_running_and_resume_reattaches_without_repost(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    engine.request_detach()
+    result = execute(engine, run)
+    assert result["state"] == State.MONITOR_DETACHED
+    assert env.data["task"]["status"] == "running"
+    assert "cancel" not in operations(env)
+    assert not journal.unresolved(run["plan"]["destination"]["id"])
+    with pytest.raises(MigrationError, match="destination_busy"):
+        engine.verify(run["id"])
+    assert journal.load(run["id"])["state"] == State.MONITOR_DETACHED
+    env.data["complete_after_polls"] = 1
+    reattached = Engine(env, journal, engine.clock)
+    assert reattached.resume(run["id"])["state"] == State.VERIFYING
+    assert reattached.verify(run["id"])["state"] == State.VERIFIED
     assert operations(env).count("start") == 1
     assert journal.load(run["id"])["verification"]["actual_count"] == 8
+
+
+def test_stop_cancels_a_detached_task(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    engine.request_detach()
+    execute(engine, run)
+    stopper = Engine(env, journal, engine.clock)
+    stopper.request_stop()
+    assert stopper.resume(run["id"])["state"] == State.STOPPED
+    assert env.data["task"]["status"] == "cancelled"
+
+
+def test_transient_contact_loss_keeps_monitoring(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 3
+    env.data["faults"] = {"poll.before": ["", "disconnect", "disconnect"]}
+    assert execute(engine, run)["state"] == State.VERIFYING
+    kinds = [e["kind"] for e in journal.events(run["id"])]
+    assert kinds.count("monitor_contact_lost") == 1
+
+
+def test_contact_loss_beyond_window_is_uncertain_and_never_cancels(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["faults"] = {"poll.before": [""] + ["disconnect"] * 1000}
+    with pytest.raises(MigrationError, match="uncertain"):
+        execute(engine, run)
+    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
+    assert "cancel" not in operations(env)
+    assert engine.clock.seconds >= Policy().contact_loss_seconds
+
+
+def test_source_rotation_after_copy_still_verifies_and_reports_tail(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    buckets = env.data["source"]["buckets"]
+    sealed = dict(buckets[-1], status="archived", bounds_proven=True)
+    sealed.update(
+        start=parse_time("2026-03-31T00:00:00Z"),
+        end=parse_time("2026-03-31T12:00:00Z"),
+        manifest=digest("late"),
+        messages=1,
+        size=10,
+    )
+    buckets[-1] = sealed
+    buckets.append({**sealed, "id": "00000000-0000-0000-0000-000000000005", "status": "active"})
+    result = engine.verify(run["id"])
+    assert result["state"] == State.VERIFIED
+    assert result["tail_data"] == ["src-1/00000000-0000-0000-0000-000000000004"]
+    assert "--tail-of" in report_data(result, journal.events(run["id"]))["next_actions"][-1]
+
+
+def test_selected_bucket_change_after_copy_still_stops_verification(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    env.data["source"]["buckets"][0]["manifest"] = digest("changed")
+    result = engine.verify(run["id"])
+    assert result["state"] == State.PARTIAL
+    assert result["verification"]["reason"] == "inventory_changed"
+
+
+def test_new_in_window_sealed_bucket_blocks_before_start(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    active = env.data["source"]["buckets"][-1]
+    active.update(
+        status="archived",
+        bounds_proven=True,
+        start=parse_time("2026-03-31T00:00:00Z"),
+        end=parse_time("2026-03-31T12:00:00Z"),
+        manifest=digest("late"),
+    )
+    with pytest.raises(MigrationError, match="inventory_changed"):
+        execute(engine, run)
+    assert "start" not in operations(env)
 
 
 def test_cooperative_stop_waits_for_server_and_preserves_outcome(rig):
@@ -268,15 +369,24 @@ def test_resume_precheck_failure_still_cancels_running_task(rig):
     engine, env, journal = rig
     env.data["complete_after_polls"] = 100
     run = planned(engine)
-    assert execute(engine, run)["state"] == State.RECOVERY_REQUIRED
+    engine.request_detach()
+    assert execute(engine, run)["state"] == State.MONITOR_DETACHED
     assert env.data["task"]["status"] == "running"
     env.data["source"]["retention_fingerprint"] = "changed"
-    engine.request_stop()
+    stopper = Engine(env, journal, engine.clock)
+    stopper.request_stop()
     with pytest.raises(MigrationError, match="inventory_changed"):
-        engine.resume(run["id"])
+        stopper.resume(run["id"])
     assert operations(env).count("cancel") == 1
     assert env.data["task"]["status"] == "cancelled"
-    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
+    saved = journal.load(run["id"])
+    assert saved["state"] == State.PARTIAL
+    assert saved["reason"] == "inventory_changed"
+    with pytest.raises(MigrationError, match="inventory_changed"):
+        stopper.resume(run["id"])
+    assert journal.load(run["id"])["state"] == State.PARTIAL
+    assert operations(env).count("cancel") == 1
+    assert not journal.unresolved(run["plan"]["destination"]["id"])
 
 
 def test_cancel_failure_is_not_stopped(rig):
@@ -432,3 +542,26 @@ def test_source_auth_failure_stops_at_first_node_without_api_test(rig):
         execute(engine, run)
     assert operations(env).count("test_source_credentials") == 1
     assert "test_mover" not in operations(env)
+
+
+def test_resume_monitor_failure_after_confirmed_cancel_stays_partial(rig, monkeypatch):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["complete_after_polls"] = 100
+    engine.request_detach()
+    execute(engine, run)
+    original = env.transfer
+
+    def poll_then_exhaust():
+        result = original()
+        if result.status == "running":
+            env.data["destination"]["nodes"][0]["repository_available"] = 1
+        return result
+
+    monkeypatch.setattr(env, "transfer", poll_then_exhaust)
+    with pytest.raises(MigrationError, match="capacity"):
+        Engine(env, journal, engine.clock).resume(run["id"])
+    saved = journal.load(run["id"])
+    assert saved["state"] == State.PARTIAL
+    assert saved["reason"] == "insufficient_capacity"
+    assert saved["transfer"]["status"] == "cancelled"
