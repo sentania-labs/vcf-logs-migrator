@@ -71,7 +71,7 @@ class RestConfigEnvironment:
                 Code.INVALID_INPUT,
             )
         if existing is not None:
-            require(bool(existing["id"]), Code.SCHEMA)
+            require(bool(existing["id"]), Code.UNSUPPORTED)
             # Updates address the destination object, never a source-only ID.
             self.destination.call("PUT", path + "/" + quote(existing["id"], safe=""), body)
         elif kind == "forwarding":

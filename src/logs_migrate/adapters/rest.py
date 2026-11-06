@@ -155,15 +155,16 @@ class Logs90:
                 )
             )
         )
+        config_only = config_call and (method, path) not in allowed
         require(
             (method, path) in allowed
             or config_call
             or (method == "GET" and path.startswith("/api/v1/aggregated-events/timestamp/")),
             Code.UNSUPPORTED,
         )
-        if method != "GET" or config_call:
+        if method != "GET" or config_only:
             require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
-        if config_call:
+        if config_only:
             require(
                 isinstance(getattr(self, "ops_transport", self.transport), RecordedTransport),
                 Code.UNSUPPORTED,

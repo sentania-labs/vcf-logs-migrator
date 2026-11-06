@@ -148,6 +148,8 @@ def test_live_engine_and_rest_are_gated_before_network(config_env):
             ("PUT", path + "/id"),
             ("DELETE", path + "/id"),
         ]:
+            if (method, route) == ("GET", ROUTES["partitions"][0]):
+                continue
             with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
                 destination.call(method, route, {})
 
@@ -315,3 +317,51 @@ def test_preview_auth_exchange_cannot_escape_config_gate():
         ConfigMigration(env).compare()
     with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
         destination.call("GET", "/api/v1/log-mask")
+
+
+def test_prewrite_validation_failure_is_failed_not_uncertain(config_env):
+    config_env.data["destination"]["partitions"][0]["id"] = 5
+    config_env.data["source"]["partitions"][0]["retention_seconds"] = 86400
+    result = Engine(config_env, None).config_apply(["partitions:Default"])
+    row = next(r for r in result["rules"] if r["selector"] == "partitions:Default")
+    assert row["status"] == "failed" and row["reason"] == Code.SCHEMA
+    assert config_env.data["trace"] == []
+
+
+def test_rest_default_partition_empty_id_fails_before_any_write():
+    def inventory(partitions):
+        return [
+            record("GET", ROUTES["partitions"][0], {"partitions": partitions}),
+            record("GET", ROUTES["filters"][0], {"logFilterRules": []}),
+            record("GET", ROUTES["masking"][0], {"logMaskRules": []}),
+            record("GET", ROUTES["forwarding"][0], []),
+        ]
+
+    source = client(inventory([{"id": "", "name": "Default", "retention_seconds": 86400}]))
+    destination = client(inventory([{"id": "", "name": "Default", "retention_seconds": 1}]))
+    env = RestConfigEnvironment(source, destination, "9.0.2")
+    result = ConfigMigration(env).apply(["partitions:Default"])
+    row = next(r for r in result["rules"] if r["selector"] == "partitions:Default")
+    assert row["status"] == "failed" and row["reason"] == Code.UNSUPPORTED
+    assert not result["complete"]
+    assert [(m, p) for m, p, *_ in destination.transport.requests if m != "GET"] == [
+        ("POST", "/api/v1/sessions")
+    ]
+
+
+def test_partitions_read_is_not_narrowed_by_config_gate():
+    class Live:
+        def __init__(self):
+            self.requests = []
+
+        def request(self, method, path, body=None, headers=None):
+            self.requests.append((method, path))
+            return {"partitions": []}
+
+    transport = Live()
+    live = Logs90(transport, "admin", Secret("test"))
+    live.token = Secret("t")
+    assert live.partitions() == {"partitions": []}
+    assert transport.requests == [("GET", "/api/v1/partitioning")]
+    with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
+        live.call("GET", "/api/v1/log-mask")

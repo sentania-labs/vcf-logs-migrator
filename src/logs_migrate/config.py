@@ -152,6 +152,11 @@ class ConfigMigration:
                 kind, name = row["type"], row["name"]
                 rule, existing = source[kind][name], destination[kind].get(name)
                 try:
+                    write_body(kind, rule, existing)
+                except MigrationError as error:
+                    result.update(status="failed", reason=error.code.value)
+                    continue
+                try:
                     self.env.config_write(kind, rule, existing)
                 except MigrationError as error:
                     # A transport/auth error can follow an accepted write. No automatic retry.
