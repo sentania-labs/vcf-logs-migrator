@@ -42,7 +42,7 @@ the exact acknowledgment below.
 
 ```sh
 logs-migrate --journal /private/migration/run.sqlite \
-  --fixture tests/fixtures/sealed-populated.fixture run RUN_UUID \
+  --fixture tests/fixtures/sealed-populated.fixture copy RUN_UUID \
   --ack-backup \
   --ack-active "i understand you aren't going to copy the latest data"
 logs-migrate --journal /private/migration/run.sqlite \
