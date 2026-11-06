@@ -179,7 +179,14 @@ imported bucket.
 
 Expected destination content is the exact disjoint sealed source cohort plus
 the captured pre-existing destination baseline plus independently attributed new
-ingest. The simulator verifies daily counts and event-and-field identity
+ingest. Events already in that run's baseline are excluded from its ingest cohort,
+including ingest retained from earlier runs. A new transfer to the same destination
+is blocked with `verification_pending` until earlier transfers have complete
+verification evidence, even for disjoint windows. Retry `verify` on the earlier run
+before starting the next transfer. A complete discrepancy report remains a discrepancy;
+it is not relabeled as success to release this guard.
+
+The simulator verifies daily counts and event-and-field identity
 multiplicity. A missing event replaced by a duplicate fails even when totals
 agree. Unexplained retirement, missing baseline content, unstable ingest,
 ambiguous cohorts, or incomplete query evidence cannot yield verified success.

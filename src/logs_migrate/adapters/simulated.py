@@ -16,6 +16,10 @@ from ..models import Cluster, Counts, Partition, Window, canonical, digest
 from ..ports import History, NodeTransfer, Transfer
 
 
+def event_identity(event):
+    return digest([event["id"], event["time"], event.get("fields", {})])
+
+
 class SimulatedClock:
     def __init__(self):
         self.seconds = 0
@@ -159,7 +163,19 @@ class SimulatedEnvironment:
         elif scope == "destination":
             events = self.data["destination_events"]
         elif scope == "ingest":
-            events = [e for e in self.data["destination_events"] if e.get("cohort") == "ingest"]
+            baseline = Counter()
+            for event in self.data["baseline_events"]:
+                baseline[event_identity(event)] += event.get("multiplicity", 1)
+            events = []
+            for event in self.data["destination_events"]:
+                if event.get("cohort") != "ingest":
+                    continue
+                identity = event_identity(event)
+                count = event.get("multiplicity", 1)
+                retained = min(baseline[identity], count)
+                baseline[identity] -= retained
+                if count > retained:
+                    events.append({**event, "multiplicity": count - retained})
         else:
             raise MigrationError(Code.SCHEMA)
         daily = Counter()
@@ -168,7 +184,7 @@ class SimulatedEnvironment:
             if window.start <= e["time"] < window.end:
                 day = datetime.fromtimestamp(e["time"] / 1000, UTC).date().isoformat()
                 daily[day] += e.get("multiplicity", 1)
-                identity = digest([e["id"], e["time"], e.get("fields", {})])
+                identity = event_identity(e)
                 identities[day + "/" + identity] += e.get("multiplicity", 1)
         complete = True
         replies = self.data.get("query_completeness", {}).get(scope, [])
@@ -207,7 +223,7 @@ class SimulatedEnvironment:
             "keys": list(bucket_keys),
             "window": asdict(window),
         }
-        self.data["baseline_events"] = list(self.data["destination_events"])
+        self.data["baseline_events"] = json.loads(canonical(self.data["destination_events"]))
         self.data["poll"] = 0
         source, dest = self.discover()
         self.data["history"].append(

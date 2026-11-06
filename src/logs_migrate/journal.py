@@ -178,6 +178,14 @@ class Journal:
                 pending.append(run["id"])
         return pending
 
+    def awaiting_verification(self, destination: str) -> list[str]:
+        """The current appliance task is needed until its transfer is fully accounted for."""
+        return [
+            transfer["run"]
+            for transfer in self.transfers(destination)
+            if self.load(transfer["run"])["verification"].get("complete") is not True
+        ]
+
     def events(self, run_id: str) -> list[dict]:
         return [
             {"sequence": seq, "at": at, "kind": kind, "details": json.loads(body)}

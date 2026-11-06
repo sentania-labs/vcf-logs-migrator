@@ -24,6 +24,11 @@ def next_actions(run: dict) -> list[str]:
             "Reconcile the run-owned recovery marker and catalog backup before recovery.",
             "A damaged catalog requires manual restoration from its backup; do not delete buckets.",
         ]
+    if run["reason"] == "verification_pending":
+        return [
+            "Complete verification of earlier transfers to this destination.",
+            "Then retry this run with its reviewed plan; no new transfer has started.",
+        ]
     if run["reason"] == "bucket_identity_conflict":
         return [
             "Preserve the conflicting bucket and its catalog entry.",

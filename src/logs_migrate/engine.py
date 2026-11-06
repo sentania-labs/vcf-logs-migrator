@@ -303,6 +303,10 @@ class Engine:
                     not self.journal.unresolved(run["plan"]["destination"]["id"], run_id),
                     Code.RECOVERY,
                 )
+                require(
+                    not self.journal.awaiting_verification(run["plan"]["destination"]["id"]),
+                    Code.VERIFICATION_PENDING,
+                )
                 require(plan_hash == run["plan_hash"] and backup_ack, Code.ACK)
                 require(not run["plan"]["active_skipped"] or active_ack == ACTIVE_ACK, Code.ACK)
                 _, _, reservations = self._live(run)

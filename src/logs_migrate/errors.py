@@ -20,6 +20,7 @@ class Code(StrEnum):
     CONNECTION = "connection_failed"
     SCHEMA = "unrecognized_response_schema"
     INCOMPLETE = "incomplete_evidence"
+    VERIFICATION_PENDING = "verification_pending"
     UNCERTAIN = "remote_outcome_uncertain"
     BUSY = "destination_busy"
     SERVICE = "service_state_unconfirmed"

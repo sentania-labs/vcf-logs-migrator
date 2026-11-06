@@ -64,6 +64,93 @@ def test_full_workflow_populated_target_ingest_and_no_source_mutation(rig):
     assert kinds.index("transfer_start_intent") < kinds.index("transfer_start_observed")
 
 
+@pytest.mark.parametrize("incomplete_query", [False, True])
+def test_disjoint_transfer_waits_for_prior_verification(rig, incomplete_query):
+    engine, env, journal = rig
+    first = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    execute(engine, first)
+    if incomplete_query:
+        env.data["query_completeness"] = {"destination": [False] * 10}
+        assert engine.verify(first["id"])["verification"]["complete"] is False
+        env.data["query_completeness"] = {}
+    first_task = env.data["task"]["id"]
+    second = engine.plan(
+        Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    # A fresh engine must enforce the durable dependency, not an in-memory flag.
+    restarted = Engine(env, journal, engine.clock)
+    with pytest.raises(MigrationError, match="verification_pending"):
+        execute(restarted, second)
+    blocked_report = report_data(journal.load(second["id"]), journal.events(second["id"]))
+    assert "Complete verification of earlier transfers" in blocked_report["next_actions"][0]
+    assert env.data["task"]["id"] == first_task
+    assert operations(env).count("start") == 1
+    assert restarted.verify(first["id"])["state"] == State.VERIFIED
+    execute(restarted, second)
+    assert restarted.verify(second["id"])["state"] == State.VERIFIED
+
+
+def test_complete_discrepancy_does_not_block_a_disjoint_transfer(rig):
+    engine, env, journal = rig
+    first = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    execute(engine, first)
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e["id"] != "event-0-0"
+    ]
+    result = engine.verify(first["id"])
+    assert result["verification"]["complete"] is True
+    assert result["verification"]["outcome"] == Verification.DISCREPANCY
+    second = engine.plan(
+        Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    execute(engine, second)
+    assert engine.verify(second["id"])["state"] == State.VERIFIED
+    assert journal.load(first["id"])["state"] == State.PARTIAL
+    assert journal.load(first["id"])["verification"]["outcome"] == Verification.DISCREPANCY
+
+
+@pytest.mark.parametrize("baseline_multiplicity,new_copies", [(1, 0), (3, 0), (3, 2)])
+def test_ingest_excludes_current_baseline_but_counts_new_multiplicity(
+    rig, baseline_multiplicity, new_copies
+):
+    engine, env, _ = rig
+    existing = env.data["destination_events"][0]
+    existing.update(cohort="ingest", multiplicity=baseline_multiplicity)
+    if new_copies:
+        env.data["ingest_during_run"].append({**existing, "multiplicity": new_copies})
+    result = verified(engine)
+    assert result["state"] == State.VERIFIED
+    evidence = result["verification"]
+    assert evidence["preexisting_count"] == baseline_multiplicity
+    assert evidence["new_ingest_count"] == 1 + new_copies
+    assert (
+        evidence["actual_count"]
+        == evidence["expected_count"]
+        == (6 + baseline_multiplicity + 1 + new_copies)
+    )
+
+
+def test_missing_preexisting_ingest_is_still_a_discrepancy(rig):
+    engine, env, _ = rig
+    env.data["destination_events"][0]["cohort"] = "ingest"
+    run = planned(engine)
+    execute(engine, run)
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e["id"] != "preexisting-1"
+    ]
+    result = engine.verify(run["id"])
+    assert result["state"] == State.PARTIAL
+    assert result["verification"]["missing_events"] == 1
+
+
 @pytest.mark.parametrize("version", ["9.0.2.0200", "9.1.1"])
 def test_both_destination_engines_and_preview(rig, version):
     engine, env, _ = rig
