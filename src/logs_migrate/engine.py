@@ -466,7 +466,12 @@ class Engine:
             require(run["transfer_intent"], Code.STATE)
             require(not run["service_obligations"], Code.RECOVERY)
             try:
-                self._live(run, during=True)
+                try:
+                    self._live(run, during=True)
+                except MigrationError:
+                    if run["transfer"] is not None:
+                        self._cancel(run)
+                    raise
                 # An unacknowledged POST cannot be attributed by task state alone.
                 require(run["transfer"] is not None, Code.UNCERTAIN)
                 return self._monitor(run)

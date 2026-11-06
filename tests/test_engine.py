@@ -264,6 +264,21 @@ def test_cooperative_stop_waits_for_server_and_preserves_outcome(rig):
     assert "cancel_intent" in kinds
 
 
+def test_resume_precheck_failure_still_cancels_running_task(rig):
+    engine, env, journal = rig
+    env.data["complete_after_polls"] = 100
+    run = planned(engine)
+    assert execute(engine, run)["state"] == State.RECOVERY_REQUIRED
+    assert env.data["task"]["status"] == "running"
+    env.data["source"]["retention_fingerprint"] = "changed"
+    engine.request_stop()
+    with pytest.raises(MigrationError, match="inventory_changed"):
+        engine.resume(run["id"])
+    assert operations(env).count("cancel") == 1
+    assert env.data["task"]["status"] == "cancelled"
+    assert journal.load(run["id"])["state"] == State.RECOVERY_REQUIRED
+
+
 def test_cancel_failure_is_not_stopped(rig):
     engine, env, journal = rig
     env.data["complete_after_polls"] = 100
