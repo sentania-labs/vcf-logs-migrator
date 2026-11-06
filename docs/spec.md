@@ -8,8 +8,9 @@ Basis: the lab runs in [`research-guide.md`](research-guide.md) section 4
 
 ## 0. Changes from the 2026-11-06 validation
 
-[`validation-2026-11-06.md`](validation-2026-11-06.md) tested the open
-questions. These override the sections below where they disagree:
+[`validation-2026-11-06.md`](validation-2026-11-06.md) and
+[`validation-2026-11-06-partitions-multinode.md`](validation-2026-11-06-partitions-multinode.md)
+tested the open questions. These override the sections below where they disagree:
 
 1. **`copy` splits into `stage` and `commit`.** Stage runs with both sides
    up: tar stream into `/storage/core/migrate-staging/<id>.partial`, file
@@ -40,6 +41,23 @@ questions. These override the sections below where they disagree:
 7. Verification waits for `complete=true` on both sides and for two counts
    in a row to agree: both services return partial results for a minute or
    so after a start.
+
+8. **Register with the partition-aware program, not `bucket-index add`.**
+   `scripts/PartitionBucketAdd.java` calls `BucketIndex.addNewBucket(partition,
+   id)` so buckets keep their source partition (ids are name-derived, so the
+   tool creates same-named partitions on the target first, restarts, then
+   registers). Plain `bucket-index add` puts everything in Default.
+9. **Creation time = source bucket endTime** on every registration, so 9.0's
+   retention and space retirement treat migrated buckets by data age.
+10. **Per-node everything.** Inventory every source node; place buckets on
+    destination nodes by each node's own budget; commit node by node (stops
+    only that node; ingest through the cluster sees errors while it is down).
+11. **Config migration is its own phase**, before data: see
+    [`config-migration.md`](config-migration.md) for what moves by REST, what
+    needs edits, and what is manual.
+12. **Stale copies.** An id on the target whose manifest differs from a
+    sealed source bucket (copied while active) is replaced: `bucket-index
+    delete` on the target, copy, register.
 
 ## 1. Why
 

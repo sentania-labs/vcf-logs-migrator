@@ -22,6 +22,9 @@ Broadcom. Snapshot both sides before trying any of it.
   migrated history is always the first to go. Size the target for migrated
   data plus live growth. Validation details:
   [`docs/validation-2026-11-06.md`](docs/validation-2026-11-06.md).
+  Registering with the bucket's data end time as its creation time fixes
+  that, and a small program keeps non-default index partitions (stock
+  `bucket-index add` puts everything in Default).
 - Do **not** run the stock `bucket-tools --bucketMigrationStart` by hand: it
   takes the active bucket by mtime and deletes every bucket on the source.
 
@@ -32,8 +35,11 @@ Broadcom. Snapshot both sides before trying any of it.
 | [`docs/research-guide.md`](docs/research-guide.md) | The full guide: options (keep 8.18 as cold archive, bucket copy, archive import, replay), what was proven, the runbook with every command |
 | [`docs/lab-runs.md`](docs/lab-runs.md) | What was run, when, and the numbers |
 | [`docs/validation-2026-11-06.md`](docs/validation-2026-11-06.md) | Date selection, merge into a populated target, crash recovery, space, staging: tested |
+| [`docs/validation-2026-11-06-partitions-multinode.md`](docs/validation-2026-11-06-partitions-multinode.md) | Partition-aware registration (engineered and proven), creation-time fix, 3-node source and destination clusters |
+| [`docs/config-migration.md`](docs/config-migration.md) | Config migration 8.18 to 9.0: forwarders, masking, partitions, users, alerts, content; what moves by REST and what is manual |
 | [`docs/spec.md`](docs/spec.md) | Draft spec for `logs-migrate`: plan / copy / verify, date-based preview ("import back to this date") |
 | [`scripts/bucket-migrate.sh`](scripts/bucket-migrate.sh) | Prototype: `stage` (live, verified, resumable) and `commit` (target stopped), `status` |
+| [`scripts/PartitionBucketAdd.java`](scripts/PartitionBucketAdd.java), [`scripts/partition-add.sh`](scripts/partition-add.sh) | Register buckets into a named partition with a chosen creation time (target stopped) |
 | [`scripts/bucket-copy.sh`](scripts/bucket-copy.sh) | First copy script (superseded: registers with the target running) |
 | [`scripts/count-events.py`](scripts/count-events.py) | Per-day / per-month event counts over REST, for before and after |
 | [`scripts/replay.py`](scripts/replay.py) | Replay events between instances through the agent-format ingest, keeping timestamps |
