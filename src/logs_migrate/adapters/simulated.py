@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import uuid
 from collections import Counter
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
@@ -185,6 +187,13 @@ class SimulatedEnvironment:
             if "transportProtocol" in body:
                 body["transportProtocol"] = body["transportProtocol"].lower()
         if existing is None:
+            if kind != "forwarding":
+                digest = bytearray(
+                    hashlib.md5(rule["name"].encode(), usedforsecurity=False).digest()
+                )
+                digest[6] = digest[6] & 0x0F | 0x30
+                digest[8] = digest[8] & 0x3F | 0x80
+                body["id"] = str(uuid.UUID(bytes=bytes(digest)))
             rules.append(body)
         else:
             rules[rules.index(current)] = body

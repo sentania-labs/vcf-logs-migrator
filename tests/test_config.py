@@ -199,6 +199,8 @@ def test_rest_wire_shapes_and_auth(kind, version, update):
     env.config_write(kind, rule, existing)
     method, actual_route, body, headers = destination.transport.requests[-1]
     expected = {**rule, "id": "destination-id"} if update else dict(rule)
+    if not update and kind != "forwarding":
+        del expected["id"]
     if kind == "forwarding":
         expected["acceptCert"] = True
         if not update:
@@ -365,3 +367,14 @@ def test_partitions_read_is_not_narrowed_by_config_gate():
     assert transport.requests == [("GET", "/api/v1/partitioning")]
     with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
         live.call("GET", "/api/v1/log-mask")
+
+
+@pytest.mark.parametrize("kind,name", [("partitions", "Archive"), ("masking", "mask-secret")])
+def test_create_omits_source_id_and_destination_assigns_one(config_env, kind, name):
+    source_rules = config_env.config_rules("source", kind)
+    assert next(r for r in source_rules if r["name"] == name).get("id")
+    result = Engine(config_env, None).config_apply([kind + ":" + name])
+    assert result["complete"]
+    created = next(r for r in config_env.config_rules("destination", kind) if r["name"] == name)
+    source_id = next(r for r in source_rules if r["name"] == name)["id"]
+    assert isinstance(created["id"], str) and created["id"] and created["id"] != source_id

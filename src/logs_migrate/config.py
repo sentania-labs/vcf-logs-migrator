@@ -61,6 +61,8 @@ def write_body(kind, rule, existing):
     if existing is not None:
         require(isinstance(existing.get("id"), str), Code.SCHEMA)
         body["id"] = existing["id"]
+    elif kind != "forwarding":
+        body.pop("id", None)
     if kind == "forwarding" and body.get("sslEnabled") is True:
         body["acceptCert"] = True
     return body
