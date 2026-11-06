@@ -188,12 +188,10 @@ class SimulatedEnvironment:
                 body["transportProtocol"] = body["transportProtocol"].lower()
         if existing is None:
             if kind != "forwarding":
-                digest = bytearray(
-                    hashlib.md5(rule["name"].encode(), usedforsecurity=False).digest()
-                )
-                digest[6] = digest[6] & 0x0F | 0x30
-                digest[8] = digest[8] & 0x3F | 0x80
-                body["id"] = str(uuid.UUID(bytes=bytes(digest)))
+                raw = bytearray(hashlib.md5(rule["name"].encode(), usedforsecurity=False).digest())
+                raw[6] = raw[6] & 0x0F | 0x30
+                raw[8] = raw[8] & 0x3F | 0x80
+                body["id"] = str(uuid.UUID(bytes=bytes(raw)))
             rules.append(body)
         else:
             rules[rules.index(current)] = body
