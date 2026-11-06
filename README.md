@@ -45,10 +45,14 @@ PySide6 dependency for the later GUI. `ssh` installs the optional Paramiko adapt
 ```sh
 python -m pip install '.[dev]'
 make check
+make smoke
 ```
 
 `make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
-contracts, and simulated failures. They do not contact appliances. In particular,
+contracts, and simulated failures. `make smoke` drives the installed `logs-migrate`
+console script from a temporary directory through both fixture workflows. Linux CI
+installs the package and runs these same targets on pull requests and pushes to main.
+These checks do not contact appliances. In particular,
 fixture helper behavior does not prove that updating an already-registered vendor
 bucket is safe; real fixup is explicitly gated.
 

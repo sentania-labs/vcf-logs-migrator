@@ -1,4 +1,4 @@
-.PHONY: check lint test
+.PHONY: check lint test smoke
 
 PYTHON ?= python3
 
@@ -10,3 +10,6 @@ lint:
 
 test:
 	$(PYTHON) -m pytest
+
+smoke:
+	$(PYTHON) tests/smoke_installed.py
