@@ -213,10 +213,8 @@ class ConfigurationPage(Page):
             set_banner(
                 self.notice,
                 "Comparison unavailable",
-                "This build's engine has no configuration compare/apply service."
-                if state.comparison_error == "unsupported_capability"
-                else vm.describe_error(state.comparison_error),
-                "warn" if state.comparison_error == "unsupported_capability" else "bad",
+                vm.describe_error(state.comparison_error),
+                "bad",
             )
             self.notice.show()
         elif state.comparison is None:

@@ -121,11 +121,7 @@ class Session:
         return written
 
     def config_compare(self) -> dict:
-        engine = self._engine()
-        require(hasattr(engine, "config_compare"), Code.UNSUPPORTED)
-        return engine.config_compare()
+        return self._engine().config_compare()
 
     def config_apply(self, *, selection: list[str]) -> dict:
-        engine = self._engine()
-        require(hasattr(engine, "config_apply"), Code.UNSUPPORTED)
-        return engine.config_apply(list(selection))
+        return self._engine().config_apply(list(selection))

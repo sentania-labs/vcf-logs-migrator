@@ -253,9 +253,9 @@ def connection_checks(discovered: dict | None, compatible: str | None) -> list[t
     return [
         (
             "Source and destination API inventory",
-            f"Passed · {cluster_summary(source)} → {cluster_summary(destination)} "
-            "(simulator fixture; the typed addresses were not contacted)",
+            f"Passed · {cluster_summary(source)} → {cluster_summary(destination)}",
         ),
+        ("Appliance addresses", "Not contacted; this build reads the simulator fixture"),
         (
             "Version compatibility",
             "Passed" if compatible is None else "Failed · " + describe_error(compatible),
