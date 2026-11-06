@@ -9,7 +9,6 @@ class Code(StrEnum):
     UNSUPPORTED = "unsupported_capability"
     INVENTORY_CHANGED = "inventory_changed"
     CAPACITY = "insufficient_capacity"
-    RETENTION = "destination_retention_would_delete_history"
     OVERLAP = "overlapping_transfer"
     TOPOLOGY = "topology_changed"
     COLLISION = "bucket_identity_conflict"

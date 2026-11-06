@@ -10,16 +10,14 @@
         "capacity": 1000000000,
         "used": 1000000,
         "repository_available": 900000000,
-        "service": "running",
-        "service_epoch": "boot-1"
+        "service": "running"
       },
       {
         "id": "src-2",
         "capacity": 1000000000,
         "used": 1000000,
         "repository_available": 900000000,
-        "service": "running",
-        "service_epoch": "boot-1"
+        "service": "running"
       }
     ],
     "partitions": [
@@ -89,7 +87,6 @@
         "complete": false
       }
     ],
-    "retention_fingerprint": "src-retention-v1",
     "identity": "src-tls-enrollment-v1",
     "history_complete": true
   },
@@ -102,24 +99,21 @@
         "capacity": 1000000000,
         "used": 1000000,
         "repository_available": 900000000,
-        "service": "running",
-        "service_epoch": "boot-1"
+        "service": "running"
       },
       {
         "id": "dst-2",
         "capacity": 1000000000,
         "used": 1000000,
         "repository_available": 900000000,
-        "service": "running",
-        "service_epoch": "boot-1"
+        "service": "running"
       },
       {
         "id": "dst-3",
         "capacity": 1000000000,
         "used": 1000000,
         "repository_available": 900000000,
-        "service": "running",
-        "service_epoch": "boot-1"
+        "service": "running"
       }
     ],
     "partitions": [
@@ -136,7 +130,6 @@
       "dataset"
     ],
     "buckets": [],
-    "retention_fingerprint": "dst-retention-v1",
     "identity": "dst-tls-enrollment-v1",
     "history_complete": true
   },

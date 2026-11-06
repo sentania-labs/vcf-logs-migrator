@@ -51,13 +51,12 @@ def parser():
     plan = sub.add_parser("plan", help="Preview whole sealed buckets selected by date")
     plan.add_argument("--since", required=True, help="ISO 8601 with timezone")
     plan.add_argument("--until", required=True, help="Exclusive end, ISO 8601 with timezone")
-    for command in ("run", "copy", "start"):
-        run = sub.add_parser(command, help="Start the API task once; status monitors it")
-        run.add_argument("run_id", type=uuid_arg)
-        run.add_argument("--ack-backup", action="store_true", help=BACKUP_ACK)
-        run.add_argument(
-            "--ack-active", default="", help="Exact acknowledgment that latest data is skipped"
-        )
+    copy = sub.add_parser("copy", help="Start the API task once; status monitors it")
+    copy.add_argument("run_id", type=uuid_arg)
+    copy.add_argument("--ack-backup", action="store_true", help=BACKUP_ACK)
+    copy.add_argument(
+        "--ack-active", default="", help="Exact acknowledgment that latest data is skipped"
+    )
     stop = sub.add_parser("stop", help="Cancel the currently observed API task by its API task ID")
     stop.add_argument("task_id")
     verify = sub.add_parser("verify", help="Compare complete, stable per-day counts")
@@ -84,7 +83,7 @@ def main(argv=None):
     journal = None
     try:
         harden_process()
-        if args.command in {"plan", "run", "copy", "start", "verify", "report"}:
+        if args.command in {"plan", "copy", "verify", "report"}:
             require(args.journal is not None, Code.INVALID_INPUT)
             journal = Journal(args.journal)
         if args.command == "report":
@@ -107,7 +106,7 @@ def main(argv=None):
                 result = result["partition_diff"]
         elif args.command == "plan":
             result = engine.plan(Window(parse_time(args.since), parse_time(args.until)))
-        elif args.command in {"run", "copy", "start"}:
+        elif args.command == "copy":
             result = engine.run(args.run_id, backup_ack=args.ack_backup, active_ack=args.ack_active)
         elif args.command == "status":
             result = engine.status()

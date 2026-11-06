@@ -47,10 +47,10 @@ def smoke(fixture: Path, executable: str) -> None:
         assert discovered["destination"]["version"] == data["destination"]["version"]
         plan = invoke("plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z")
         run_id = plan["id"]
-        refused = invoke("run", run_id, code=3)
+        refused = invoke("copy", run_id, code=3)
         assert refused["error"] == "acknowledgment_required"
         copied = invoke(
-            "run",
+            "copy",
             run_id,
             "--ack-backup",
             "--ack-active",

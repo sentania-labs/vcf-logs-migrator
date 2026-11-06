@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -143,7 +143,6 @@ class Node:
     used: int
     repository_available: int
     service: str = "running"
-    service_epoch: str = "unknown"
 
     def __post_init__(self):
         require(_label(self.id), Code.SCHEMA)
@@ -164,7 +163,6 @@ class Cluster:
     partitions: tuple[Partition, ...]
     fields: tuple[str, ...]
     buckets: tuple[Bucket, ...]
-    retention_fingerprint: str
     identity: str
     history_complete: bool = False
 
@@ -185,20 +183,6 @@ class Cluster:
     @property
     def identity_fingerprint(self) -> str:
         return digest([self.id, self.version, self.identity, sorted(n.id for n in self.nodes)])
-
-    def cohort_fingerprint(self, keys: tuple[str, ...] | list[str]) -> str:
-        # Binds the endpoint, retention, routing and the exact selected buckets. Other buckets,
-        # including a rotating active bucket, are deliberately outside the plan.
-        live = {b.key: asdict(b) for b in self.buckets}
-        return digest(
-            {
-                "identity": self.identity_fingerprint,
-                "retention": self.retention_fingerprint,
-                "partitions": [asdict(p) for p in self.partitions],
-                "fields": self.fields,
-                "cohort": [[key, live.get(key)] for key in sorted(keys)],
-            }
-        )
 
     @classmethod
     def from_dict(cls, data: dict) -> Cluster:
@@ -258,30 +242,11 @@ class Counts:
 
 @dataclass(frozen=True)
 class Policy:
-    ceiling_percent: int = 90
-    reserve_bytes: int = 0
-    growth_bytes: int = 0
-    overhead_percent: int = 20
     attempts: int = 6
     poll_seconds: float = 30.0
-    retention_margin_seconds: int = 86400
-    monitor_poll_seconds: float = 30.0
-    contact_loss_seconds: float = 600.0
 
     def __post_init__(self):
-        require(1 <= self.ceiling_percent <= 94, Code.INVALID_INPUT)
-        require(
-            min(
-                self.reserve_bytes,
-                self.growth_bytes,
-                self.overhead_percent,
-                self.retention_margin_seconds,
-            )
-            >= 0,
-            Code.INVALID_INPUT,
-        )
         require(2 <= self.attempts <= 10000 and self.poll_seconds >= 0, Code.INVALID_INPUT)
-        require(self.monitor_poll_seconds > 0 and self.contact_loss_seconds > 0, Code.INVALID_INPUT)
 
 
 def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") -> str | None:

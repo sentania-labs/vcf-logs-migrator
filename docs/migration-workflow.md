@@ -9,7 +9,8 @@ appliance evidence, which is separate from this engine's test results.
 1. Compare source and destination partitions, including extracted fields for
    9.1.1 preview. Configuration migration is a separate, upcoming delivery.
 2. Preview a date interval. Review selected whole sealed buckets, their coverage,
-   active exclusions and the last fully sealed day when known.
+   active exclusions, the last fully sealed day when known and required versus
+   available destination repository space per node.
 3. Snapshot the destination before continuing; snapshotting the source is
    optional. The CLI records an operator attestation, not snapshot verification.
 4. Start the API transfer once. The API moves data directly between appliances;
@@ -27,7 +28,8 @@ A small local sent-window/bucket record prevents overlap, including adjacent
 windows selecting the same wide bucket. It is retained after cancellation or a
 lost response. There is no local task state machine, close/reconcile procedure or
 tail-rerun bypass. Earlier disjoint runs remain verifiable after the API starts a
-later task, using each run's own baseline.
+later task, using each run's own baseline. A transfer whose whole-bucket coverage
+intersects an earlier unverified transfer is refused until that run verifies.
 
 Active buckets may never seal after ingestion moves away. Leave uncopied data
 available under the operator's retention plan. Fixup is set aside and hidden until

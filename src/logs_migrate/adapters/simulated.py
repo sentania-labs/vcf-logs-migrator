@@ -193,12 +193,6 @@ class SimulatedEnvironment:
         self._trace("test_source_credentials", node=node)
         self._fault("source_credentials." + node)
 
-    def reserve(self, per_node, ceiling_percent):
-        self._trace("reserve", per_node=per_node, ceiling=ceiling_percent)
-        self._fault("reserve")
-        self.data["reservation"] = {"bytes": per_node, "ceiling": ceiling_percent}
-        self._persist()
-
     def start(self, window, bucket_keys):
         self._trace("start", window=asdict(window))
         self._fault("start.before")
@@ -422,7 +416,6 @@ class SimulatedEnvironment:
         self._fault("restart.before." + node)
         target = next(n for n in self.data["destination"]["nodes"] if n["id"] == node)
         target["service"] = "running"
-        target["service_epoch"] = digest([target.get("service_epoch", "unknown"), "restart"])[:12]
         self._persist()
         self._fault("restart.after." + node)
 

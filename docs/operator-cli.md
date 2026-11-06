@@ -27,6 +27,14 @@ preview includes both the requested interval and actual bucket coverage. Active
 buckets are always excluded. The last fully sealed day is reported in
 America/Chicago when bounds establish it; otherwise it is unknown.
 
+The preview also shows storage: the selected buckets' total bytes beside each
+destination node's own available repository budget. The API assigns buckets to
+nodes, so every node must be able to hold the whole selection. `copy` re-reads the
+destination and refuses (`insufficient_capacity`, exit 3) when any node falls short;
+an over-budget 9.0 destination retires and deletes its own existing history. The
+preview warns that the source root password is sent to the destination for the
+transfer and that source retention can remove planned buckets before the run.
+
 **No undo: migrated data stays on the destination. Snapshot the destination before
 continuing (snapshotting the source too is optional).** `--ack-backup` records the
 operator's attestation, not proof that a snapshot exists. Active exclusions require
@@ -45,7 +53,7 @@ logs-migrate --journal /private/migration/run.sqlite report RUN_UUID
 logs-migrate --journal /private/migration/run.sqlite report RUN_UUID --format json
 ```
 
-`copy` and `start` are aliases for `run`. Start sends one API request and returns;
+`copy` sends one API request and returns;
 completion and verification are separate observations. Partition differences are
 reported before start and prevent transfer until matching configuration exists.
 On 9.1.1, extracted fields are compared too. Creating configuration is the next
@@ -96,7 +104,14 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   for each destination; external transfer history must also be known. Do not start
   overlapping transfers from another client. Adjacent windows selecting the same
   whole bucket are also refused, especially on 9.1.1 where bucket IDs disappear.
-- A plan is checked against fresh inventory before start. Existing destination
+- A new transfer is also refused (`verification_pending`, exit 3) while its whole-bucket
+  coverage intersects an earlier transfer that has not verified successfully, because
+  `verify` counts every destination event in a run's coverage. Verify the earlier run
+  first; once it verifies, the new transfer is allowed.
+- A plan is checked against fresh inventory and the planned source and destination
+  identities before start. `verify` re-checks the destination identity and reports
+  incomplete verification if it changed; source retention after a completed transfer
+  is permitted. Existing destination
   bucket collisions, unknown history and incompatible partitions block transfer.
 - Verification uses complete=true and two agreeing count responses, then confirms
   destination and ingest observations still agree. Missing or unstable evidence

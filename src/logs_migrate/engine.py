@@ -29,10 +29,16 @@ class Engine:
     def _overlap(self, plan):
         destination = plan["destination"]["id"]
         window = Window(**plan["window"])
+        coverage = Window(**plan["coverage"])
         selected = {b["id"] for b in plan["selected"]}
         for prior in self.journal.transfers(destination):
             require(not window.overlaps(Window(prior["start"], prior["end"])), Code.OVERLAP)
             require(not selected.intersection(prior["bucket_ids"]), Code.OVERLAP)
+            # Whole-bucket coverage is what verify counts; an unverified earlier run's totals
+            # would absorb the new transfer's events.
+            if coverage.overlaps(Window(**prior["coverage"])):
+                outcome = self.journal.load(prior["run"])["verification"]["outcome"]
+                require(outcome == Verification.SUCCESS, Code.VERIFICATION_PENDING)
         # Include transfers started outside this journal, wherever the appliance exposes them.
         for prior in self.env.history():
             if prior.destination == destination:
@@ -112,6 +118,7 @@ class Engine:
                 Code.INVENTORY_CHANGED,
             )
             self._overlap(fresh)
+            require(fresh["capacity"]["fits"], Code.CAPACITY)
             difference = fresh["partition_diff"]
             require(not difference["missing"] and not difference["different"], Code.PARTITIONS)
             require(not difference["missing_fields"], Code.FIELDS)
@@ -158,6 +165,8 @@ class Engine:
         )
         if task.status == "completed":
             result["eta_seconds"] = 0
+        elif task.status != "running":
+            result["eta_seconds"] = None
         result["observation"] = (
             "destination API; estimates derive from API counters and elapsed time"
         )
@@ -185,6 +194,12 @@ class Engine:
             run = self.journal.load(run_id)
             require("baseline" in run and "source_counts" in run, Code.STATE)
             try:
+                _, destination = self.env.discover()
+                planned = run["plan"]["destination"]
+                require(
+                    destination.id == planned["id"] and destination.identity == planned["identity"],
+                    Code.TOPOLOGY,
+                )
                 task = self.env.transfer()
                 window = Window(**run["plan"]["coverage"])
                 # An overlapping active or unknown task can still change these counts.

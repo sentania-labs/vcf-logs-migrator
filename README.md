@@ -26,7 +26,7 @@ logs-migrate --journal /private/migration/run.sqlite \
   --since 2026-03-01T00:00:00Z --until 2026-04-01T00:00:00Z
 ```
 
-Use the returned run ID with `run`/`copy`/`start`, then query `status` and run
+Use the returned run ID with `copy`, then query `status` and run
 `verify`. Status exposes API task and per-node observations, elapsed time, relative
 transfer rate and ETA when the API supplies enough data. `stop` explicitly cancels
 the observed API task by its task ID. The [CLI operator guide](docs/operator-cli.md)

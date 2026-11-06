@@ -117,6 +117,7 @@ class Journal:
                     {
                         "destination_nodes": [n["id"] for n in plan["destination"]["nodes"]],
                         "bucket_ids": [b["id"] for b in plan["selected"]],
+                        "coverage": plan["coverage"],
                         "plan_hash": run["plan_hash"],
                     }
                 ),

@@ -21,7 +21,7 @@ def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture):
         == 0
     )
     run = json.loads(capsys.readouterr().out)
-    assert main([*base, "run", run["id"], "--ack-backup", "--ack-active", ACTIVE_ACK]) == 0
+    assert main([*base, "copy", run["id"], "--ack-backup", "--ack-active", ACTIVE_ACK]) == 0
     assert json.loads(capsys.readouterr().out)["task"]["status"] == "running"
     api_only = [
         "--fixture",
@@ -75,7 +75,7 @@ def test_adapter_exception_secrets_never_escape_errors_or_audit(rig, point):
     assert all("DO-NOT-PRINT" not in a for a in artifacts)
 
 
-@pytest.mark.parametrize("command", ["run", "verify", "report"])
+@pytest.mark.parametrize("command", ["copy", "verify", "report"])
 def test_cli_does_not_echo_pasted_secrets(tmp_path, capsys, command):
     with pytest.raises(SystemExit) as error:
         main(["--journal", str(tmp_path / "j.sqlite"), command, "Hunter2-pasted-by-mistake"])
@@ -83,7 +83,7 @@ def test_cli_does_not_echo_pasted_secrets(tmp_path, capsys, command):
     assert "Hunter2" not in "".join(capsys.readouterr())
 
 
-@pytest.mark.parametrize("command", ["fixup", "recover", "close", "resume"])
+@pytest.mark.parametrize("command", ["fixup", "recover", "close", "resume", "run", "start"])
 def test_removed_controllers_are_unavailable(command, capsys):
     with pytest.raises(SystemExit) as error:
         main([command])

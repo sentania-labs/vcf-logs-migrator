@@ -160,6 +160,14 @@ def test_status_is_api_truth_without_a_journal_and_supplies_estimates(rig):
     assert result["eta_seconds"] is None
 
 
+@pytest.mark.parametrize("status", ["failed", "cancelled", "idle", "unknown"])
+def test_only_a_running_task_reports_an_eta(rig, status):
+    _, env, _ = rig
+    task = Transfer("api-task", status, bytes_transferred=200, elapsed_seconds=4, total_bytes=1000)
+    env.transfer = lambda: task
+    assert Engine(env, None).status()["eta_seconds"] is None
+
+
 def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(rig):
     engine, env, journal = rig
     run = planned(engine)
@@ -286,8 +294,7 @@ def test_destination_restart_or_inventory_drift_does_not_cancel_transfer(rig):
     run = planned(engine)
     env.data["complete_after_polls"] = 3
     execute(engine, run)
-    env.data["destination"]["nodes"][0]["service_epoch"] = "boot-2"
-    env.data["destination"]["retention_fingerprint"] = "changed"
+    env.data["destination"]["nodes"][0]["used"] += 1
     assert engine.status()["status"] == "running"
     assert not any(t["operation"] == "cancel" for t in env.data["trace"])
     engine.status()
@@ -302,3 +309,68 @@ def test_source_credential_failure_stops_at_first_node(rig):
         execute(engine, run)
     assert error.value.code == Code.AUTH
     assert env.data["trace"] == [{"operation": "test_source_credentials", "node": "src-1"}]
+
+
+def test_plan_shows_space_and_copy_refuses_when_a_node_cannot_hold_the_selection(rig):
+    engine, env, _ = rig
+    fits = planned(engine)["plan"]
+    required = sum(b["size"] for b in fits["selected"])
+    assert fits["capacity"]["fits"] and fits["capacity"]["required_bytes"] == required
+    assert any("root password" in w for w in fits["warnings"])
+    assert any("retention" in w for w in fits["warnings"])
+    node = env.data["destination"]["nodes"][0]
+    node["repository_available"] = required - 1
+    short = planned(engine)
+    capacity = short["plan"]["capacity"]
+    assert capacity["fits"] is False
+    assert [n["fits"] for n in capacity["nodes"]][0] is False
+    with pytest.raises(MigrationError) as error:
+        execute(engine, short)
+    assert error.value.code == Code.CAPACITY
+    assert not env.data["trace"]
+
+
+def test_intersecting_coverage_waits_for_the_earlier_run_to_verify(rig):
+    engine, env, _ = rig
+    hour = 3_600_000
+    buckets = env.data["source"]["buckets"]
+    origin = buckets[0]["start"]
+    buckets[0]["end"] = origin + 10 * hour
+    buckets[1]["start"], buckets[1]["end"] = origin + 5 * hour, origin + 20 * hour
+    first = engine.plan(Window(origin, origin + hour), Policy(poll_seconds=0))
+    second = engine.plan(Window(origin + 15 * hour, origin + 16 * hour), Policy(poll_seconds=0))
+    assert {b["id"] for b in first["plan"]["selected"]}.isdisjoint(
+        b["id"] for b in second["plan"]["selected"]
+    )
+    execute(engine, first)
+    assert engine.status()["status"] == "completed"
+    with pytest.raises(MigrationError) as error:
+        execute(engine, second)
+    assert error.value.code == Code.VERIFICATION_PENDING
+    assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
+    assert engine.verify(first["id"])["outcome"] == "verified_success"
+    assert execute(engine, second)["task"]["status"] == "running"
+
+
+@pytest.mark.parametrize("field,value", [("id", "other-cluster"), ("identity", "re-enrolled")])
+def test_changed_destination_endpoint_is_refused_before_post(rig, field, value):
+    engine, env, _ = rig
+    run = planned(engine)
+    env.data["destination"][field] = value
+    with pytest.raises(MigrationError) as error:
+        execute(engine, run)
+    assert error.value.code == Code.INVENTORY_CHANGED
+    assert not env.data["trace"]
+
+
+@pytest.mark.parametrize("field,value", [("id", "other-cluster"), ("identity", "re-enrolled")])
+def test_changed_destination_endpoint_never_verifies(rig, field, value):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    env.data["destination"][field] = value
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification" and result["complete"] is False
+    assert result["reason"] == Code.TOPOLOGY
+    assert journal.load(run["id"])["verification"] == result
