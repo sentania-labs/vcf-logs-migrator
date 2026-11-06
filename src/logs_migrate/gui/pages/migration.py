@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+from PySide6.QtWidgets import QProgressBar
+
+from .. import viewmodel as vm
+from ..widgets import KeyValues, Page, Table, banner, card, columns, label, metric, set_banner
+
+
+class MigrationPage(Page):
+    """One API status view: running, stale connection, failed, finished."""
+
+    def __init__(self, app):
+        super().__init__("Migration")
+        self.app = app
+        self.banner = banner("", "", "info")
+        self.body.addWidget(self.banner)
+        self.tiles = []
+        frames = []
+        for title in ("Transferred", "Transfer rate", "Elapsed", "ETA"):
+            frame, value, caption = metric(title, vm.UNAVAILABLE, "")
+            self.tiles.append((value, caption))
+            frames.append(frame)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(8)
+        frames[0].layout().insertWidget(2, self.progress)
+        self.body.addWidget(columns(*frames))
+        nodes_card, nodes_layout = card("Per-node API progress")
+        self.nodes = Table(["Destination node", "API state", "Transferred", "Buckets", "Error"])
+        nodes_layout.addWidget(self.nodes)
+        self.body.addWidget(nodes_card)
+        details_card, details_layout = card("Transfer details")
+        self.details = KeyValues()
+        details_layout.addWidget(self.details)
+        details_layout.addWidget(
+            label(
+                "Rate and ETA are unavailable when counters are missing or stale. Closing this app "
+                "does not cancel server tasks.",
+                "hint",
+                wrap=True,
+            )
+        )
+        self.body.addWidget(details_card)
+        self.finish_body()
+        self.cancel_button = self.add_action("Cancel API task", "", self.cancel)
+        self.refresh_button = self.add_action("Refresh status", "", self.poll)
+        self.verify_button = self.add_action("Verify imported history", "primary", self.verify)
+
+    def poll(self) -> None:
+        self.app.poll_status()
+
+    def cancel(self) -> None:
+        status = self.app.state.status
+        if status and status["status"] == "running":
+            self.app.submit("stop", "stop", task_id=status["id"])
+
+    def verify(self) -> None:
+        self.app.show_page("verification")
+        self.app.pages["verification"].verify()
+
+    def refresh(self) -> None:
+        state = self.app.state
+        settings = state.settings
+        view = vm.progress_view(
+            state.status, stale=state.stale, last_ok=state.status_at, zone=settings.timezone
+        )
+        if state.stale:
+            subtitle = "Connection to status API lost; last observed progress retained"
+        elif view["state"] == "failed":
+            subtitle = "Server-reported failure; no separate recovery workflow"
+        elif state.connected:
+            subtitle = f"Direct API status · refreshed every {settings.refresh_seconds} seconds"
+        else:
+            subtitle = "Connect both environments to read API status"
+        self.set_heading("Migration", subtitle)
+        status, title, text = view["banner"]
+        set_banner(self.banner, title, text, status)
+        for (value, caption), (_title, text_value, text_caption) in zip(
+            self.tiles, view["tiles"], strict=True
+        ):
+            value.setText(text_value)
+            caption.setText(text_caption)
+        if view["progress"] is None:
+            self.progress.hide()
+        else:
+            self.progress.setValue(view["progress"])
+            self.progress.show()
+        self.nodes.set_rows(view["nodes"])
+        self.details.set_rows(view["details"] or [("API task", "None observed")])
+        running = view["state"] == "running" and not state.stale
+        finished = view["state"] in {"completed", "failed", "cancelled"}
+        self.cancel_button.setVisible(running)
+        self.cancel_button.setEnabled("stop" not in self.app.worker.pending)
+        self.refresh_button.setText("Reconnect and refresh" if state.stale else "Refresh status")
+        self.refresh_button.setProperty("variant", "primary" if state.stale else "")
+        self.refresh_button.style().unpolish(self.refresh_button)
+        self.refresh_button.style().polish(self.refresh_button)
+        self.refresh_button.setEnabled(state.connected)
+        self.verify_button.setVisible(finished and not state.stale and state.run_id is not None)
+        if state.stale:
+            self.note.setText(
+                "Refreshing reads existing API state. It does not start or resume another transfer."
+            )
+        elif view["state"] == "failed":
+            self.note.setText("No automatic resubmission. Overlapping new windows remain blocked.")
+        elif running:
+            self.note.setText(
+                "Cancel requests server cancellation and keeps imported data. "
+                "COMPLETED alone is not verified success."
+            )
+        else:
+            self.note.setText("Status is read directly from the destination API on every refresh.")

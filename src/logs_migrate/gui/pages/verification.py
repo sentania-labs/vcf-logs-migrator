@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+from .. import viewmodel as vm
+from ..widgets import KeyValues, Page, Table, banner, card, columns, metric, set_banner
+from .reports import RunSelector
+
+
+class VerificationPage(Page):
+    def __init__(self, app):
+        super().__init__("Verification")
+        self.app = app
+        self.runs = RunSelector(app)
+        self.body.addWidget(self.runs)
+        self.banner = banner("", "", "info")
+        self.body.addWidget(self.banner)
+        self.tiles = []
+        frames = []
+        for title in (
+            "Expected in included dates",
+            "Destination in included dates",
+            "Excluded latest data",
+        ):
+            frame, value, caption = metric(title, "Pending", "")
+            self.tiles.append((value, caption))
+            frames.append(frame)
+        self.body.addWidget(columns(*frames))
+        daily_card, daily_layout = card("Daily reconciliation · UTC")
+        self.daily = Table(["Day / period", "Expected", "Destination", "Result"])
+        daily_layout.addWidget(self.daily)
+        self.body.addWidget(daily_card)
+        checks_card, checks_layout = card("Checks")
+        self.checks = KeyValues()
+        checks_layout.addWidget(self.checks)
+        self.body.addWidget(checks_card)
+        self.finish_body()
+        self.verify_button = self.add_action("Verify counts", "", self.verify)
+        self.report_button = self.add_action(
+            "Open report", "primary", lambda: self.app.show_page("reports")
+        )
+
+    def verify(self) -> None:
+        run_id = self.app.state.run_id
+        if run_id:
+            self.verify_button.setEnabled(False)
+            self.app.submit("verify", "verify", run_id=run_id)
+
+    def refresh(self) -> None:
+        state = self.app.state
+        self.runs.refresh()
+        preview = state.preview
+        view = vm.verification_view(state.verification, state.status, state.active_count, preview)
+        title = "Verification" + (" · 9.1.1 Preview" if preview else "")
+        if view["outcome"] == "verified_discrepancy":
+            title += " · daily mismatch"
+        elif view["outcome"] == "incomplete_verification":
+            title += " · incomplete"
+        run = state.plan_run or (state.report["run"] if state.report else None)
+        if run:
+            coverage = run["plan"]["coverage"]
+            subtitle = (
+                vm.format_day_range(coverage["start"], coverage["end"])
+                + " · "
+                + view["outcome"].replace("_", " ")
+            )
+        else:
+            subtitle = (
+                "Choose a run to verify"
+                if state.connected
+                else "Connect both environments to verify counts"
+            )
+        self.set_heading(title, subtitle)
+        status, heading, text = view["banner"]
+        if state.verify_error:
+            status, heading, text = (
+                "bad",
+                "Verification request failed",
+                vm.describe_error(state.verify_error),
+            )
+        set_banner(self.banner, heading, text, status)
+        for (value, caption), (_title, text_value, text_caption) in zip(
+            self.tiles, view["tiles"], strict=True
+        ):
+            value.setText(text_value)
+            caption.setText(text_caption)
+        self.daily.set_rows(view["rows"] or [("No complete counts yet", "", "", "")])
+        self.checks.set_rows(view["checks"])
+        self.verify_button.setText("Retry counts" if state.verification else "Verify counts")
+        self.verify_button.setEnabled(
+            bool(state.run_id) and state.connected and "verify" not in self.app.worker.pending
+        )
+        self.report_button.setEnabled(bool(state.run_id))
+        if view["outcome"] == "verified_success":
+            self.note.setText(
+                "Counts cover included history only; API completion can hide skipped groups."
+            )
+        elif view["outcome"] == "verified_discrepancy":
+            self.note.setText(
+                "Check date boundaries, ongoing ingest and retention. "
+                "This tool does not repair or delete imported history."
+            )
+        elif view["outcome"] == "incomplete_verification":
+            self.note.setText(
+                "No success result is shown until all daily counts complete "
+                "and repeat consistently."
+            )
+        else:
+            self.note.setText(
+                "Verification compares complete, repeated per-day counts against "
+                "selected source history, baseline and new ingest."
+            )

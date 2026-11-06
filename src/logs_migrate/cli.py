@@ -56,6 +56,11 @@ def parser():
         metavar="TYPE:NAME",
         help="Exact selector from compare; repeat for each create or update",
     )
+    gui = sub.add_parser("gui", help="Open the desktop window (needs the optional PySide6 extra)")
+    gui.add_argument(
+        "--fixture", dest="gui_fixture", type=Path, help="Prefill the simulator fixture"
+    )
+    gui.add_argument("--journal", dest="gui_journal", type=Path, help="Prefill the private journal")
     sub.add_parser("discover")
     sub.add_parser("partitions", help="Compare partitions (and extracted fields on 9.1.1)")
     sub.add_parser("status", help="Read current task and per-node progress directly from the API")
@@ -94,6 +99,12 @@ def main(argv=None):
     journal = None
     try:
         harden_process()
+        if args.command == "gui":
+            from .gui import run
+
+            return run(
+                fixture=args.gui_fixture or args.fixture, journal=args.gui_journal or args.journal
+            )
         if args.command in {"plan", "copy", "verify", "report"}:
             require(args.journal is not None, Code.INVALID_INPUT)
             journal = Journal(args.journal)

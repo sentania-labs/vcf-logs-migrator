@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 *.json
 .env
+!src/logs_migrate/gui/lattice/lattice-palette.json

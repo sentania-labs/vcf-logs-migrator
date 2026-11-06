@@ -84,6 +84,12 @@ class Journal:
         require(row is not None, Code.INVALID_INPUT)
         return json.loads(row[0])
 
+    def runs(self) -> list[dict]:
+        """Every recorded run in creation order, for choosing one after a restart."""
+        return [
+            json.loads(body) for (body,) in self.db.execute("SELECT body FROM runs ORDER BY rowid")
+        ]
+
     def save(self, run: dict, kind: str, details: dict | None = None):
         """Run and its event are committed together before returning to the caller."""
         run["updated_at"] = self.clock.now()
