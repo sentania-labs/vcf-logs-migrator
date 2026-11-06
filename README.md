@@ -7,6 +7,12 @@ Status: **research and a spec, no tool yet.** Evidence includes single-node
 and multi-node lab runs with synthetic data, plus a 9.1.1 API run. Validation
 limits are recorded in the linked docs. It is not supported by Broadcom. Snapshot both sides before trying any of it.
 
+## The workflow
+
+![Migration workflow](docs/images/migration-workflow.svg)
+
+Step by step: [`docs/migration-workflow.md`](docs/migration-workflow.md).
+
 ## The short version
 
 - **Start here:** Broadcom's own transfer API (`/api/v2/data-migrations`, on 9.0 and 9.1.1) takes any time window; the 90-day limit is only in the UI. It is the only v1 mover; the planned tool adds planning, overlap guards, verification and optional 9.0 partition/creation-time fix-up. See [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md).
@@ -37,6 +43,7 @@ limits are recorded in the linked docs. It is not supported by Broadcom. Snapsho
 
 | Path | What |
 |---|---|
+| [`docs/migration-workflow.md`](docs/migration-workflow.md) | The end-to-end workflow with `logs-migrate`, with the diagram |
 | [`docs/research-guide.md`](docs/research-guide.md) | The full guide: options (keep 8.18 as cold archive, bucket copy, archive import, replay), what was proven, the runbook with every command |
 | [`docs/lab-runs.md`](docs/lab-runs.md) | What was run, when, and the numbers |
 | [`docs/validation-2026-11-06.md`](docs/validation-2026-11-06.md) | Date selection, merge into a populated target, crash recovery, space, staging: tested |
