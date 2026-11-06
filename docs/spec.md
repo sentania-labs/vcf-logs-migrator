@@ -7,7 +7,8 @@ The principal's later 2026-11-06 re-scope makes this delivery a tight API wrappe
 date preview, start, direct API status/progress, per-day verification, partition
 comparison and a plain report. Local task/recovery states, close/reconcile,
 plan-hash gates and tail reruns described below are not shipped. Fixup is set aside
-and hidden; configuration migration follows in the next delivery. Only data
+and hidden; forwarding, partition, masking and filter rule migration is covered in
+[`operator-cli.md`](operator-cli.md). Only data
 protection guards and required backup/active-data attestations remain. The API is
 the sole authority for task progress, with local sent-bucket and count evidence.
 

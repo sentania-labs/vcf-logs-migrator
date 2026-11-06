@@ -43,8 +43,9 @@ Configuration migration supports forwarding, partition, masking and filter rules
 through `config compare` and `config apply --select TYPE:NAME`. Only explicitly
 selected rules are created or updated; nothing is deleted, and source rules stay
 untouched. New partitions report a destination restart for normal maintenance.
-Configuration execution remains fixture-only, with the same live release gate. Existing fixup code is retained privately and **set
-aside**, unavailable from the engine/CLI, pending migration qualification.
+Configuration execution remains fixture-only, with the same live release gate.
+Existing fixup code is retained privately and **set aside**, unavailable from the
+engine/CLI, pending migration qualification.
 
 ## Development
 
@@ -59,9 +60,9 @@ make smoke
 
 `make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
 contracts, and simulated failures. `make smoke` drives the installed `logs-migrate`
-console script from a temporary directory through both data fixtures and the configuration workflow. Linux CI
-installs the package and runs these same targets on pull requests and pushes to main.
-These checks do not contact appliances. In particular,
+console script from a temporary directory through both data fixtures and the
+configuration workflow. Linux CI installs the package and runs these same targets
+on pull requests and pushes to main. These checks do not contact appliances. In particular,
 fixture helper behavior does not prove that updating an already-registered vendor
 bucket is safe; fixup is not an enabled operation.
 
