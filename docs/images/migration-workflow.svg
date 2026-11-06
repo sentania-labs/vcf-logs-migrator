@@ -148,5 +148,5 @@
     <text class="stepd" x="840" y="600">optional fix-up on 9.0</text></g>
   <g><circle class="num" cx="820" cy="630" r="12"/><text class="numt" x="820" y="635">6</text>
     <text class="step" x="840" y="635">Retire the old cluster</text>
-    <text class="stepd" x="840" y="654">after a re-run picks up the active-bucket tail</text></g>
+    <text class="stepd" x="840" y="654">after the active-bucket tail is copied or ages out</text></g>
 </svg>

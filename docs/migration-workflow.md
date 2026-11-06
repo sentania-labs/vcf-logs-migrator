@@ -49,19 +49,28 @@ numbers in the diagram are the order of work.
    - It puts buckets back in their source partitions and gives them their
      real creation times.
    - It stops one destination node at a time, for about a minute each.
-6. **Retire the old cluster.**
-   - Wait until a re-run of the same window has picked up the tail that was
-     still in active buckets (see below).
-   - Or keep the old cluster read-only until its data ages out.
+6. **Retire the old cluster** once the active-bucket tail is handled (see
+   below): either copied with the source stopped, or left on the old cluster
+   until it ages out.
 
 ## Things to know
 
-- **Active buckets stay behind.** The transfer only copies sealed buckets.
-  Data still in an active bucket at the source stays there. On a quiet
-  partition that can be days or weeks of events; in the lab it was two
-  weeks. Run the same window again once those buckets seal. Buckets already
-  copied are skipped, as long as the new cluster's node count has not
-  changed.
+- **Active buckets stay behind, and after the cutover they never seal.**
+  The transfer only copies sealed buckets, and a bucket seals only when it
+  hits its size cap. Restarting 8.18 does not seal it. Once ingest has moved
+  to the new cluster, the source's active buckets stop growing, so waiting
+  and re-running the transfer will never collect them. On a quiet partition
+  that tail can be days or weeks of events; in the lab it was two weeks.
+  Two ways to finish:
+  - **Copy the active buckets with the source stopped.** This is proven:
+    stop `loginsight` on each source node, copy its active buckets to the new
+    cluster, register them, start the source again. It took about 30 seconds
+    of source downtime per node in the lab
+    ([`research-guide.md`](research-guide.md) section 4.2). After the cutover
+    the source takes no new events, so nothing is lost while it is down. This
+    is the case for the tool's fallback copy path.
+  - **Leave the tail on the old cluster** and keep it read-only until that
+    data ages out.
 - **COMPLETED does not mean everything moved.** At 95% disk use a node
   stops copying, skips the rest, and still reports COMPLETED. Verify catches
   it; size the new cluster so it does not happen.
