@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Per-day and per-month event counts on an Operations for Logs node (8.x or 9.x).
-usage: LI_PASS=... [LI_OUT=file.json] count-events.py <host> [days-back, default 300]
+usage: LI_PASS=... [LI_OUT=file.json] count-events.py <host> [days-back, default 300] [field=value]
 One aggregated-events query, timestamp >= now-days, 1-day bins, summed per month (UTC).
 Traps: view=SIMPLE returns 0 bins; one query caps at 100 bins, so query 30-day windows."""
-import json, os, ssl, sys, time, urllib.request, collections, datetime as dt
+import json, os, ssl, sys, time, urllib.request, urllib.parse, collections, datetime as dt
 ctx = ssl._create_unverified_context()
 host = sys.argv[1]; days = int(sys.argv[2]) if len(sys.argv) > 2 else 300
+flt = ""
+if len(sys.argv) > 3:
+    k, v = sys.argv[3].split("=", 1); flt = f"/{urllib.parse.quote(k)}/{urllib.parse.quote(v)}"
 base = f"https://{host}:9543/api/v1"
 def call(path, body=None, tok=None):
     req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body else None,
@@ -16,7 +19,7 @@ day = 86400000; now = int(time.time() * 1000); start = (now - days * day) // day
 # chunked in 30-day windows: one query returns at most 100 bins (newest first)
 daily = {}; complete = True; bins = []
 for a in range(start, now + day, 30 * day):
-    r = call(f"/aggregated-events/timestamp/%3E%3D{a}/timestamp/%3C{a + 30 * day}?bin-width={day}&timeout=580000", tok=tok)
+    r = call(f"/aggregated-events/timestamp/%3E%3D{a}/timestamp/%3C{a + 30 * day}{flt}?bin-width={day}&timeout=580000", tok=tok)
     complete = complete and r.get("complete", True); bins += r.get("bins", [])
 for b in bins:
     d = dt.datetime.fromtimestamp(b["minTimestamp"] / 1000, dt.timezone.utc).date().isoformat()

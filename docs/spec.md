@@ -5,6 +5,41 @@ Basis: the lab runs in [`research-guide.md`](research-guide.md) section 4
 (4.3 is the full one: 2.43M events, 8 months, exact match) and
 [`lab-runs.md`](lab-runs.md).
 
+
+## 0. Changes from the 2026-11-06 validation
+
+[`validation-2026-11-06.md`](validation-2026-11-06.md) tested the open
+questions. These override the sections below where they disagree:
+
+1. **`copy` splits into `stage` and `commit`.** Stage runs with both sides
+   up: tar stream into `/storage/core/migrate-staging/<id>.partial`, file
+   manifest (path + size) compared with the source, rename to `<id>`.
+   Commit stops the 9 service, renames each staged bucket into the store,
+   re-verifies, `bucket-index add`, confirms the id in the index, starts the
+   service. Registering with the service running lost index entries in the
+   lab. Commit is an ingest outage (about 3 minutes); the preview must say so.
+2. **Never trust `bucket-index add`'s exit code** (0 on refusal). Confirm in
+   `bucket-index show`.
+3. **Id collisions.** An id already registered on the target is skipped only
+   when its file manifest matches the source; otherwise stop. Rebuilt or
+   reverted 8.18 appliances reuse install-time bucket ids.
+4. **Space budget = the 9 service's own `available`** from the runtime log's
+   `Repository space monitor` line, not `df`. Never write
+   `max-repository-size` under 2 GiB (the service will not start). Warn that
+   9.0 retires by registration time, so migrated buckets go before any live
+   data; size the target for migrated data plus live growth over the
+   retention the customer wants. Commit oldest-data-first.
+5. **Preview reach** comes from the main bucket stream; buckets whose range
+   is far wider than their neighbours (late-arriving backlogs) are listed
+   separately ("reaches Jul 28, plus 1 bucket with late events back to
+   Apr 10").
+6. **Crash state.** A hard kill during commit leaves the target stopped and a
+   manifest without an index entry. `status` reports: target service state,
+   staged dirs, manifests, store dirs not in the index, index entries
+   without a dir. `commit` rerun completes the job (proven).
+7. Verification waits for `complete=true` on both sides and busts the 9
+   query cache (results are cached for up to 300 s) before trusting a count.
+
 ## 1. Why
 
 Broadcom's Log Data Transfer stops at 90 days, and the stock

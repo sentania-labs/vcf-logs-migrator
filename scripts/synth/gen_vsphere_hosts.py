@@ -99,11 +99,12 @@ def main():
     ap.add_argument("--host",required=True); ap.add_argument("--user",default="admin")
     ap.add_argument("--hosts",type=int,default=24); ap.add_argument("--days",type=int,default=240); ap.add_argument("--total",type=int,default=2_600_000)
     ap.add_argument("--agent-id",default="synth-vsphere"); ap.add_argument("--seed",type=int,default=20261104)
-    ap.add_argument("--end-offset-min",type=int,default=15); ap.add_argument("--dry-run",action="store_true"); ap.add_argument("--sample",type=int,default=0)
+    ap.add_argument("--end-offset-min",type=int,default=15); ap.add_argument("--dataset",default="synth-vsphere-8mo"); ap.add_argument("--start-date",default=None); ap.add_argument("--extra-field",action="append",default=[]); ap.add_argument("--dry-run",action="store_true"); ap.add_argument("--sample",type=int,default=0)
     a=ap.parse_args(); random.seed(a.seed); rng=random.Random(a.seed+7)
     HOSTS=make_hosts(a.hosts)
     end=dt.datetime.now(dt.timezone.utc).replace(second=0,microsecond=0)-dt.timedelta(minutes=a.end_offset_min)
-    start=end-dt.timedelta(days=a.days)
+    start=end-dt.timedelta(days=a.days) if not a.start_date else dt.datetime.fromisoformat(a.start_date).replace(tzinfo=dt.timezone.utc)
+    if a.start_date: end=start+dt.timedelta(days=a.days)
     minutes=a.days*1440; probe=sum(rate_at(start+dt.timedelta(minutes=m),1.0) for m in range(0,minutes,7))*7; base=a.total/probe
     # incidents: monthly patch windows (whole cluster, maintenance), plus faults
     incs=[]
@@ -147,7 +148,7 @@ def main():
             ts=t+dt.timedelta(seconds=random.uniform(0,60))
             pid=h[4]+(hash(appname)%500)
             text=f"{ts:%Y-%m-%dT%H:%M:%S}.{ts.microsecond//1000:03d}Z {h[0]} {appname}[{pid}]: {msg}"
-            fields=[{"name":"hostname","content":h[0]},{"name":"appname","content":appname},{"name":"procid","content":str(pid)},{"name":"severity","content":sev},{"name":"facility","content":fac},{"name":"syslog_pri","content":str(FAC[fac]*8+SEV[sev])},{"name":"cluster","content":h[1]},{"name":"site","content":h[2]},{"name":"esxi_build","content":h[3]},{"name":"host_kind","content":"esxi"},{"name":"dataset","content":"synth-vsphere-8mo"}]
+            fields=[{"name":"hostname","content":h[0]},{"name":"appname","content":appname},{"name":"procid","content":str(pid)},{"name":"severity","content":sev},{"name":"facility","content":fac},{"name":"syslog_pri","content":str(FAC[fac]*8+SEV[sev])},{"name":"cluster","content":h[1]},{"name":"site","content":h[2]},{"name":"esxi_build","content":h[3]},{"name":"host_kind","content":"esxi"},{"name":"dataset","content":a.dataset}]+[{"name":k,"content":v} for k,v in (x.split("=",1) for x in a.extra_field)]
             if inc: fields.append({"name":"incident","content":inc})
             e={"text":text,"timestamp":int(ts.timestamp()*1000),"fields":fields}
             if a.sample:

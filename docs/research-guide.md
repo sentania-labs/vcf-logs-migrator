@@ -153,7 +153,11 @@ systemctl start loginsight
 
 Repeated with vCenter snapshots on both nodes (`pre-bucket-copy-20261104-1331`).
 
-- **The 9 node does not need to stop.** `bucket-index add` while `loginsight`
+- **CORRECTED 2026-11-06: the 9 node DOES need to stop for registration.**
+  See [`validation-2026-11-06.md`](validation-2026-11-06.md): with more
+  buckets, a running target ignored new entries and dropped two existing ones
+  from its index. What follows was true for this one small run only.
+  `bucket-index add` while `loginsight`
   runs was picked up within seconds (`IndicesManager notified of new bucket`
   in runtime.log) and the events were queryable right away. The tool's "MUST
   be stopped" warning is for repairs of the index, not for adding a bucket.
@@ -267,7 +271,8 @@ LI_PASS=... LI_OUT=count-90-after.json scripts/count-events.py <9 ip> 300
 
 Numbers: the 313 MB bucket copied in 17 s, the 319 MB bucket in 27 s, and each
 registered in 2 s. The 9 node stayed running and the events were queryable at
-once. `/storage/core` on 9 went from 11 MB to 642 MB used.
+once (two buckets in one window; with more buckets this does not hold,
+see the 2026-11-06 validation). `/storage/core` on 9 went from 11 MB to 642 MB used.
 
 Findings from this run:
 
@@ -407,7 +412,7 @@ python3 scripts/replay.py --src <8.18 node> --dst <9 node> \
   Path B, bucket by bucket, copy mode, from a snapshot of the source, after
   the official 90-day transfer has done the recent part. One bucket per
   `/storage/core` check. Budget about 10 s per 100 MB bucket on a quiet
-  network. The 9 side stays up (4.2); the 8.18 side stops only while its
+  network. The 9 side must stop for registration (validation 2026-11-06); the 8.18 side stops only while its
   active buckets are copied (70 s for 632 MB in 4.3). Runbook and tools: 4.3.
 - **8.18 was archiving to NFS:** import the archive directories on 9 with
   `loginsight repository import`; it re-parses, keeps stored timestamps and
