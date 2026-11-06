@@ -175,8 +175,9 @@ never reports success. It:
 
 1. Re-reads the destination and refuses (`destination_busy`) while the task is
    running.
-2. Attests each planned bucket against the destination and records, per bucket,
-   `landed`, `unverified_destination_copy` or `absent`, plus whether the appliance
+2. Records, per planned bucket, `landed` (attested earlier in the run, or attested
+   now on the destination), `unverified_destination_copy`, `absent`, or `unknown`
+   where the inventory cannot show buckets (9.1.1) and nothing was attested, plus whether the appliance
    task started and its status. The run keeps its state and an unchanged
    verification outcome, and `closed` appears in `status`, `report` and the JSON
    export with the next actions "closed as incomplete". Its exit code stays

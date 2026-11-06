@@ -383,3 +383,32 @@ def test_reserve_intent_is_journaled_before_the_reservation(rig):
     with pytest.raises(SystemExit):
         execute(engine, run)
     assert "reserve_intent" in [e["kind"] for e in journal.events(run["id"])]
+
+
+@pytest.mark.parametrize("version", ["9.0.2.0200", "9.1.1"])
+def test_close_trusts_persisted_attestation_when_inventory_cannot_show_the_bucket(rig, version):
+    engine, env, journal = rig
+    env.data["destination"]["version"] = version
+    first = plan_day(engine, 1)
+    execute(engine, first)
+    env.data["query_completeness"] = {"destination": [False] * 10}
+    assert engine.verify(first["id"])["verification"]["complete"] is False
+    env.data["query_completeness"] = {}
+    env.data["destination"]["buckets"] = []
+    second = plan_day(engine, 2)
+    with pytest.raises(MigrationError, match="verification_pending"):
+        execute(engine, second)
+    before = journal.load(first["id"])
+    with pytest.raises(MigrationError, match="verification_pending"):
+        engine.close(first["id"])
+    assert journal.load(first["id"]) == before
+    assert engine.verify(first["id"])["state"] == State.VERIFIED
+
+
+def test_close_reports_unknown_not_absent_for_unproven_911_buckets(rig):
+    engine, env, _ = rig
+    env.data["destination"]["version"] = "9.1.1"
+    first = stopped_first_window(engine, env)
+    closed = engine.close(first["id"])
+    assert set(closed["closed"]["buckets"].values()) == {"unknown"}
+    assert closed["closed"]["landed"] == []

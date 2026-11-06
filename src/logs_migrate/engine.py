@@ -721,12 +721,16 @@ class Engine:
             buckets = {}
             for b in selected:
                 copies = [d for d in destination.buckets if d.id == b.id]
-                if copies and self._contact(
+                if run["bucket_outcomes"].get(b.key) == "complete":
+                    buckets[b.key] = "landed"
+                elif copies and self._contact(
                     run, lambda b=b: self.env.attest_transfer(b), detachable=False
                 ):
                     buckets[b.key] = "landed"
                 elif copies:
                     buckets[b.key] = "unverified_destination_copy"
+                elif destination.preview:
+                    buckets[b.key] = "unknown"
                 else:
                     buckets[b.key] = "absent"
             if not started:
