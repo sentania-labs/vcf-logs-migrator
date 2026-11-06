@@ -412,3 +412,27 @@ def test_close_reports_unknown_not_absent_for_unproven_911_buckets(rig):
     closed = engine.close(first["id"])
     assert set(closed["closed"]["buckets"].values()) == {"unknown"}
     assert closed["closed"]["landed"] == []
+
+
+@pytest.mark.parametrize("version", ["9.0.2.0200", "9.1.1"])
+def test_close_cannot_bypass_verification_for_a_task_that_completed_unobserved(rig, version):
+    engine, env, journal = rig
+    env.data["destination"]["version"] = version
+    env.data["complete_after_polls"] = 100
+    first = plan_day(engine, 1)
+    env.data["faults"] = {"poll.before": [""] + ["disconnect"] * 1000}
+    with pytest.raises(MigrationError, match="uncertain"):
+        execute(engine, first)
+    assert journal.load(first["id"])["state"] == State.RECOVERY_REQUIRED
+    env.data["faults"] = {}
+    env.data["complete_after_polls"] = 1
+    assert env.transfer().status == "completed"
+    before = journal.load(first["id"])
+    with pytest.raises(MigrationError, match="verification_pending"):
+        engine.close(first["id"])
+    assert journal.load(first["id"]) == before
+    second = plan_day(engine, 2)
+    with pytest.raises(MigrationError, match="service_recovery_required"):
+        execute(engine, second)
+    assert engine.resume(first["id"])["state"] == State.VERIFYING
+    assert engine.verify(first["id"])["state"] == State.VERIFIED

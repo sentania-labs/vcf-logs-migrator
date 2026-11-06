@@ -729,6 +729,15 @@ class Engine:
                     buckets[b.key] = "landed"
                 elif copies:
                     buckets[b.key] = "unverified_destination_copy"
+                elif (
+                    destination.preview
+                    and started
+                    and remote.id == run["transfer"]["id"]
+                    and self._contact(
+                        run, lambda b=b: self.env.attest_transfer(b), detachable=False
+                    )
+                ):
+                    buckets[b.key] = "landed"
                 elif destination.preview:
                     buckets[b.key] = "unknown"
                 else:
