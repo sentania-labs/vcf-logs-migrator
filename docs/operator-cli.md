@@ -88,10 +88,10 @@ and the source is never written.
 The engine applies partitions, filters, masking, then forwarding. Existing rules
 are updated by destination ID after matching their name; creates of partitions,
 masking and filters omit the source `id` so the destination assigns its own.
-Masking and filters retain their API definitions. Partition retention/archive settings travel with
-the rule. A newly created partition needs **one destination restart before it
-routes**; `restart_required` and `maintenance` report this. Arrange that restart
-through normal maintenance. The tool never restarts services. The report covers
+Masking and filters retain their API definitions. Partition retention/archive
+settings travel with the rule. A newly created partition needs **one destination
+restart before it routes**; `restart_required` and `maintenance` report this.
+Arrange that restart through normal maintenance. The tool never restarts services. The report covers
 this invocation only; an identical rule on a later compare does not prove that a
 restart happened or that routing works. Preserve the apply result for maintenance.
 
