@@ -142,3 +142,25 @@ def test_sigint_handler_is_installed_only_for_monitoring_commands(tmp_path, monk
     args = [*base, "copy", run["id"], "--plan-hash", run["plan_hash"], "--ack-backup"]
     assert main([*args, "--ack-active", ACTIVE_ACK]) == 0
     assert signal.SIGINT in installed
+
+
+def test_cli_workflow_on_the_911_preview_fixture(tmp_path, capsys):
+    base = [
+        "--journal",
+        str(tmp_path / "journal.sqlite"),
+        "--fixture",
+        str(FIXTURES / "sealed-911.fixture"),
+    ]
+    assert main([*base, "discover"]) == 0
+    assert json.loads(capsys.readouterr().out)["destination"]["version"] == "9.1.1"
+    assert (
+        main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
+        == 0
+    )
+    run = json.loads(capsys.readouterr().out)
+    assert any("preview" in warning for warning in run["plan"]["warnings"])
+    args = [*base, "copy", run["id"], "--plan-hash", run["plan_hash"], "--ack-backup"]
+    assert main([*args, "--ack-active", ACTIVE_ACK]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "VERIFYING"
+    assert main([*base, "verify", run["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "VERIFIED"

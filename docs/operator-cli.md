@@ -135,13 +135,15 @@ stop an appliance task. Cancel never means rollback and never removes partial
 destination data.
 
 A task that is still running is an expected state, not an uncertain one. The
-monitor polls every `--monitor-poll-seconds` for as long as the task runs or makes
-progress. It records `RECOVERY_REQUIRED` only when the task state is genuinely
-unknown, or when the destination stays unreachable for `--contact-loss-seconds`.
+monitor polls every plan `--monitor-poll-seconds` (default 30) for as long as the
+task runs or makes progress. It records `RECOVERY_REQUIRED` only when the task state
+is genuinely unknown, or when the destination stays unreachable for the plan's
+`--contact-loss-seconds` (default 600).
 Task polls, inventory revalidation and bucket attestation all retry through that
 same window; a transient connection error never cancels a healthy task.
-`resume` and `stop` accept only running, detached or recovery-required runs; any
-other state is rejected unchanged. Partition creation (`plan --create-missing`) also
+`resume` and `stop` accept only running, detached or recovery-required runs, or an
+authorized run whose start intent was recorded (which becomes recovery-required
+because the POST outcome is unknown); any other state is rejected unchanged. Partition creation (`plan --create-missing`) also
 refuses while the destination reports a running task.
 A detached run does not block other destination runs by itself; the appliance's
 own running task and the overlap ledger do. `verify` refuses a detached run.
@@ -163,8 +165,8 @@ For a conflicting or partial destination bucket:
 The engine freezes the whole-bucket coverage and selected cohort, obtains two
 agreeing explicitly complete observations, and rejects missing completeness.
 The default separation is 30 seconds on the injected clock. Fixture clocks
-advance without sleeping. Verification query retries are bounded by `--attempts` on the plan; this is separate
-from task monitoring.
+advance without sleeping. Verification query retries are bounded by the plan's
+`--attempts`; this is separate from task monitoring.
 
 Plan gates bind the endpoint identities, retention, partitions, extracted fields and
 the exact selected buckets (presence, status, size, counts and manifest). Active
