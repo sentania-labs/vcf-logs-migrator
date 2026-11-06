@@ -1,32 +1,35 @@
 # vcf-logs-migrator
 
 Moving log data from **Aria Operations for Logs 8.18** to **VCF Operations for
-Logs 9.0** past the 90-day limit of Broadcom's Log Data Transfer.
+Logs 9.0 and 9.1.1 (preview)** past the 90-day limit of Broadcom's Log Data Transfer.
 
-Status: **research and a spec, no tool yet.** Everything here comes from lab
-runs on single-node clusters with synthetic data. It is not supported by
-Broadcom. Snapshot both sides before trying any of it.
+Status: **research and a spec, no tool yet.** Evidence includes single-node
+and multi-node lab runs with synthetic data, plus a 9.1.1 API run. Validation
+limits are recorded in the linked docs. It is not supported by Broadcom. Snapshot both sides before trying any of it.
 
 ## The short version
 
-- **Start here:** Broadcom's own transfer API (`/api/v2/data-migrations`, on 9.0 and 9.1.1) takes any time window; the 90-day limit is only in the UI. It is the supported mover; this repo's tools add planning, dedupe, verification and the partition/creation-time fix-ups it lacks. See [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md).
+- **Start here:** Broadcom's own transfer API (`/api/v2/data-migrations`, on 9.0 and 9.1.1) takes any time window; the 90-day limit is only in the UI. It is the only v1 mover; the planned tool adds planning, overlap guards, verification and optional 9.0 partition/creation-time fix-up. See [`docs/validation-2026-11-06-official-api.md`](docs/validation-2026-11-06-official-api.md).
 
 - 8.18 cannot upgrade in place to 9.x. The supported path is a new 9.0
   appliance plus the Log Data Transfer in the 9.0 UI (Administration >
   Control Panel > Logs Data Transfer), capped at the newest 90 days.
-- That transfer is a bucket copy under the hood. Copying more buckets by hand
-  works: in the lab, **8 months / 2.43M events moved in 44 s of copy, per-day
-  counts identical, every field preserved, original timestamps kept.**
-- Copy into a staging area with both sides running; **register with the 9
-  node stopped** (about 3 minutes of ingest outage per commit). The 8.18
-  node only stops while its active (unsealed) buckets are copied.
-- Once over its space budget, 9.0 retires buckets by *registration* time, so
-  migrated history is always the first to go. Size the target for migrated
-  data plus live growth. Validation details:
-  [`docs/validation-2026-11-06.md`](docs/validation-2026-11-06.md).
-  Registering with the bucket's data end time as its creation time fixes
-  that, and a small program keeps non-default index partitions (stock
-  `bucket-index add` puts everything in Default).
+- The API copies only sealed buckets and leaves the source untouched. Active
+  buckets are always skipped; the preview names the last fully sealed day.
+  The required acknowledgment is "i understand you aren't going to copy the
+  latest data". A later run of the same window collects the tail after
+  sealing, subject to overlap checks. A changed 9.0 destination node count
+  blocks reruns; 9.1 rerun dedupe is not validated.
+- Compare partitions on both targets and offer to create missing ones before
+  the run; check extracted fields too. Config migration beyond partitions
+  waits for a follow-on release. 9.1.1 uses an Ops token exchanged for a Logs
+  JWT and its query API for verification.
+- On 9.0, optional fix-up restores source partitions and creation times,
+  with per-node credentials and stop consent. Configure it before migration
+  or run it afterwards. 9.1 needs no fix-up; matching partition filters must
+  exist before importing. That routing is code-proven, not yet tested live.
+- Never delete destination data. A mismatched existing bucket blocks the
+  run and gets manual remediation steps printed.
 - Do **not** run the stock `bucket-tools --bucketMigrationStart` by hand: it
   takes the active bucket by mtime and deletes every bucket on the source.
 
@@ -48,9 +51,14 @@ Broadcom. Snapshot both sides before trying any of it.
 | [`scripts/replay.py`](scripts/replay.py) | Replay events between instances through the agent-format ingest, keeping timestamps |
 | [`scripts/synth/`](scripts/synth/) | Synthetic data generators used for the tests (ESXi syslog, mixed syslog) |
 
-## Copy in four steps (prototype)
+## Superseded manual copy prototype (reference only)
 
-From [`docs/research-guide.md`](docs/research-guide.md) section 4.3:
+This is the earlier manual path, outside v1 and not a fallback. Its source
+stop procedure is superseded by always skipping active buckets. The current
+API-only requirements are in [`docs/spec.md`](docs/spec.md).
+
+Historical commands from [`docs/research-guide.md`](docs/research-guide.md)
+section 4.3:
 
 ```
 # 1. source (8.18), as root: which buckets hold data, and retention settings
