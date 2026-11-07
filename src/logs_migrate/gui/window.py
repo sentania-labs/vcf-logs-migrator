@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         # Results from a previous connection are dropped instead of landing in a reset state.
         self.generation = 0
         self.job_generation: dict[str, int] = {}
+        self.seed_pending = True
 
         root = QWidget()
         root.setObjectName("lattice-root")
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
         settings = self.state.settings
         self.generation += 1
         self.state.reset_connection()
+        self.seed_pending = True
         fixture = settings.fixture_path
         if fixture and not Path(fixture).expanduser().is_file():
             self.state.connect_error = (
@@ -288,14 +290,14 @@ class MainWindow(QMainWindow):
         if not self._settle(job):
             return
         if job == "connect":
-            fresh = state.discovered is None
             state.connected = True
             state.discovered = result
             state.connect_error = None
             self.timer.start(state.settings.refresh_seconds * 1000)
             self.submit("runs", "runs")
             self.poll_status()
-            if fresh:
+            if self.seed_pending:
+                self.seed_pending = False
                 self.pages["plan"].seed_dates()
         elif job == "disconnect":
             return

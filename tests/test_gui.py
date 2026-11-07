@@ -391,3 +391,22 @@ def test_reconnect_before_a_preview_keeps_the_operators_dates(driver):
     driver.idle()
     assert driver.state.connected
     assert plan_page.current_dates() == chosen
+
+
+def test_reconnect_after_a_failed_reconnect_keeps_the_operators_dates(driver):
+    driver.connect()
+    plan_page = driver.pages["plan"]
+    plan_page.start_date.setDate(plan_page.start_date.date().addDays(1))
+    chosen = plan_page.current_dates()
+    settings = driver.state.settings
+    fixture = settings.fixture_path
+    settings.fixture_path = fixture + ".missing"
+    driver.window.reconnect_environments()
+    driver.until(lambda: driver.state.connect_error)
+    driver.idle()
+    assert not driver.state.connected
+    settings.fixture_path = fixture
+    driver.window.reconnect_environments()
+    driver.until(lambda: driver.state.connected)
+    driver.idle()
+    assert plan_page.current_dates() == chosen
