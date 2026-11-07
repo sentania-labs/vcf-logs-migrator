@@ -379,3 +379,15 @@ def test_reconnect_keeps_the_operators_dates(driver):
     driver.idle()
     assert driver.state.connected
     assert plan_page.current_dates() == chosen
+
+
+def test_reconnect_before_a_preview_keeps_the_operators_dates(driver):
+    driver.connect()
+    plan_page = driver.pages["plan"]
+    plan_page.start_date.setDate(plan_page.start_date.date().addDays(1))
+    chosen = plan_page.current_dates()
+    assert driver.state.plan_run is None
+    driver.window.reconnect_environments()
+    driver.idle()
+    assert driver.state.connected
+    assert plan_page.current_dates() == chosen

@@ -288,13 +288,14 @@ class MainWindow(QMainWindow):
         if not self._settle(job):
             return
         if job == "connect":
+            fresh = state.discovered is None
             state.connected = True
             state.discovered = result
             state.connect_error = None
             self.timer.start(state.settings.refresh_seconds * 1000)
             self.submit("runs", "runs")
             self.poll_status()
-            if state.plan_run is None:
+            if fresh:
                 self.pages["plan"].seed_dates()
         elif job == "disconnect":
             return
