@@ -656,12 +656,17 @@ def outcome_label(verification: dict | None) -> str:
     outcome = verification.get("outcome")
     missing = verification.get("buckets", {}).get("not_received", [])
     if missing:
-        return f"incomplete · {len(missing)} group{'s' if len(missing) != 1 else ''} not received"
+        state = "counts differ" if outcome == "verified_discrepancy" else "incomplete"
+        return f"{state} · {len(missing)} group{'s' if len(missing) != 1 else ''} not received"
     return {
         "verified_success": "verified",
         "verified_discrepancy": "counts differ",
         "incomplete_verification": "incomplete",
     }.get(outcome, "verification pending")
+
+
+def received_counts_match(result: dict) -> bool:
+    return all(d["difference"] == 0 for d in result.get("daily", []))
 
 
 def group_names(run: dict | None) -> dict[str, str]:
@@ -802,8 +807,13 @@ def verification_view(
                 if missing_labels
                 else "The API skipped a selected group. "
             )
-            + "Received groups match their counts. Plan a window that covers the missing "
-            "history again, or export the evidence for the appliance administrator.",
+            + (
+                "Received groups match their counts. "
+                if received_counts_match(result)
+                else "Daily counts also differ in the received groups; inspect the comparison. "
+            )
+            + "Plan a window that covers the missing history again, or export the evidence "
+            "for the appliance administrator.",
         )
     elif outcome == "verified_success":
         banner = (
@@ -1099,8 +1109,13 @@ def report_view(
         "banner": (
             "bad",
             f"{len(missing)} selected group{'s' if len(missing) != 1 else ''} not received",
-            "The API skipped part of the selection; received groups match their counts. "
-            "This is not a complete migration of the requested dates.",
+            "The API skipped part of the selection; "
+            + (
+                "received groups match their counts. "
+                if received_counts_match(verification)
+                else "daily counts also differ in the received groups. "
+            )
+            + "This is not a complete migration of the requested dates.",
         )
         if missing
         else {

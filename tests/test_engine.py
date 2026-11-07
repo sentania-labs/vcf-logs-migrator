@@ -368,6 +368,21 @@ def test_api_skipped_bucket_is_reported_as_not_received_in_result_and_report(rig
     assert f"selected but not received: {skipped}" in text
 
 
+def test_skipped_bucket_with_count_loss_stays_a_discrepancy(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    skipped = env.data["source_events"][0]["bucket"]
+    env.data["skip_buckets"] = [skipped]
+    execute(engine, run)
+    engine.status()
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e.get("cohort") != "baseline"
+    ]
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["reason"] == Code.NOT_RECEIVED and result["buckets"]["not_received"] == [skipped]
+
+
 def test_destination_restart_or_inventory_drift_does_not_cancel_transfer(rig):
     engine, env, _ = rig
     run = planned(engine)

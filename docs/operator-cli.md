@@ -200,9 +200,10 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   Re-running after a later transfer recomputes the result and never invalidates an
   earlier success. The result lists covered buckets and days and buckets selected
   but not received (for example API-skipped). A selection with any bucket not
-  received is reported as `incomplete_verification` with reason
-  `selected_buckets_not_received` (exit 6), even when every received bucket
-  reconciles: the counts are evidence, not a success for the requested dates.
+  received is reported with reason `selected_buckets_not_received`. When every
+  received bucket reconciles the outcome is `incomplete_verification` (exit 6):
+  the counts are evidence, not a success for the requested dates. A count
+  difference stays `verified_discrepancy` (exit 5).
   The fixture adapter supplies attribution; unverifiable attribution must remain
   incomplete on a future live adapter.
 - Daily count equality is count evidence, not proof of identical message content,

@@ -288,7 +288,8 @@ class Engine:
         }
         result["covered_days"] = [day for day, _ in source.daily]
         if result["buckets"]["not_received"]:
-            # Received groups reconcile, but the selection did not all land: never a success.
-            result["outcome"] = Verification.INCOMPLETE.value
+            # A selection that did not all land is never a success; a discrepancy stays one.
+            if result["outcome"] == Verification.SUCCESS.value:
+                result["outcome"] = Verification.INCOMPLETE.value
             result["reason"] = Code.NOT_RECEIVED.value
         return result

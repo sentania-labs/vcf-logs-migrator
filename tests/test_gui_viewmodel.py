@@ -369,6 +369,26 @@ def test_plan_error_text_distinguishes_an_empty_window(rig):
     assert vm.describe_error("gui:custom text") == "custom text"
 
 
+def test_skipped_group_with_count_loss_is_labelled_a_discrepancy(rig):
+    engine, env, _ = rig
+    env.data["skip_buckets"] = [env.data["source_events"][0]["bucket"]]
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e.get("cohort") != "baseline"
+    ]
+    result = engine.verify(run["id"])
+    stored = engine.journal.load(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert not vm.received_counts_match(result)
+    assert vm.outcome_label(result) == "counts differ · 1 group not received"
+    banner = vm.verification_view(result, engine.status(), 1, False, stored)["banner"]
+    assert "also differ" in banner[2] and "match their counts" not in banner[2]
+    report = vm.report_view(stored, [], engine.status(), "UTC")["banner"]
+    assert "also differ" in report[2] and "match their counts" not in report[2]
+
+
 def test_outcome_labels_and_missing_days(rig):
     engine, env, _ = rig
     key = env.data["source_events"][0]["bucket"]
