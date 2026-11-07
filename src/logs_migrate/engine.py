@@ -17,6 +17,7 @@ from .models import (
     Verification,
     Window,
     digest,
+    sealed_frontier,
 )
 from .planning import build_plan, partition_diff
 from .ports import SystemClock
@@ -47,7 +48,7 @@ def partial_days(source, plan: dict) -> list[str]:
     """Covered days whose source events are not all in the selected buckets: days shared
     with an unselected sealed bucket, and days at or after the active tail. The tail starts
     at the first active bucket's proven start; when active bounds are unknown (the 8.18
-    listing shows none) it starts at the newest sealed bucket's end, the sealed frontier.
+    listing shows none) it starts at the oldest node's newest sealed bucket end, the sealed frontier.
     Counts on partial days are reported, never judged; a day before the frontier that an
     open bucket secretly holds late arrivals for shows up as a discrepancy, not a pass."""
     coverage = day_window(Window(**plan["coverage"]))
@@ -72,12 +73,11 @@ def partial_days(source, plan: dict) -> list[str]:
             if bucket.start < start + DAY and bucket.end >= start:
                 partial.add(start)
     if unproven_active:
-        sealed_ends = [b.end for b in source.buckets if b.status != "active" and b.end is not None]
-        if not sealed_ends:
+        sealed = sealed_frontier(source.buckets)
+        if sealed is None:
             partial.update(days)
         else:
-            frontier = max(sealed_ends) // DAY * DAY
-            partial.update(start for start in days if start >= frontier)
+            partial.update(start for start in days if start >= sealed // DAY * DAY)
     return sorted(_day(start) for start in partial)
 
 

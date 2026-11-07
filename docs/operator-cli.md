@@ -28,8 +28,9 @@ exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so t
 preview includes both the requested interval and actual bucket coverage. Active
 buckets are always excluded. The last fully sealed day is the day
 before the first active bucket's proven start (America/Chicago). A live 8.18 listing
-shows no dates for active buckets, so there it is the day before the newest sealed
-bucket's end (America/Chicago); it is unknown only when there is no sealed bucket to go by.
+shows no dates for active buckets, so there it is the day before the oldest node's
+newest sealed bucket end (America/Chicago); it is unknown when a node with an active bucket
+has no sealed bucket to go by.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to

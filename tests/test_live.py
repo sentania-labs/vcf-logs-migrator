@@ -1111,6 +1111,35 @@ def test_the_sealed_frontier_names_the_last_fully_sealed_day_when_active_bounds_
     assert last_sealed_day((sealed,)) is None
 
 
+def test_the_sealed_frontier_is_the_oldest_node_when_a_source_has_several_nodes():
+    D4 = "44444444-4444-4444-4444-444444444444"
+    from logs_migrate.models import Bucket, Cluster, Node, last_sealed_day
+
+    def sealed(ident, node, end):
+        return Bucket(ident, node, "", "archived", 1, 1, 0, end, None, True, True)
+
+    def active(ident, node):
+        return Bucket(ident, node, "", "active", 0, 0, None, None, None, False, False)
+
+    fresh = sealed(A, "a", 6 * DAY + 3600 * 1000)
+    stale = sealed(B, "b", 3 * DAY + 12 * 3600 * 1000)
+    buckets = (fresh, stale, active(C, "a"), active(D4, "b"))
+    # Node b's open bucket began on day 4 (Chicago day 3), so day 2 is the last sealed day.
+    assert last_sealed_day(buckets) == "1970-01-03"
+    nodes = (Node("a", 10, 1, 9), Node("b", 10, 1, 9))
+    cluster = Cluster("c", "8.18.7", nodes, (), (), buckets, "i")
+    plan = {
+        "coverage": {"start": 0, "end": 7 * DAY},
+        "selected": [{"node": "a", "id": A}, {"node": "b", "id": B}],
+        "last_fully_sealed_day": None,
+    }
+    assert partial_days(cluster, plan) == ["1970-01-04", "1970-01-05", "1970-01-06", "1970-01-07"]
+    # A node with an open bucket and nothing sealed cannot be bounded: everything is partial.
+    unbounded = Cluster("c", "8.18.7", nodes, (), (), (fresh, active(C, "a"), active(D4, "b")), "i")
+    assert last_sealed_day(unbounded.buckets) is None
+    assert len(partial_days(unbounded, {**plan, "selected": [{"node": "a", "id": A}]})) == 7
+
+
 def test_partial_days_and_day_window_helpers():
     from logs_migrate.models import Bucket, Cluster, Node
 
