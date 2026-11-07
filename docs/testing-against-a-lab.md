@@ -42,25 +42,42 @@ Addresses and user names can also come from `LOGS_SOURCE`, `LOGS_DESTINATION`,
 ## Step 1: enroll the appliance identities
 
 The first contact shows each TLS certificate and SSH host key fingerprint and asks
-you to trust it. Nothing is sent until you do. On a terminal you get a `[y/N]`
-prompt per identity; in automation pass `--trust-new` once and the fingerprints are
-printed and enrolled.
+you to trust it. Nothing is sent until you do, and on the run that first sees an
+identity no credential is sent to it at all. On a terminal you get a `[y/N]` prompt
+per identity, where you confirm the fingerprint you read off the appliance. In
+automation there are two ways, both without a human at a prompt:
+
+- `--trust-new` probes, enrolls and prints the identities it saw, then **exits
+  without sending any credential**. Verify the printed fingerprints against the
+  appliances (the TLS certificate on the appliance console or `openssl x509
+  -fingerprint -sha256`, the host key with `ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub`
+  on the node), then run the same command again; that second run talks only to
+  pinned identities.
+- `--expect-fingerprint SHA256` (repeatable, hex with or without colons) carries a
+  fingerprint you verified beforehand. An unknown identity that presents it is
+  enrolled and the run proceeds in one go; any other unknown identity is refused.
 
 ```sh
 export LOGS_SOURCE=aria-logs-1.lab.example LOGS_DESTINATION=vcf-logs.lab.example
-logs-migrate --trust-new selftest
+logs-migrate --trust-new selftest        # probes, prints, enrolls, exits; no credential sent
+logs-migrate selftest                    # second run, against the pinned identities
 ```
 
-Correct output starts with one line per identity:
+Correct output of the first run starts with one line per identity and ends with a
+JSON line saying what was enrolled and that no credential was sent:
 
 ```
 Unknown appliance identity: TLS aria-logs-1.lab.example:9543 SHA256 3f:0a:...
-Enrolled (--trust-new).
+Enrolled (--trust-new); no credential is sent on this run.
 Unknown appliance identity: SSH aria-logs-1.lab.example:22 (ssh-ed25519) SHA256 9c:...
-Enrolled (--trust-new).
+Enrolled (--trust-new); no credential is sent on this run.
+{"enrolled": [...], "credentials_sent": false, "next": "Verify each fingerprint ... run the same command again without --trust-new."}
 ```
 
-Cluster members found in the config file get their own prompt on the same run.
+Cluster members found in the config file are seen only once the typed member's SSH
+identity is pinned, so with `--trust-new` a multi-node source takes one more
+enroll-and-exit run before the first full run; with `--expect-fingerprint` pass every
+member's host key fingerprint.
 A probe that fails prints which host it was contacting, for example
 `{"stage": "tls aria-logs-1.lab.example:9543", "error": "connection_failed"}`, and
 nothing from the remote side.
@@ -183,11 +200,15 @@ verification is what says whether the dates landed.
 
 ## Running it as an agent
 
-Everything above is non-interactive with `--trust-new`, environment variables or a
-`--credentials` file, and `--json` on `selftest`. The read-only sequence is:
+Everything above is non-interactive with environment variables or a `--credentials`
+file, `--json` on `selftest`, and either `--expect-fingerprint` for fingerprints the
+operator handed you, or `--trust-new` runs that enroll and exit before any credential
+is sent (repeat until a run no longer reports `credentials_sent: false`). The
+read-only sequence is:
 
 ```sh
-logs-migrate --trust-new selftest --json
+logs-migrate --trust-new selftest --json     # repeat while it exits with enrolled identities
+logs-migrate selftest --json
 logs-migrate discover
 logs-migrate partitions
 logs-migrate --journal J plan --since ... --until ...

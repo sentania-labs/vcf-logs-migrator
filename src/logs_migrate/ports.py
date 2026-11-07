@@ -42,6 +42,9 @@ class History:
     bucket_ids: tuple[str, ...]
     complete: bool
     task_id: str = ""
+    # Finished with skipped buckets but no exhaustive received list: part of its window
+    # may have landed, and nothing says which part.
+    partial: bool = False
 
 
 class Environment(Protocol):

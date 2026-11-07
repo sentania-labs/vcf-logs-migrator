@@ -25,6 +25,9 @@ from .verification import combine, reconcile, stable_counts
 TERMINAL = {"idle", "completed", "cancelled", "failed"}
 EVERYTHING = Window(0, EVERYTHING_END)
 INGEST_WINDOW_SECONDS = 86_400
+# A start whose outcome is uncertain (no HTTP answer) holds its window this long; after that,
+# an appliance history with no task covering the window is the evidence that nothing started.
+UNCERTAIN_RELEASE_SECONDS = 900
 
 
 def _ids(keys):
@@ -113,15 +116,43 @@ class Engine:
             stack.enter_context(self.env.exclusive())
             yield
 
+    def _releasable(self, row, destination) -> bool:
+        """An uncertain start (no acknowledgment) may be released only when enough time has
+        passed for the appliance to show a task it accepted, and its history shows none
+        covering the window. One idle observation alone proves nothing."""
+        attempted = row.get("attempted_at")
+        if attempted:
+            try:
+                started = datetime.fromisoformat(attempted)
+                now = datetime.fromisoformat(self.clock.now())
+                if (now - started).total_seconds() < UNCERTAIN_RELEASE_SECONDS:
+                    return False
+            except ValueError:
+                return False
+        window = Window(**row["window"]) if row.get("window") else None
+        for prior in self.env.history():
+            if prior.destination != destination:
+                continue
+            if row.get("task_id") and prior.task_id == row["task_id"]:
+                return False
+            if window is not None and day_window(prior.window).overlaps(day_window(window)):
+                return False
+        return True
+
     def _record(self, task, destination):
         """Ledger what the API reports as transferred once a task has finished."""
         if self.journal is None or task.status not in TERMINAL:
             return
         if task.status == "idle" and not self.attribution:
-            # A live API that shows no task moved nothing: a selection whose start was never
-            # acknowledged is released; one the API accepted stays recorded.
+            # A live API that shows no task: a selection the API accepted stays recorded; one
+            # whose start was never acknowledged is released only once it is stale and the
+            # appliance history shows no task covering it.
             for row in self.journal.transfers(destination):
-                if not row["closed"] and not row.get("acknowledged"):
+                if (
+                    not row["closed"]
+                    and not row.get("acknowledged")
+                    and self._releasable(row, destination)
+                ):
                     self.journal.release_transfer(row["run"])
             return
         received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
@@ -150,9 +181,9 @@ class Engine:
             if not matched:
                 if self.attribution:
                     self.journal.settle_transfer(row["run"], [])
-                elif not row.get("acknowledged"):
-                    # Live: a finished task that is not this selection's, and the start was
-                    # never acknowledged: the appliance holds no task for it.
+                elif not row.get("acknowledged") and self._releasable(row, destination):
+                    # Live: a finished task that is not this selection's, the start was
+                    # never acknowledged, and the uncertain start is stale.
                     self.journal.release_transfer(row["run"])
             elif received or self.attribution:
                 self.journal.settle_transfer(
@@ -179,7 +210,12 @@ class Engine:
         selected = {b["id"] for b in plan["selected"]}
         for prior in self.journal.transfers(destination):
             held = prior["received"] if prior["closed"] else prior["keys"]
-            require(not selected.intersection(_ids(held)), Code.OVERLAP)
+            if selected.intersection(_ids(held)):
+                # An open row whose start was never acknowledged is an uncertain start: the
+                # window is held with that reason until it is stale and the appliance shows
+                # no task for it.
+                uncertain = not prior["closed"] and not prior.get("acknowledged")
+                raise MigrationError(Code.UNCERTAIN_START if uncertain else Code.OVERLAP)
         # Include transfers started outside this journal, wherever the appliance exposes them.
         coverage = Window(**plan["coverage"])
         ours = {row["task_id"] for row in self.journal.transfers(destination) if row.get("task_id")}
@@ -187,10 +223,10 @@ class Engine:
             if prior.destination != destination or (prior.task_id and prior.task_id in ours):
                 continue
             require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
-            if not prior.bucket_ids and prior.complete:
-                # A finished transfer with no bucket list (one started from the product UI,
-                # say) covered whole buckets in its window; anything of ours overlapping
-                # that window may already be there.
+            if not prior.bucket_ids and (prior.complete or prior.partial):
+                # A finished transfer with no received list (one started from the product UI,
+                # say), or one that lists only what it skipped, covered whole buckets in its
+                # window; anything of ours overlapping that window may already be there.
                 require(not coverage.overlaps(prior.window), Code.OVERLAP)
 
     def _source_ingest(self) -> dict:

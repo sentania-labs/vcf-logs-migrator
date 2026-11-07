@@ -48,6 +48,10 @@ ERROR_TEXT = {
     Code.STATE: "That action is not valid for this run's current state.",
     Code.STORAGE: "The private journal is unavailable.",
     Code.NOT_RECEIVED: "A selected group was not received by the destination.",
+    Code.UNCERTAIN_START: (
+        "An earlier start of this window got no answer from the destination. The window is "
+        "held for 15 minutes; it is released once the API shows no task for it."
+    ),
 }
 
 
@@ -468,6 +472,7 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
 # Refusals the engine raises before any POST; every other failure may have reached the API.
 PRE_POST_CODES = {
     Code.INVALID_INPUT,
+    Code.UNCERTAIN_START,
     Code.UNSUPPORTED,
     Code.INVENTORY_CHANGED,
     Code.CAPACITY,

@@ -92,7 +92,8 @@ Against a lab (read-only until `copy`):
 python -m pip install '.[ssh]'
 export LOGS_SOURCE=aria-logs-1.lab.example LOGS_DESTINATION=vcf-logs.lab.example
 export LOGS_SOURCE_API_PASSWORD=... LOGS_SOURCE_SSH_PASSWORD=... LOGS_DESTINATION_API_PASSWORD=...
-logs-migrate --trust-new selftest
+logs-migrate --trust-new selftest   # enrolls the identities it sees and exits; no credential sent
+logs-migrate selftest               # read-only checks against the pinned identities
 ```
 
 Against the simulator:
@@ -126,7 +127,9 @@ Existing fixup code is retained privately and **set aside**, unavailable from th
 engine/CLI, pending migration qualification.
 
 Appliance identities (TLS certificates, SSH host keys) are trusted on first use with
-an explicit prompt or dialog and remembered under the user's config directory.
+an explicit prompt or dialog, or enrolled by `--trust-new` on a run that sends no
+credential, or matched against `--expect-fingerprint`; they are remembered under the
+user's config directory.
 Credentials come from the GUI, environment variables, a private file or a prompt;
 never from command arguments, logs or reports.
 

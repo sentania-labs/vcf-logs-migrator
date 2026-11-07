@@ -851,6 +851,7 @@ class LiveEnvironment:
                 task.completed,
                 not task.skipped,
                 task.id or "",
+                bool(task.skipped) and not task.completed,
             ),
         )
 

@@ -90,7 +90,20 @@ def parser():
     live.add_argument(
         "--trust-new",
         action="store_true",
-        help="Enroll unknown TLS certificates and SSH host keys after printing them",
+        help=(
+            "Probe, enroll and print unknown TLS certificates and SSH host keys, then exit "
+            "without sending any credential; verify the fingerprints and invoke again"
+        ),
+    )
+    live.add_argument(
+        "--expect-fingerprint",
+        action="append",
+        default=[],
+        metavar="SHA256",
+        help=(
+            "A verified TLS or SSH fingerprint (hex, colons optional); an unknown identity "
+            "that presents it is enrolled and the command proceeds. Repeatable."
+        ),
     )
     live.add_argument("--timeout", type=float, default=60.0, help="Seconds per request")
     sub = p.add_subparsers(dest="command", required=True)
@@ -147,6 +160,7 @@ def parser():
 EXIT_CODES = {
     Code.INVALID_INPUT: 2,
     Code.UNCERTAIN: 8,
+    Code.UNCERTAIN_START: 8,
     Code.CONNECTION: 7,
     Code.AUTH: 7,
     Code.SCHEMA: 7,
@@ -155,15 +169,32 @@ EXIT_CODES = {
 }
 
 
-def _accept(identity, trust_new: bool) -> bool:
+class EnrolledOnly(Exception):
+    """--trust-new enrolled identities; this run stops before any credential is sent."""
+
+    def __init__(self, enrolled):
+        super().__init__("enrolled")
+        self.enrolled = enrolled
+
+
+def _normalise(fingerprint: str) -> str:
+    return fingerprint.strip().lower().replace(":", "")
+
+
+def _accept(identity, args) -> str:
+    """`verified` (fingerprint given), `enroll` (--trust-new, run stops), `prompt` (a human
+    confirmed on a terminal) or `refuse`."""
     print("Unknown appliance identity: " + identity.display, file=sys.stderr)
-    if trust_new:
-        print("Enrolled (--trust-new).", file=sys.stderr)
-        return True
+    if identity.fingerprint in {_normalise(f) for f in args.expect_fingerprint}:
+        print("Matches --expect-fingerprint; enrolled.", file=sys.stderr)
+        return "verified"
+    if args.trust_new:
+        print("Enrolled (--trust-new); no credential is sent on this run.", file=sys.stderr)
+        return "enroll"
     if not sys.stdin.isatty():
-        return False
+        return "refuse"
     answer = input("Trust this identity and remember it? [y/N] ").strip().lower()
-    return answer in {"y", "yes"}
+    return "prompt" if answer in {"y", "yes"} else "refuse"
 
 
 def open_live(args):
@@ -192,14 +223,20 @@ def open_live(args):
         try:
             return env.open()
         except TrustRequired as pending:
-            refused = [i for i in pending.identities if not _accept(i, args.trust_new)]
+            decisions = {i.name: _accept(i, args) for i in pending.identities}
+            refused = [i for i in pending.identities if decisions[i.name] == "refuse"]
             if refused:
                 print(
                     json.dumps(
                         {
                             "error": Code.AUTH.value,
                             "untrusted": [i.display for i in refused],
-                            "hint": "Rerun with --trust-new or answer the prompt on a terminal.",
+                            "hint": (
+                                "Rerun with --trust-new to enroll these without sending "
+                                "credentials, then verify the printed fingerprints and run "
+                                "again; or pass --expect-fingerprint SHA256 for each verified "
+                                "identity; or answer the prompt on a terminal."
+                            ),
                         }
                     ),
                     file=sys.stderr,
@@ -207,6 +244,10 @@ def open_live(args):
                 raise MigrationError(Code.AUTH) from None
             for identity in pending.identities:
                 trust.trust(identity, env.key_line(identity))
+            if any(d == "enroll" for d in decisions.values()):
+                # Trust on first use is split across runs: this run never sends a credential
+                # to an identity that was only just seen.
+                raise EnrolledOnly([i.display for i in pending.identities]) from None
         except MigrationError as error:
             stage = env.notes.get("stage")
             if stage:
@@ -258,7 +299,22 @@ def main(argv=None):
             env = SimulatedEnvironment.from_file(args.fixture, remote)
             engine = Engine(env, journal, SimulatedClock())
         else:
-            env = open_live(args)
+            try:
+                env = open_live(args)
+            except EnrolledOnly as enrolled:
+                print(
+                    json.dumps(
+                        {
+                            "enrolled": enrolled.enrolled,
+                            "credentials_sent": False,
+                            "next": (
+                                "Verify each fingerprint against the appliance, then run the "
+                                "same command again without --trust-new."
+                            ),
+                        }
+                    )
+                )
+                return 0
             engine = Engine(env, journal)
         if args.command == "selftest":
             from . import selftest

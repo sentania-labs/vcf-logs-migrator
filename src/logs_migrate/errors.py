@@ -28,6 +28,7 @@ class Code(StrEnum):
     STATE = "invalid_state_transition"
     STORAGE = "journal_unavailable"
     NOT_RECEIVED = "selected_buckets_not_received"
+    UNCERTAIN_START = "uncertain_start_pending"
 
 
 class MigrationError(Exception):

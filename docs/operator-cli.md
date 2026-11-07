@@ -245,7 +245,7 @@ available under the operator's retention plan.
 | 5 | Complete count observations disagree |
 | 6 | Verification incomplete |
 | 7 | Operation failed: connection, authentication, unrecognized response, journal unavailable or destination busy |
-| 8 | API outcome uncertain or client interrupted; query status |
+| 8 | API outcome uncertain or client interrupted; query status. Also `uncertain_start_pending`: an earlier start of this window got no answer, so the window is held for 15 minutes and released once the API shows no task for it |
 
 Secrets have no argv flags. Adapter failures are reduced to fixed error codes;
 raw responses, credentials and exception strings must never enter reports or

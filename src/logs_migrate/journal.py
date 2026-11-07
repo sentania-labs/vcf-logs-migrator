@@ -120,7 +120,13 @@ class Journal:
                 plan["source"]["id"],
                 plan["destination"]["id"],
                 canonical(
-                    {"keys": keys, "closed": False, "received": [], "window": plan["window"]}
+                    {
+                        "keys": keys,
+                        "closed": False,
+                        "received": [],
+                        "window": plan["window"],
+                        "attempted_at": self.clock.now(),
+                    }
                 ),
             ),
         )

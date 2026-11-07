@@ -736,7 +736,14 @@ def _wired(tmp_path, rigged, monkeypatch, script):
     live_env.destination_client.transport = HTTPS(
         "https://dst.lab:9543", certificate_sha256=hashlib.sha256(b"cert").hexdigest()
     )
-    env.start, env.transfer = live_env.start, live_env.transfer
+    # The live client names the destination by its TLS pin; the simulated engine side names
+    # it dst-cluster. One appliance, one name, as in a real session.
+    from dataclasses import replace as _replace
+
+    def _as_simulated(call):
+        return lambda *a, **k: _replace(call(*a, **k), destination="dst-cluster")
+
+    env.start, env.transfer = _as_simulated(live_env.start), _as_simulated(live_env.transfer)
     return env, engine
 
 
@@ -764,16 +771,19 @@ def test_a_start_the_appliance_answered_with_500_is_not_held_and_the_plan_can_be
     engine.plan(MARCH, Policy(poll_seconds=0))
 
 
-def test_a_start_with_no_answer_is_released_once_the_appliance_shows_no_task(
+def test_a_start_with_no_answer_holds_the_window_until_stale_and_absent_from_history(
     tmp_path, rigged, monkeypatch
 ):
+    """One idle observation is not proof the start was lost: the window stays held with the
+    uncertain-start reason until 15 minutes have passed and the appliance history shows no
+    task covering it."""
     from logs_migrate.models import Policy
 
     env, engine = _wired(
         tmp_path,
         rigged,
         monkeypatch,
-        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, TimeoutError()), IDLE],
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, TimeoutError())] + [IDLE] * 12,
     )
     run, start = _ready_run(engine, MARCH)
     destination = run["plan"]["destination"]["id"]
@@ -781,9 +791,155 @@ def test_a_start_with_no_answer_is_released_once_the_appliance_shows_no_task(
         start()
     assert raised.value.code == Code.UNCERTAIN
     (row,) = engine.journal.transfers(destination)
-    assert not row["closed"]
+    assert not row["closed"] and not row.get("acknowledged") and row["attempted_at"]
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"], "an idle status alone must not release an uncertain start"
+    engine.clock.sleep(899)
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    engine.clock.sleep(1)
     engine.plan(MARCH, Policy(poll_seconds=0))
-    assert engine.journal.transfers(destination) == []
+    assert [r for r in engine.journal.transfers(destination) if not r["closed"]] == []
+
+
+def test_an_uncertain_start_whose_task_appears_in_history_settles_instead_of_releasing(
+    tmp_path, rigged, monkeypatch
+):
+    from logs_migrate.models import Policy
+
+    running = (
+        "GET",
+        MIGRATIONS,
+        (
+            200,
+            {
+                "status": "RUNNING",
+                "bucketStartTimeMillis": MARCH.start,
+                "bucketEndTimeMillis": MARCH.end,
+            },
+        ),
+    )
+    done = (
+        "GET",
+        MIGRATIONS,
+        (
+            200,
+            {
+                "status": "COMPLETED",
+                "bucketStartTimeMillis": MARCH.start,
+                "bucketEndTimeMillis": MARCH.end,
+            },
+        ),
+    )
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, TimeoutError())]
+        + [running]  # The held plan refuses before reading history: one status read.
+        + [done] * 8,
+    )
+    run, start = _ready_run(engine, MARCH)
+    destination = run["plan"]["destination"]["id"]
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN):
+        start()
+    # The lost answer was an accepted start: the status shows it running on our window.
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    engine.clock.sleep(900)
+    # Finished on our window: the row settles as usual and the window is overlap-protected.
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(destination)
+    assert row["closed"] and row["received"]
+
+
+def test_an_uncertain_start_is_not_released_by_an_unrelated_finished_task_until_stale(
+    tmp_path, rigged, monkeypatch
+):
+    from logs_migrate.models import Policy
+
+    other = (
+        "GET",
+        MIGRATIONS,
+        (
+            200,
+            {
+                "status": "COMPLETED",
+                "id": "other",
+                "bucketStartTimeMillis": 1,
+                "bucketEndTimeMillis": 2,
+                "copied": [A],
+            },
+        ),
+    )
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, TimeoutError())] + [other] * 12,
+    )
+    run, start = _ready_run(engine, MARCH)
+    destination = run["plan"]["destination"]["id"]
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN):
+        start()
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"]
+    engine.clock.sleep(900)
+    engine.plan(MARCH, Policy(poll_seconds=0))
+    assert [r for r in engine.journal.transfers(destination) if not r["closed"]] == []
+
+
+def test_a_partial_external_transfer_blocks_overlapping_windows(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import History, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    destination = run["plan"]["destination"]["id"]
+    env.transfer = lambda: Transfer("", "idle", destination=destination)
+    # Not ours (no journaled task id), finished, lists only what it skipped.
+    env.history = lambda: (
+        History(
+            "src",
+            destination,
+            Window(window.start, window.start + 1),
+            ("dst-1",),
+            (),
+            False,
+            "ext-1",
+            True,
+        ),
+    )
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(window, Policy(poll_seconds=0))
+    # An exhaustive received list is matched by bucket id instead; disjoint ids pass.
+    env.history = lambda: (
+        History(
+            "src",
+            destination,
+            Window(window.start, window.start + 1),
+            ("dst-1",),
+            (A,),
+            False,
+            "ext-2",
+            False,
+        ),
+    )
+    engine.plan(window, Policy(poll_seconds=0))
+    # Our own journaled task with the same shape stays allowed (tail rerun).
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.journal.note_transfer_task(run["id"], "ours")
+    env.history = lambda: (
+        History("src", destination, window, ("dst-1",), (), False, "ours", True),
+    )
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(window, Policy(poll_seconds=0))  # Blocked by the journal row, not history.
 
 
 @pytest.mark.parametrize("status_read", [(503, None), (200, {})])
@@ -1031,7 +1187,8 @@ def test_cli_refuses_untrusted_identities_without_a_terminal(monkeypatch, capsys
     err = capsys.readouterr().err
     assert "Unknown appliance identity" in err and "canary" not in err
     assert json.loads(err.splitlines()[-1])["error"] == "authentication_failed"
-    # With --trust-new the identity is enrolled and the (stubbed) open runs again.
+    # With --trust-new the identity is enrolled and the run stops: open is never retried,
+    # so no credential reaches the identity that was only just seen.
     calls = []
 
     def open_then_fail(self):
@@ -1042,9 +1199,70 @@ def test_cli_refuses_untrusted_identities_without_a_terminal(monkeypatch, capsys
 
     monkeypatch.setattr(LiveEnvironment, "open", open_then_fail)
     code = cli.main(["--source", "src.lab", "--destination", "dst.lab", "--trust-new", "discover"])
-    assert code == 7 and len(calls) == 2
+    out, err = capsys.readouterr()
+    assert code == 0 and len(calls) == 1
+    enrolled = json.loads(out.splitlines()[-1])
+    assert enrolled["credentials_sent"] is False and len(enrolled["enrolled"]) == 1
     assert TrustStore(tmp_path / "cfg" / "vcf-logs-migrator").check(identity) == "trusted"
-    assert "canary" not in capsys.readouterr().err
+    assert "canary" not in out + err
+    # The second run talks to the pinned identity (the stub then fails as connection).
+    calls.clear()
+    monkeypatch.setattr(
+        LiveEnvironment, "open", lambda self: (_ for _ in ()).throw(MigrationError(Code.CONNECTION))
+    )
+    assert cli.main(["--source", "src.lab", "--destination", "dst.lab", "discover"]) == 7
+
+
+def test_cli_expect_fingerprint_enrolls_and_proceeds_only_on_a_match(monkeypatch, capsys, tmp_path):
+    from logs_migrate import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("LOGS_SOURCE_SSH_PASSWORD", "canary-ssh")
+    monkeypatch.setenv("LOGS_SOURCE_API_PASSWORD", "canary-api")
+    monkeypatch.setenv("LOGS_DESTINATION_API_PASSWORD", "canary-dst")
+    monkeypatch.setattr("sys.stdin", type("Stdin", (), {"isatty": staticmethod(lambda: False)})())
+    identity = Identity("ssh", "src.lab:22", "e" * 64, "ssh-ed25519")
+    calls = []
+
+    def open_then_fail(self):
+        calls.append(1)
+        if len(calls) == 1:
+            self._pending[identity.name] = "src.lab ssh-ed25519 AAAA"
+            raise TrustRequired([identity])
+        raise MigrationError(Code.CONNECTION)
+
+    monkeypatch.setattr(LiveEnvironment, "open", open_then_fail)
+    wrong = cli.main(
+        [
+            "--source",
+            "src.lab",
+            "--destination",
+            "dst.lab",
+            "--expect-fingerprint",
+            "f" * 64,
+            "discover",
+        ]
+    )
+    assert wrong == 7 and len(calls) == 1
+    assert TrustStore(tmp_path / "cfg" / "vcf-logs-migrator").check(identity) == "unknown"
+    colons = ":".join("ee" for _ in range(32)).upper()
+    calls.clear()  # The stub asks for trust once per invocation.
+    right = cli.main(
+        [
+            "--source",
+            "src.lab",
+            "--destination",
+            "dst.lab",
+            "--expect-fingerprint",
+            colons,
+            "discover",
+        ]
+    )
+    assert right == 7 and len(calls) == 2, "a verified fingerprint enrolls and the run proceeds"
+    store = TrustStore(tmp_path / "cfg" / "vcf-logs-migrator")
+    assert store.check(identity) == "trusted"
+    assert "src.lab ssh-ed25519 AAAA" in store.known_hosts.read_text()
+    assert "canary" not in "".join(capsys.readouterr())
 
 
 def test_logs90_identity_is_the_transport_pin():
