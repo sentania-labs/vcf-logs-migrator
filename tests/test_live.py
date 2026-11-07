@@ -810,6 +810,60 @@ def test_an_accepted_start_stays_held_while_the_status_shows_no_task(
     assert not row["closed"]
 
 
+def test_an_accepted_start_with_an_undecodable_body_stays_held(tmp_path, rigged, monkeypatch):
+    from logs_migrate.models import Policy
+
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (200, [1])), IDLE, IDLE],
+    )
+    run, start = _ready_run(engine, MARCH)
+    assert start()["task"]["status"] == "running"
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(run["plan"]["destination"]["id"])
+    assert not row["closed"]
+
+
+def test_an_accepted_start_stays_held_when_the_journal_fails_after_it(
+    tmp_path, rigged, monkeypatch
+):
+    from logs_migrate.models import Policy
+
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [
+            SESSION,
+            IDLE,
+            IDLE,
+            IDLE,
+            ("POST", MIGRATIONS, (200, {"accepted": True})),
+            IDLE,
+            IDLE,
+        ],
+    )
+    run, start = _ready_run(engine, MARCH)
+    audit = engine._audit
+
+    def failing(run, event, details=None):
+        if event == "api_start_response":
+            raise MigrationError(Code.STORAGE)
+        return audit(run, event, details)
+
+    engine._audit = failing
+    with pytest.raises(MigrationError) as raised:
+        start()
+    assert raised.value.code == Code.UNCERTAIN
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(run["plan"]["destination"]["id"])
+    assert not row["closed"]
+
+
 def test_a_same_window_rerun_is_not_blocked_by_this_tools_own_finished_task(tmp_path):
     from logs_migrate.models import Policy, parse_time
     from logs_migrate.ports import History, Transfer

@@ -915,7 +915,10 @@ class LiveEnvironment:
             window,
         )
         self.notes["start_response_keys"] = observed_keys(response)
-        decoded = decode_task(response, destination=destination, now_ms=self._now_ms())
+        try:
+            decoded = decode_task(response, destination=destination, now_ms=self._now_ms())
+        except MigrationError:
+            decoded = Transfer("", "unknown", destination=destination)
         if decoded.status not in {"idle", "unknown"}:
             return decoded
         try:
