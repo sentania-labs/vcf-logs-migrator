@@ -382,6 +382,15 @@ class Logs911(Logs90):
             self.authenticate()
         return {"X-JWT-Token": self.token.reveal()}
 
+    def probe_counts(self, window: Window):
+        """One read-only count query as the 9.0 route spells it, for response-shape capture
+        only: the answer is never used as evidence."""
+        path = (
+            f"/api/v1/aggregated-events/timestamp/%3E%3D{window.start}/timestamp/%3C{window.end}"
+            f"?bin-width={DAY}&timeout=580000"
+        )
+        return self.call("GET", path, timeout=COUNT_TIMEOUT_SECONDS)
+
     def daily_counts(self, window: Window) -> tuple[dict[str, int], bool]:
         # 9.1 is an OpenSearch-backed engine; its query route is not qualified in this
         # repository, so counts there are reported as unavailable rather than guessed.

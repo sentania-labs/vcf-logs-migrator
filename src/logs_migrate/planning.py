@@ -109,7 +109,12 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             else []
         )
         + (
-            ["9.1.1 preview; a 9.0 to 9.1.1 lab run has not been recorded."]
+            [
+                "9.1.1 preview; a 9.0 to 9.1.1 lab run has not been recorded.",
+                "Count verification is not available for 9.1.1: no 9.1 query route has been "
+                "captured, and counts from a guessed route would be evidence of nothing. The "
+                "transfer can run; verification will report incomplete evidence.",
+            ]
             if destination.preview
             else []
         ),

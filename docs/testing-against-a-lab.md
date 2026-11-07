@@ -92,7 +92,7 @@ PASS  Destination data-migrations status                 task idle · 0 node ent
 PASS  Destination inventory model                        9.0.2.0200 · 1 node(s) · 0 buckets listed · budget known for 0
 PASS  Version compatibility                              8.18.7 → 9.0.2.0200
 PASS  Partition comparison                               0 missing, 0 differ
-PASS  Source daily counts                                5,414,021 events on 173 days (2025-10-08 to 2025-11-06) · complete
+PASS  Source daily counts                                5,414,021 events on 30 days (2025-10-08 to 2025-11-06) · complete
 PASS  Destination daily counts                           0 events on 0 days (...) · complete
 PASS  Source ingest (cutover check)                      0 events in the last 24 hours · source looks quiet
 PASS  Plan preview (no request sent)                     88 buckets, 4.21 GB, covers 2025-01-01 to 2025-06-22 · 2 active skipped · last sealed day 2025-06-21 · destination budget unknown
@@ -213,7 +213,12 @@ destination card of the Connections page, which reveals the token field) and sup
 9543. What is not qualified: the 9.1 query route for counts (a transfer can start, but
 no destination baseline is recorded and verification reports `unsupported_capability`),
 the version route on the log-processor (the self-test says when the version is
-assumed) and partition routing of migrated events. A 9.0 to 9.1.1 lab run has not been
+assumed) and partition routing of migrated events. The plan says so before you start:
+count verification is not available for 9.1.1, because no 9.1 query route has been
+captured and a guessed route would prove nothing. Against a 9.1.1 destination the
+self-test adds a read-only "Destination 9.1 count query probe" step that prints the
+key names of the response (never values) and keeps them in `notes`; send that line
+back so the route can be built from real evidence. A 9.0 to 9.1.1 lab run has not been
 recorded.
 
 ## What the self-test cannot tell you

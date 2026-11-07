@@ -99,7 +99,10 @@ through the workstation. Any source member works: the API reads its newest
 exchange an Ops token for a Logs JWT using
 `POST /suite-api/api/auth/token/exchange` with `{"serviceKeys":["ops-li"]}`.
 Send `X-JWT-Token` to the Logs FQDN on 9543, not the 443 ingress or bare VIP.
-9.1 verification uses its query API.
+9.1.1 count verification is deferred: no 9.1 query route has been captured, so the
+tool does not guess one. The plan says so before the run, a transfer can start, and
+verification reports incomplete evidence. `selftest` probes the destination read-only
+and records the response's key names so the route can be built from real evidence.
 
 ## 4. Commands
 
@@ -196,7 +199,8 @@ checks permit it.
 ### 4.3 `verify`
 
 1. Wait for complete results on both sides and two counts 30 seconds apart
-   to agree. Legacy queries require `complete=true`; 9.1 uses its query API.
+   to agree. Legacy queries require `complete=true`; 9.1.1 has no qualified count route
+   yet and reports incomplete evidence.
 2. Compare per-day counts and coverage, accounting for the destination
    baseline, existing events, concurrent ingest, skipped active buckets and
    whole-bucket coverage outside the window. Report missing, unexpected or
@@ -308,8 +312,9 @@ mid-way (start the service if the tool stopped it).
 6. Partition comparison and offer-to-create on both targets; extracted-field
    checks. Optional 9.0 fix-up configured before and invoked after migration,
    per-node credentials, stop consent, recovery and exact counts afterwards.
-7. 9.1.1 preview: Ops-token exchange, query API verification, live partition
-   routing with matching filters, field searchability. Test 9.0-to-9.1
+7. 9.1.1 preview: Ops-token exchange, live partition routing with matching
+   filters, field searchability. Query API verification waits for a captured
+   9.1 count route. Test 9.0-to-9.1
    before release.
 
 ## 8. Remaining validation

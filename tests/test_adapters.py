@@ -6,7 +6,7 @@ import pytest
 from logs_migrate.adapters.rest import HTTPS, Logs90, Logs911, RecordedTransport
 from logs_migrate.adapters.ssh import NodeSSH, ReadOperation, RecordedSSH
 from logs_migrate.errors import Code, MigrationError
-from logs_migrate.models import Window
+from logs_migrate.models import DAY, Window
 from logs_migrate.security import Credentials, Secret
 
 
@@ -61,6 +61,42 @@ def test_911_ops_exchange_and_header_are_separate():
     assert client.migration_status() == {"fixture": "idle"}
     with pytest.raises(MigrationError, match="unsupported"):
         client.daily_counts(Window(1, 2))
+
+
+def test_911_count_probe_returns_the_raw_response_shape_without_deriving_counts():
+    path = (
+        f"/api/v1/aggregated-events/timestamp/%3E%3D{DAY}/timestamp/%3C{2 * DAY}"
+        f"?bin-width={DAY}&timeout=580000"
+    )
+    ops = RecordedTransport(
+        [record("POST", "/suite-api/api/auth/token/exchange", {"fixtureJWT": "fixture-jwt"})]
+    )
+    logs = RecordedTransport([record("GET", path, {"hits": {"total": 7}, "took": 3})])
+    client = Logs911(logs, ops, Secret("fixture-ops"), lambda body: body["fixtureJWT"])
+    assert client.probe_counts(Window(DAY, 2 * DAY)) == {"hits": {"total": 7}, "took": 3}
+    assert logs.calls == [("GET", path)]
+
+
+def test_911_selftest_probe_records_key_names_never_values():
+    from logs_migrate import selftest
+
+    class Client:
+        def probe_counts(self, window):
+            return {"hits": {"total": 424242}, "took": 3}
+
+    class Env:
+        connection = type("Connection", (), {"preview": True})()
+        destination_client = Client()
+        notes: dict = {}
+
+    result = selftest.run(Env(), Window(0, 3 * DAY))
+    (probe,) = [s for s in result.steps if s.name == "Destination 9.1 count query probe"]
+    assert probe.status == "pass"
+    assert "hits" in probe.detail and "hits.total" in probe.detail and "took" in probe.detail
+    assert "424242" not in probe.detail
+    assert Env.notes["destination_count_probe_keys"] == ["hits", "hits.total", "took"]
+    skipped = [s for s in result.steps if s.name == "Destination daily counts"]
+    assert skipped and skipped[0].status == "skip"
 
 
 def test_911_default_exchange_decoder_accepts_token_field_or_single_jwt():

@@ -249,6 +249,20 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         skip="9.1.1 query route not qualified; counts unavailable" if connection.preview else None,
     )
 
+    def count_probe():
+        from .adapters.live import observed_keys
+
+        probe = env.destination_client.probe_counts(
+            Window(count_window.end - DAY, count_window.end)
+        )
+        keys = observed_keys(probe)
+        env.notes["destination_count_probe_keys"] = keys
+        shown = ", ".join(keys[:16]) + (" …" if len(keys) > 16 else "")
+        return probe, "response keys (names only, never used as evidence): " + (shown or "none")
+
+    if connection.preview:
+        step("Destination 9.1 count query probe", count_probe)
+
     def recent():
         events = env.recent_source_events()
         if events is None:

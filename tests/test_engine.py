@@ -446,3 +446,13 @@ def test_changed_destination_endpoint_never_verifies(rig, field, value):
     assert result["outcome"] == "incomplete_verification" and result["complete"] is False
     assert result["reason"] == Code.TOPOLOGY
     assert journal.load(run["id"])["verification"] == result
+
+
+def test_a_9_1_1_plan_says_before_the_run_that_counts_cannot_be_verified(rig):
+    engine, _, journal = rig
+    env = SimulatedEnvironment(json.loads((FIXTURES / "sealed-911.fixture").read_text()))
+    run = planned(Engine(env, journal, engine.clock))
+    warnings = [w for w in run["plan"]["warnings"] if "Count verification is not available" in w]
+    assert len(warnings) == 1 and "9.1.1" in warnings[0] and "query route" in warnings[0]
+    other = planned(engine)
+    assert not [w for w in other["plan"]["warnings"] if "Count verification" in w]
