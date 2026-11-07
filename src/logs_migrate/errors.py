@@ -40,6 +40,10 @@ class Rejection(MigrationError):
     """The appliance answered with an HTTP error status: the request was received and refused."""
 
 
+class Accepted(MigrationError):
+    """The appliance answered 2xx but the body could not be read: the request took effect."""
+
+
 def require(condition: bool, code: Code) -> None:
     if not condition:
         raise MigrationError(code)

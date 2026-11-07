@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..errors import Code, MigrationError, require
+from ..errors import Accepted, Code, MigrationError, require
 from ..models import Bucket, Cluster, Counts, Node, Partition, Window
 from ..ports import History, NodeTransfer, SystemClock, Transfer
 from ..security import Credentials, Secret
@@ -908,12 +908,15 @@ class LiveEnvironment:
         require(self.destination_client is not None, Code.STATE)
         destination = cluster_id(self.destination_client.identity)
         before = self.transfer()
-        response = self.destination_client.start_migration(
-            self.connection.source_host,
-            self.connection.source_ssh_user,
-            self.credentials.get("source_ssh"),
-            window,
-        )
+        try:
+            response = self.destination_client.start_migration(
+                self.connection.source_host,
+                self.connection.source_ssh_user,
+                self.credentials.get("source_ssh"),
+                window,
+            )
+        except Accepted:
+            response = {}
         self.notes["start_response_keys"] = observed_keys(response)
         try:
             decoded = decode_task(response, destination=destination, now_ms=self._now_ms())

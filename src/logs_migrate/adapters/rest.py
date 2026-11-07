@@ -18,7 +18,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
-from ..errors import Code, MigrationError, Rejection, require, safe_boundary
+from ..errors import Accepted, Code, MigrationError, Rejection, require, safe_boundary
 from ..models import DAY, Window
 from ..security import Secret
 
@@ -144,13 +144,18 @@ class HTTPS:
                 raise Rejection(Code.AUTH)
             if not 200 <= response.status < 300:  # No credential redirects.
                 raise Rejection(Code.CONNECTION)
-            raw = response.read(MAX_BODY + 1)
-            require(len(raw) <= MAX_BODY, Code.SCHEMA)
-            if not raw:
-                return {}
-            parsed = json.loads(raw)
-            require(isinstance(parsed, (dict, list)), Code.SCHEMA)
-            return parsed
+            try:
+                raw = response.read(MAX_BODY + 1)
+                require(len(raw) <= MAX_BODY, Code.SCHEMA)
+                if not raw:
+                    return {}
+                parsed = json.loads(raw)
+                require(isinstance(parsed, (dict, list)), Code.SCHEMA)
+                return parsed
+            except MigrationError as error:
+                raise Accepted(error.code) from None
+            except Exception:
+                raise Accepted(Code.SCHEMA) from None
         except MigrationError:
             raise
         except Exception:

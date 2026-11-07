@@ -688,7 +688,13 @@ class Wire:
         class Response:
             def __init__(self, status, body):
                 self.status = status
-                self.raw = b"" if body is None else json.dumps(body).encode()
+                self.raw = (
+                    body
+                    if isinstance(body, bytes)
+                    else b""
+                    if body is None
+                    else json.dumps(body).encode()
+                )
 
             def read(self, limit):
                 return self.raw
@@ -818,6 +824,23 @@ def test_an_accepted_start_with_an_undecodable_body_stays_held(tmp_path, rigged,
         rigged,
         monkeypatch,
         [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (200, [1])), IDLE, IDLE],
+    )
+    run, start = _ready_run(engine, MARCH)
+    assert start()["task"]["status"] == "running"
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(run["plan"]["destination"]["id"])
+    assert not row["closed"]
+
+
+def test_an_accepted_start_with_a_non_json_body_stays_held(tmp_path, rigged, monkeypatch):
+    from logs_migrate.models import Policy
+
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (202, b"Accepted")), IDLE, IDLE],
     )
     run, start = _ready_run(engine, MARCH)
     assert start()["task"]["status"] == "running"
