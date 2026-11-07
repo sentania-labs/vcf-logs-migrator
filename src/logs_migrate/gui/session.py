@@ -16,6 +16,10 @@ from ..security import Credentials
 from . import viewmodel as vm
 
 
+class LocalError(Exception):
+    """A local problem (such as an unwritable folder) worded for the operator."""
+
+
 class Session:
     """Holds the environment, engine, journal and in-memory credentials for one connection."""
 
@@ -117,27 +121,30 @@ class Session:
         require(bool(formats), Code.INVALID_INPUT)
         run, events = self.journal.load(run_id), self.journal.events(run_id)
         target = Path(folder).expanduser()
-        target.mkdir(parents=True, exist_ok=True)
         written = []
-        stem = f"migration-{run_id[:8]}"
-        if "markdown" in formats:
-            status = None
-            try:
-                status = self._engine().status()
-            except Exception:
-                status = None  # The report still renders; the task row says Not observed.
-            path = target / (stem + ".md")
-            path.write_text(
-                vm.report_markdown(run, events, status, zone, hosts, index, config_result),
-                encoding="utf-8",
-            )
-            written.append(str(path))
-        if "json" in formats:
-            path = target / (stem + ".json")
-            path.write_text(
-                json.dumps(report_data(run, events), sort_keys=True, indent=2), encoding="utf-8"
-            )
-            written.append(str(path))
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            stem = f"migration-{run_id[:8]}"
+            if "markdown" in formats:
+                status = None
+                try:
+                    status = self._engine().status()
+                except Exception:
+                    status = None  # The report still renders; the task row says Not observed.
+                path = target / (stem + ".md")
+                path.write_text(
+                    vm.report_markdown(run, events, status, zone, hosts, index, config_result),
+                    encoding="utf-8",
+                )
+                written.append(str(path))
+            if "json" in formats:
+                path = target / (stem + ".json")
+                path.write_text(
+                    json.dumps(report_data(run, events), sort_keys=True, indent=2), encoding="utf-8"
+                )
+                written.append(str(path))
+        except OSError as error:
+            raise LocalError(f"Could not write to {target}: {error.strerror or error}") from error
         return written
 
     def config_compare(self) -> dict:

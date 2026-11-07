@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..errors import MigrationError
-from .session import Session
+from .session import LocalError, Session
 
 
 class EngineWorker(QObject):
@@ -53,6 +53,8 @@ class EngineWorker(QObject):
             result = getattr(self.session, method)(**kwargs)
         except MigrationError as error:
             self.failed.emit(job, error.code.value)
+        except LocalError as error:
+            self.failed.emit(job, f"gui:{error}")
         except Exception:
             self.failed.emit(job, "operation_failed")
         else:

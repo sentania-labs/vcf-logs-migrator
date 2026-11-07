@@ -352,3 +352,30 @@ def test_banners_and_values_render_remote_text_literally(driver):
     table.set_rows([(hostile,)])
     tip = table.item(0, 0).toolTip()
     assert hostile not in tip and "&lt;/b&gt;" in tip
+
+
+def test_export_to_an_unwritable_folder_names_the_folder_not_the_api(driver, tmp_path):
+    driver.connect()
+    driver.plan()
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x")
+    driver.state.settings.export_folder = str(blocker / "reports")
+    driver.export()
+    assert driver.state.exported == []
+    message = driver.pages["reports"].exported.text()
+    assert "Could not write to" in message and str(blocker) in message
+    assert "Query the API" not in message
+
+
+def test_reconnect_keeps_the_operators_dates(driver):
+    driver.connect()
+    driver.plan()
+    plan_page = driver.pages["plan"]
+    start = plan_page.current_dates()[0]
+    plan_page.start_date.setDate(plan_page.start_date.date().addDays(1))
+    chosen = plan_page.current_dates()
+    assert chosen[0] != start
+    driver.window.reconnect_environments()
+    driver.idle()
+    assert driver.state.connected
+    assert plan_page.current_dates() == chosen
