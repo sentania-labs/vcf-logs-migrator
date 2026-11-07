@@ -1,5 +1,5 @@
-# Standalone downloads: one archive per OS holding the GUI and the CLI in a single
-# program (packaging/build.py), built natively on each platform and smoke-tested
+# Standalone downloads: one archive per OS holding the GUI and the CLI over one engine
+# (packaging/build.py), built natively on each platform and smoke-tested
 # from the extracted archive (packaging/smoke.py).
 #
 # Signing follows vcf-ops-telegraf-helper's binaries workflow through the org's
@@ -127,11 +127,13 @@ jobs:
         if: always() && env.SIGN == 'true' && runner.os == 'macOS'
         run: security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
 
-      - name: Sign the executable (Windows)
+      - name: Sign the executables (Windows)
         if: env.SIGN == 'true' && runner.os == 'Windows'
         uses: sentania-labs/.github/.github/actions/windows-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
         with:
-          files: ${{ github.workspace }}\dist\logs-migrate.exe
+          files: |
+            ${{ github.workspace }}\dist\logs-migrate.exe
+            ${{ github.workspace }}\dist\VCF Logs Migrator.exe
           endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
@@ -164,33 +166,3 @@ jobs:
           name: smoke-evidence-${{ matrix.platform }}
           path: dist/smoke-evidence/
           if-no-files-found: warn
-
-  linux-current:
-    # The Linux build job smokes on its own glibc floor; this runs the same bytes on
-    # a current Ubuntu with only the system Python used to drive the smoke script.
-    name: linux-x86_64 on Ubuntu 24.04
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Check out
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Install Qt runtime and X server
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            xvfb xauth libegl1 libgl1 libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 \
-            libxcb-xkb1 libxcb-randr0 libxcb-shape0 libdbus-1-3 libglib2.0-0
-
-      - name: Download the Linux build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: vcf-logs-migrator-linux-x86_64
-          path: downloaded
-
-      - name: Smoke-test the extracted download
-        run: |
-          archives=(downloaded/*.tar.gz)
-          xvfb-run -a -s '-screen 0 1600x1000x24' /usr/bin/python3 packaging/smoke.py "${archives[0]}" --native

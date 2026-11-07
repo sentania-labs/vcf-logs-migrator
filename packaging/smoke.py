@@ -4,8 +4,8 @@ Extracts the archive into an empty temporary directory, then runs the program fr
 there with no Python, virtualenv or source tree on its paths: `--version`, `--help`,
 argument refusal, the complete simulator migration and configuration workflows from
 tests/smoke_installed.py against the bundled examples, and the real `gui` path rendered
-offscreen until its first frame. `--native` adds the desktop launches (Explorer-style on
-Windows, `open` and a PATH symlink on macOS, the X11 platform on Linux). `--signed`
+offscreen until its first frame. `--native` adds the desktop launches (the windowed
+program on Windows, `open` and a PATH symlink on macOS, the X11 platform on Linux). `--signed`
 verifies signatures on the extracted bytes first. Screenshots and launch reports land in
 `--evidence`.
 """
@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "packaging"))
 
 from smoke_installed import config_smoke, smoke  # noqa: E402
 
-from build import APP, NAME, version  # noqa: E402
+from build import APP, GUI_EXE, NAME, version  # noqa: E402
 
 TIMEOUT = 180
 
@@ -103,17 +103,18 @@ def verify_signatures(top: Path) -> None:
         subprocess.run(["xcrun", "stapler", "validate", str(app)], check=True)
         subprocess.run(["spctl", "--assess", "--type", "execute", str(app)], check=True)
     elif sys.platform == "win32":
-        exe = str(top / f"{NAME}.exe").replace("'", "''")
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"$s = Get-AuthenticodeSignature -LiteralPath '{exe}'; $s | Format-List; "
-                "if ($s.Status -ne 'Valid') { exit 1 }",
-            ],
-            check=True,
-        )
+        for name in (f"{NAME}.exe", GUI_EXE):
+            exe = str(top / name).replace("'", "''")
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"$s = Get-AuthenticodeSignature -LiteralPath '{exe}'; $s | Format-List; "
+                    "if ($s.Status -ne 'Valid') { exit 1 }",
+                ],
+                check=True,
+            )
     else:
         raise SystemExit("--signed applies to Windows and macOS downloads")
     print("PASS signatures verified on the extracted download", flush=True)
@@ -174,21 +175,19 @@ def main() -> None:
         if not args.native:
             return
         if sys.platform == "win32":
-            # Explorer gives a double-clicked console program a console of its own and
-            # no arguments; the launcher must open the window and hide that console.
-            report = work / "gui-explorer.png"
+            # The windowed program a double click starts: no arguments, no console.
+            report = work / "gui-windowed.png"
             subprocess.run(
-                [str(program)],
+                [str(top / GUI_EXE)],
                 cwd=work,
                 env=dict(os.environ, LOGS_MIGRATE_GUI_SMOKE=str(report)),
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
                 timeout=TIMEOUT,
                 check=True,
             )
             check_launch(
                 report,
                 evidence,
-                "Explorer-style launch",
+                "Windowed launch",
                 console_attached=False,
                 platform="windows",
             )

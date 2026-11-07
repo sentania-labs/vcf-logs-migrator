@@ -2,7 +2,9 @@
 
 `build` freezes `packaging/launcher.py` with PyInstaller: a one-file console executable
 on Linux and Windows, and a one-dir `VCF Logs Migrator.app` on macOS (PyInstaller
-discourages one-file windowed macOS apps). CI signs between `build` and `package`.
+discourages one-file windowed macOS apps). Windows also gets a windowed
+`VCF Logs Migrator.exe` from `packaging/gui_entry.py`, so a double click never opens a
+console. CI signs between `build` and `package`.
 `package` wraps the (signed) executable with the example fixtures, licenses and a
 quickstart into `dist/vcf-logs-migrator-<label>-<platform>.tar.gz|.zip`.
 
@@ -31,6 +33,7 @@ BUILD = ROOT / "build"
 PLATFORMS = ("linux-x86_64", "windows-x64", "macos-arm64", "macos-x86_64")
 NAME = "logs-migrate"
 APP = "VCF Logs Migrator.app"
+GUI_EXE = "VCF Logs Migrator.exe"
 BUNDLE_ID = "net.sentania.vcf-logs-migrator"
 EXAMPLES = ("sealed-populated.fixture", "sealed-911.fixture", "config.fixture")
 # Distributions frozen into the executable besides this package and Python itself.
@@ -49,28 +52,21 @@ def executable(platform: str) -> Path:
     return DIST / (NAME + (".exe" if platform == "windows-x64" else ""))
 
 
-def build(platform: str) -> Path:
-    mac = platform.startswith("macos-")
-    for stale in (DIST / APP, DIST / f"{NAME}.app", executable(platform)):
-        if stale.is_dir():
-            shutil.rmtree(stale)
-        elif stale.exists():
-            stale.unlink()
-    layout = ["--onedir", "--windowed", "--osx-bundle-identifier", BUNDLE_ID] if mac else []
+def freeze(name: str, script: str, *layout: str) -> None:
     subprocess.run(
         [
             sys.executable,
             "-m",
             "PyInstaller",
-            *(layout or ["--onefile", "--console"]),
+            *layout,
             "--clean",
             "--noconfirm",
             "--name",
-            NAME,
+            name,
             "--distpath",
             str(DIST),
             "--workpath",
-            str(BUILD / "pyinstaller"),
+            str(BUILD / "pyinstaller" / name),
             "--specpath",
             str(BUILD),
             # The CLI imports the GUI and adapters lazily; take every module and the
@@ -83,11 +79,29 @@ def build(platform: str) -> Path:
             "tzdata",
             "--exclude-module",
             "tkinter",
-            str(PACKAGING / "launcher.py"),
+            str(PACKAGING / script),
         ],
         check=True,
         cwd=ROOT,
     )
+
+
+def build(platform: str) -> Path:
+    mac = platform.startswith("macos-")
+    windows = platform == "windows-x64"
+    for stale in (DIST / APP, DIST / f"{NAME}.app", DIST / GUI_EXE, executable(platform)):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
+    if mac:
+        freeze(NAME, "launcher.py", "--onedir", "--windowed", "--osx-bundle-identifier", BUNDLE_ID)
+    else:
+        freeze(NAME, "launcher.py", "--onefile", "--console")
+    if windows:
+        freeze(GUI_EXE.removesuffix(".exe"), "gui_entry.py", "--onefile", "--windowed")
+        if not (DIST / GUI_EXE).is_file():
+            raise SystemExit(f"PyInstaller did not produce {DIST / GUI_EXE}")
     if mac:
         built = DIST / f"{NAME}.app"
         built.rename(DIST / APP)
@@ -184,6 +198,7 @@ def package(platform: str, label: str) -> Path:
         )
     elif platform == "windows-x64":
         shutil.copy2(executable(platform), staging / f"{NAME}.exe")
+        shutil.copy2(DIST / GUI_EXE, staging / GUI_EXE)
         archive = DIST / f"{stem}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
             for path in sorted(staging.rglob("*")):

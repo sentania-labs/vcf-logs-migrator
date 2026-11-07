@@ -106,8 +106,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -130,30 +128,22 @@ jobs:
           sha256sum vcf-logs-migrator-* > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Attest the release downloads
-        uses: sentania-labs/.github/.github/actions/attest-provenance@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
-        with:
-          subject-path: |
-            release/SHA256SUMS
-            release/vcf-logs-migrator-*
-
       - name: Publish the GitHub Release
         run: |
           cat > notes.md <<EOF
-          Standalone downloads: one program per platform that is both the desktop window
-          and the \`logs-migrate\` CLI. No Python install is needed. Each archive holds
-          README.txt (quickstart), simulator fixtures under examples/, and license notices.
+          Standalone downloads: the desktop window and the \`logs-migrate\` CLI over one
+          engine. No Python install is needed. Each archive holds README.txt (quickstart),
+          simulator fixtures under examples/, and license notices.
 
           | Platform | Download | Signature |
           |---|---|---|
           | Windows x64 | vcf-logs-migrator-$TAG-windows-x64.zip | Authenticode (Azure Artifact Signing) |
           | macOS Apple silicon | vcf-logs-migrator-$TAG-macos-arm64.zip | Developer ID, notarized and stapled |
           | macOS Intel | vcf-logs-migrator-$TAG-macos-x86_64.zip | Developer ID, notarized and stapled |
-          | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64.tar.gz | SHA256SUMS and attestation |
+          | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64.tar.gz | SHA256SUMS |
 
-          Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\` or
-          \`gh attestation verify FILE --repo $GH_REPO\`. SmartScreen can still warn while
-          the publisher builds reputation. Real appliance mutation stays disabled pending
+          Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\`. SmartScreen
+          can still warn while the publisher builds reputation. Real appliance mutation stays disabled pending
           lab qualification; this build drives the deterministic simulator.
           EOF
           # A published release is never modified, so a rerun cannot swap verified bytes.
