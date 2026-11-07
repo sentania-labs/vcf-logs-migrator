@@ -143,7 +143,11 @@ class HTTPS:
             if response.status in {401, 403}:
                 raise Rejection(Code.AUTH)
             if not 200 <= response.status < 300:  # No credential redirects.
-                raise Rejection(Code.CONNECTION)
+                if response.status in REFUSALS or (
+                    400 <= response.status < 500 and response.status != 408
+                ):
+                    raise Rejection(Code.CONNECTION)
+                raise MigrationError(Code.CONNECTION)
             try:
                 raw = response.read(MAX_BODY + 1)
                 require(len(raw) <= MAX_BODY, Code.SCHEMA)
@@ -164,6 +168,7 @@ class HTTPS:
             connection.close()
 
 
+REFUSALS = {500, 501}
 CONFIG_PATHS = {
     "/api/v1/" + name for name in ("partitioning", "log-filter", "log-mask", "log-forwarder")
 }

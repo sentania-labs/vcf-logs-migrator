@@ -48,9 +48,10 @@ def partial_days(source, plan: dict) -> list[str]:
     """Covered days whose source events are not all in the selected buckets: days shared
     with an unselected sealed bucket, and days at or after the active tail. The tail starts
     at the first active bucket's proven start; when active bounds are unknown (the 8.18
-    listing shows none) it starts at the oldest node's newest sealed bucket end, the sealed frontier.
-    Counts on partial days are reported, never judged; a day before the frontier that an
-    open bucket secretly holds late arrivals for shows up as a discrepancy, not a pass."""
+    listing shows none) it starts at the oldest node's newest sealed bucket end.
+    That is the sealed frontier. Counts on partial days are reported, never judged; a day
+    before the frontier that an open bucket secretly holds late arrivals for shows up as a
+    discrepancy, not a pass."""
     coverage = day_window(Window(**plan["coverage"]))
     selected = {b["node"] + "/" + b["id"] for b in plan["selected"]}
     days = []

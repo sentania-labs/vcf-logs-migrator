@@ -184,9 +184,10 @@ The wrapper checks that ID before cancelling, then returns the API's observation
 It never automatically cancels a transfer because local inventory changed. There
 is no resume/close/reconcile workflow and no local recovery state to clear.
 
-A start the appliance answered with an HTTP error was never accepted, so nothing is
-held and you can plan and copy again. A start with no answer (timeout, lost
-connection) exits 8 and keeps its selection blocked; the next `plan` releases it when
+A start the appliance refused (any 4xx except 408, or 500 or 501) was never accepted,
+so nothing is held and you can plan and copy again. A start with no answer (timeout,
+lost connection) or a gateway-style answer (408, 502, 503, 504) may have been accepted:
+it exits 8 and keeps its selection blocked; the next `plan` releases it when
 the appliance shows no task for it, and settles it as usual when a task matches.
 A start the appliance accepted (2xx) stays held until a matching task is observed,
 even while its status still shows nothing.

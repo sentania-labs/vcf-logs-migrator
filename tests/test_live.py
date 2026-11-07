@@ -752,8 +752,9 @@ SESSION = ("POST", "/api/v1/sessions", (200, {"sessionId": "s"}))
 IDLE = ("GET", MIGRATIONS, (200, {}))
 
 
-def test_a_start_the_appliance_answered_with_500_is_not_held_and_the_plan_can_be_retried(
-    tmp_path, rigged, monkeypatch
+@pytest.mark.parametrize("status", [400, 404, 409, 500, 501])
+def test_a_start_the_appliance_refused_is_not_held_and_the_plan_can_be_retried(
+    tmp_path, rigged, monkeypatch, status
 ):
     from logs_migrate.models import Policy
 
@@ -761,7 +762,7 @@ def test_a_start_the_appliance_answered_with_500_is_not_held_and_the_plan_can_be
         tmp_path,
         rigged,
         monkeypatch,
-        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (500, None)), IDLE],
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (status, None)), IDLE],
     )
     run, start = _ready_run(engine, MARCH)
     with pytest.raises(MigrationError) as raised:
@@ -850,6 +851,40 @@ def test_an_uncertain_start_whose_task_appears_in_history_settles_instead_of_rel
         engine.plan(MARCH, Policy(poll_seconds=0))
     engine.clock.sleep(900)
     # Finished on our window: the row settles as usual and the window is overlap-protected.
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(destination)
+    assert row["closed"] and row["received"]
+
+
+@pytest.mark.parametrize("status", [408, 502, 503, 504])
+def test_a_gateway_answer_after_the_start_holds_the_window_until_the_task_settles_it(
+    tmp_path, rigged, monkeypatch, status
+):
+    from logs_migrate.models import Policy
+
+    window = {
+        "bucketStartTimeMillis": MARCH.start,
+        "bucketEndTimeMillis": MARCH.end,
+    }
+    running = ("GET", MIGRATIONS, (200, {"status": "RUNNING", **window}))
+    done = ("GET", MIGRATIONS, (200, {"status": "COMPLETED", **window}))
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (status, None))] + [running] + [done] * 8,
+    )
+    run, start = _ready_run(engine, MARCH)
+    destination = run["plan"]["destination"]["id"]
+    with pytest.raises(MigrationError) as raised:
+        start()
+    assert raised.value.code == Code.UNCERTAIN
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"]
+    with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    engine.clock.sleep(900)
     with pytest.raises(MigrationError, match=Code.OVERLAP):
         engine.plan(MARCH, Policy(poll_seconds=0))
     (row,) = engine.journal.transfers(destination)
