@@ -29,21 +29,21 @@ over one engine, plus a quickstart (`README.txt`), the simulator fixtures under
 | Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64.tar.gz` | `./logs-migrate gui` | `./logs-migrate <command>` |
 
 Tagged versions are attached to [GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases)
-with `SHA256SUMS`. Every push to `main` also
-leaves signed builds as artifacts of its *Binaries* workflow run. Arguments always
-mean the CLI, so an agent drives the same engine a person opens by double-click; on
-macOS, with no arguments, only a Finder launch opens the window. On Linux the window
-needs a desktop session with the usual Qt libraries (libEGL/libGL, fontconfig,
-libxkbcommon-x11, libxcb-cursor0); the CLI needs none of them.
+with `SHA256SUMS`. Every push to `main` also leaves signed builds as artifacts of its
+*Binaries* workflow run. Arguments always mean the CLI, so an agent drives the same
+engine a person opens by double-click; on macOS, with no arguments, only a Finder
+launch opens the window. On Linux the window needs a desktop session with the usual
+Qt libraries (libEGL/libGL, fontconfig, libxkbcommon-x11, libxcb-cursor0); the CLI
+needs none of them.
 
 ### How the downloads are built and signed
 
 `packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
 `packaging/requirements.txt`): a one-file console executable on Windows and Linux, a
 one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
-(`packaging/gui_entry.py`) so opening the window never shows a console. `.github/workflows/binaries.yml` builds natively on GitHub-hosted
-Ubuntu 22.04, Windows, macOS arm64 and macOS Intel runners, then
-`packaging/smoke.py` extracts each final archive into an empty directory and runs it
+(`packaging/gui_entry.py`) so opening the window never shows a console.
+`.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
+Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each final archive into an empty directory and runs it
 with no Python on its path: `--version`, `--help`, argument refusal, both simulator
 migrations end to end, the configuration workflow, and the `gui` path rendered once
 offscreen and once natively (the windowed program with no console on Windows,
@@ -59,8 +59,8 @@ this repository):
   (`MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_TEAM_ID`); `macos-notarize`
   submits it to Apple's notary service, staples the ticket and requires Gatekeeper
   to accept it (`NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8`).
-- **Windows**: `windows-sign` Authenticode-signs `logs-migrate.exe` and `VCF Logs Migrator.exe` through Azure
-  Artifact Signing with an RFC 3161 timestamp (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+- **Windows**: `windows-sign` Authenticode-signs `logs-migrate.exe` and
+  `VCF Logs Migrator.exe` through Azure Artifact Signing with an RFC 3161 timestamp (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
   `AZURE_CLIENT_SECRET`, `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
   `ARTIFACT_SIGNING_PROFILE`).
 
