@@ -26,8 +26,10 @@ logs-migrate --journal /private/migration/run.sqlite \
 Use the returned run UUID below. Dates must include a timezone. The end is
 exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so the
 preview includes both the requested interval and actual bucket coverage. Active
-buckets are always excluded. The last fully sealed day is reported in
-America/Chicago when bounds establish it; otherwise it is unknown.
+buckets are always excluded. The last fully sealed day is the day
+before the first active bucket's proven start (America/Chicago). A live 8.18 listing
+shows no dates for active buckets, so there it is the day before the newest sealed
+bucket's end (UTC); it is unknown only when there is no sealed bucket to go by.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to
@@ -181,6 +183,11 @@ The wrapper checks that ID before cancelling, then returns the API's observation
 It never automatically cancels a transfer because local inventory changed. There
 is no resume/close/reconcile workflow and no local recovery state to clear.
 
+A start the appliance answered with an HTTP error was never accepted, so nothing is
+held and you can plan and copy again. A start with no answer (timeout, lost
+connection) exits 8 and keeps its selection blocked; the next `plan` releases it when
+the appliance shows no task for it, and settles it as usual when a task matches.
+
 ## Data protection and verification
 
 - Source operations are read-only. No source stop, bucket delete, overwrite or
@@ -223,9 +230,8 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   partition routing or field extraction. A report preserves active exclusions and
   does not authorize retiring source data that was not copied.
 
-No tail rerun bypass exists. Newly sealed data needs a non-overlapping window that
-selects no previously sent bucket. Some active data may never seal after ingest
-moves away; keep that source data available under the operator's retention plan.
+Some active data may never seal after ingest moves away; keep that source data
+available under the operator's retention plan.
 
 ## Exits and boundaries
 

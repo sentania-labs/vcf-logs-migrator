@@ -36,6 +36,10 @@ class MigrationError(Exception):
         super().__init__(code.value)
 
 
+class Rejection(MigrationError):
+    """The appliance answered with an HTTP error status: the request was received and refused."""
+
+
 def require(condition: bool, code: Code) -> None:
     if not condition:
         raise MigrationError(code)

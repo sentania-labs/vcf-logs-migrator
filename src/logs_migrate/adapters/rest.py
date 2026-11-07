@@ -18,7 +18,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
-from ..errors import Code, MigrationError, require, safe_boundary
+from ..errors import Code, MigrationError, Rejection, require, safe_boundary
 from ..models import DAY, Window
 from ..security import Secret
 
@@ -140,8 +140,10 @@ class HTTPS:
                 headers={"Content-Type": "application/json", **(headers or {})},
             )
             response = connection.getresponse()
-            require(response.status not in {401, 403}, Code.AUTH)
-            require(200 <= response.status < 300, Code.CONNECTION)  # No credential redirects.
+            if response.status in {401, 403}:
+                raise Rejection(Code.AUTH)
+            if not 200 <= response.status < 300:  # No credential redirects.
+                raise Rejection(Code.CONNECTION)
             raw = response.read(MAX_BODY + 1)
             require(len(raw) <= MAX_BODY, Code.SCHEMA)
             if not raw:

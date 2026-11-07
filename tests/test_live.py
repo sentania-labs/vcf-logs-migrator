@@ -204,9 +204,22 @@ def test_task_decoder_handles_empty_nested_list_and_node_shapes():
         {"status": "COMPLETED", "notMigratedBuckets": [B]}, destination="d", now_ms=0
     )
     assert only_negative.completed == () and only_negative.skipped == (B,)
-    for key in ("bucketsNotMigrated", "bucketsNotCopied", "bucketsNotTransferred"):
+    for key in (
+        "bucketsNotMigrated",
+        "bucketsNotCopied",
+        "bucketsNotTransferred",
+        "bucketsUnmigrated",
+        "bucketsUncopied",
+        "bucketsUntransferred",
+    ):
         camel = decode_task({"status": "COMPLETED", key: [B]}, destination="d", now_ms=0)
         assert camel.completed == () and camel.skipped == (B,)
+    two = decode_task(
+        {"status": "COMPLETED", "copied": [A, B, C], "skippedBuckets": [B], "failedBuckets": [C]},
+        destination="d",
+        now_ms=0,
+    )
+    assert two.completed == (A,) and set(two.skipped) == {B, C}
     assert observed_keys(body)[:2] == ["dataMigration", "dataMigration.taskId"]
 
 
@@ -425,11 +438,38 @@ def test_start_falls_back_to_a_running_task_when_status_lags(rigged):
     env, source, destination, ssh = trusted(rigged)
     destination.records += [
         session(),
+        record("GET", "/api/v2/data-migrations", {}),
         record("POST", "/api/v2/data-migrations", {"accepted": True}),
         record("GET", "/api/v2/data-migrations", {}),
     ]
     task = env.start(Window(1, 2), ("src-1.lab/" + A,))
     assert task.status == "running" and task.window == Window(1, 2) and task.id == ""
+
+
+def test_start_does_not_adopt_the_previous_task_with_the_same_window(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    previous = {
+        "id": "task-1",
+        "status": "COMPLETED",
+        "bucketStartTimeMillis": 1,
+        "bucketEndTimeMillis": 2,
+        "copied": [A],
+    }
+    destination.records += [
+        session(),
+        record("GET", "/api/v2/data-migrations", previous),
+        record("POST", "/api/v2/data-migrations", {"accepted": True}),
+        record("GET", "/api/v2/data-migrations", previous),
+    ]
+    task = env.start(Window(1, 2), ("src-1.lab/" + A,))
+    assert task.status == "running" and task.id == "" and task.completed == ()
+    destination.records += [
+        record("GET", "/api/v2/data-migrations", previous),
+        record("POST", "/api/v2/data-migrations", {"accepted": True}),
+        record("GET", "/api/v2/data-migrations", {**previous, "id": "task-2", "status": "RUNNING"}),
+    ]
+    task = env.start(Window(1, 2), ("src-1.lab/" + A,))
+    assert task.id == "task-2" and task.status == "running"
 
 
 def test_selftest_reports_every_read_and_sends_nothing(rigged):
@@ -627,6 +667,94 @@ def test_live_ledger_stays_open_while_status_still_shows_the_previous_task(tmp_p
             Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z")),
             Policy(poll_seconds=0),
         )
+
+
+def _ready_run(engine, window):
+    from logs_migrate.models import ACTIVE_ACK, Policy
+
+    run = engine.plan(window, Policy(poll_seconds=0))
+    return run, lambda: engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+
+
+def test_a_start_the_appliance_rejected_leaves_nothing_to_block_the_retry(tmp_path):
+    from logs_migrate.errors import Rejection
+    from logs_migrate.models import Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run, start = _ready_run(engine, window)
+    real_start = env.start
+
+    def refused(*args):
+        raise Rejection(Code.CONNECTION)
+
+    env.start = refused
+    with pytest.raises(MigrationError) as raised:
+        start()
+    assert raised.value.code == Code.CONNECTION
+    assert engine.journal.transfers(run["plan"]["destination"]["id"]) == []
+    env.start = real_start
+    engine.plan(window, Policy(poll_seconds=0))
+
+
+def test_a_start_with_no_answer_is_released_once_the_appliance_shows_no_task(tmp_path):
+    from logs_migrate.models import Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run, start = _ready_run(engine, window)
+    destination = run["plan"]["destination"]["id"]
+
+    def lost(*args):
+        raise TimeoutError
+
+    env.start = lost
+    with pytest.raises(MigrationError) as raised:
+        start()
+    assert raised.value.code == Code.UNCERTAIN
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"]
+    env.transfer = lambda: Transfer("", "idle", destination=destination)
+    engine.plan(window, Policy(poll_seconds=0))
+    assert engine.journal.transfers(destination) == []
+
+
+def test_a_same_window_rerun_is_not_blocked_by_this_tools_own_finished_task(tmp_path):
+    from logs_migrate.models import Policy, parse_time
+    from logs_migrate.ports import History, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    first = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z"))
+    run, start = _ready_run(engine, first)
+    start()
+    destination = run["plan"]["destination"]["id"]
+    (row,) = engine.journal.transfers(destination)
+    assert row["task_id"]
+    wide = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env.transfer = lambda: Transfer(
+        row["task_id"], "completed", (), (), destination=destination, window=wide
+    )
+
+    def history(task_id):
+        return lambda: (History("src", destination, wide, ("dst-1",), (), True, task_id),)
+
+    later = Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env.history = history("someone-else")
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(later, Policy(poll_seconds=0))
+    env.history = history(row["task_id"])
+    engine.plan(later, Policy(poll_seconds=0))
+
+
+def test_the_sealed_frontier_names_the_last_fully_sealed_day_when_active_bounds_are_unknown():
+    from logs_migrate.models import Bucket, last_sealed_day
+
+    sealed = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + DAY // 2, None, True, True)
+    active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
+    assert last_sealed_day((sealed, active)) == "1970-01-01"
+    assert last_sealed_day((active,)) is None
+    assert last_sealed_day((sealed,)) is None
 
 
 def test_partial_days_and_day_window_helpers():

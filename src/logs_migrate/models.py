@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -261,12 +261,18 @@ class Policy:
 
 
 def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") -> str | None:
-    """Conservative bound only when active minima are proven; stale active metadata is unknown."""
-    active = [b for b in buckets if b.status == "active"]
-    if not active or any(not b.bounds_proven or b.start is None for b in active):
-        return None
+    """The day before the first active data: its proven start, else the newest sealed bucket end."""
     from datetime import timedelta
 
-    first_active = min(b.start for b in active)
-    day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
+    active = [b for b in buckets if b.status == "active"]
+    if not active:
+        return None
+    if any(not b.bounds_proven or b.start is None for b in active):
+        sealed_ends = [b.end for b in buckets if b.status != "active" and b.end is not None]
+        if not sealed_ends:
+            return None
+        day = datetime.fromtimestamp(max(sealed_ends) / 1000, UTC).date()
+    else:
+        first_active = min(b.start for b in active)
+        day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
     return (day - timedelta(days=1)).isoformat()

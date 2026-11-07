@@ -330,14 +330,24 @@ def _first(mapping: dict, pattern: str, kind=str, exclude: str | None = None):
 
 
 POSITIVE_BUCKETS = r"(copied|completed|migrated|transferred|succeeded|done)"
-NEGATIVE_BUCKETS = r"(not|^un|skipped|failed|errored|missing|pending|remaining)"
-SKIPPED_BUCKETS = r"(skipped|failed|errored|not[_-]?(copied|migrated|transferred)|missing)"
+NEGATIVE_BUCKETS = (
+    r"(not|un(copied|migrated|transferred)|^un|skipped|failed|errored|missing|pending|remaining)"
+)
+SKIPPED_BUCKETS = r"(skipped|failed|errored|(not|un)[_-]?(copied|migrated|transferred)|missing)"
 
 
 def _bucket_lists(entry: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """(completed, skipped) bucket ids; a key naming the negative wins over the positive."""
     completed = _uuids(_first(entry, POSITIVE_BUCKETS, list, exclude=NEGATIVE_BUCKETS) or [])
-    skipped = _uuids(_first(entry, SKIPPED_BUCKETS, list) or [])
+    skipped_re = re.compile(SKIPPED_BUCKETS, re.IGNORECASE)
+    skipped = _uuids(
+        [
+            item
+            for key, value in entry.items()
+            if skipped_re.search(key) and isinstance(value, list)
+            for item in value
+        ]
+    )
     return tuple(b for b in completed if b not in skipped), skipped
 
 
@@ -851,6 +861,7 @@ class LiveEnvironment:
                 tuple(n.node for n in task.nodes),
                 task.completed,
                 not task.skipped,
+                task.id or "",
             ),
         )
 
@@ -896,6 +907,7 @@ class LiveEnvironment:
     def start(self, window: Window, bucket_keys: tuple[str, ...]) -> Transfer:
         require(self.destination_client is not None, Code.STATE)
         destination = cluster_id(self.destination_client.identity)
+        before = self.transfer()
         response = self.destination_client.start_migration(
             self.connection.source_host,
             self.connection.source_ssh_user,
@@ -907,7 +919,11 @@ class LiveEnvironment:
         if decoded.status not in {"idle", "unknown"}:
             return decoded
         task = self.transfer()
-        if task.status != "idle" and (task.window is None or task.window == window):
+        if task.status != "idle" and (task.id, task.status, task.window) != (
+            before.id,
+            before.status,
+            before.window,
+        ):
             return task
         # The status route shows nothing yet, or still the previous task. Report the new
         # one as running with the requested window so the operator polls rather than

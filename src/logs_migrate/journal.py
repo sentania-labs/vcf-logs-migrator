@@ -152,6 +152,16 @@ class Journal:
         except sqlite3.Error:
             raise MigrationError(Code.STORAGE) from None
 
+    def release_transfer(self, run_id: str):
+        """Drop an open row for a start the appliance never accepted."""
+        try:
+            self.db.execute(
+                "DELETE FROM transfers WHERE run=? AND json_extract(body, '$.closed')=0",
+                (run_id,),
+            )
+        except sqlite3.Error:
+            raise MigrationError(Code.STORAGE) from None
+
     def _transfer_body(self, run_id: str) -> dict:
         row = self.db.execute("SELECT body FROM transfers WHERE run=?", (run_id,)).fetchone()
         require(row is not None, Code.INVALID_INPUT)

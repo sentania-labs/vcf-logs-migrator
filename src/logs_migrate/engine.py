@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from .config import ConfigMigration
-from .errors import Code, MigrationError, require, safe_boundary
+from .errors import Code, MigrationError, Rejection, require, safe_boundary
 from .models import (
     ACTIVE_ACK,
     DAY,
@@ -124,13 +124,19 @@ class Engine:
         if self.journal is None or task.status not in TERMINAL:
             return
         if task.status == "idle" and not self.attribution:
-            # A live API that shows no task says nothing about what an earlier task moved;
-            # the in-flight selection stays recorded until a finished task is observed.
+            # A live API that shows no task moved nothing: a selection whose start never
+            # produced a task id is released; one that was acknowledged stays recorded.
+            for row in self.journal.transfers(destination):
+                if not row["closed"] and not row.get("task_id"):
+                    self.journal.release_transfer(row["run"])
             return
         received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
         received_ids = _ids(received)
         skipped_ids = _ids({*task.skipped, *(k for n in task.nodes for k in n.skipped)})
-        rows = [row for row in self.journal.transfers(destination) if not row["closed"]]
+        every = self.journal.transfers(destination)
+        if task.id and task.id in {r["task_id"] for r in every if r["closed"] and r.get("task_id")}:
+            return
+        rows = [row for row in every if not row["closed"]]
         for row in rows:
             if task.destination != destination:
                 matched = False
@@ -145,11 +151,15 @@ class Engine:
                 # The API reported neither the requested buckets nor the window; the only
                 # open selection for this destination is the one it answered for.
                 matched = len(rows) == 1
+            if matched and task.id and not row.get("task_id"):
+                self.journal.note_transfer_task(row["run"], task.id)
             if not matched:
                 if self.attribution:
                     self.journal.settle_transfer(row["run"], [])
-                # Live: a status that belongs to another task (the previous one, still
-                # shown) says nothing about this selection; the row stays open.
+                elif not row.get("task_id"):
+                    # Live: a finished task that is not this selection's, and the start was
+                    # never acknowledged with an id: the appliance holds no task for it.
+                    self.journal.release_transfer(row["run"])
             elif received or self.attribution:
                 self.journal.settle_transfer(
                     row["run"],
@@ -178,8 +188,9 @@ class Engine:
             require(not selected.intersection(_ids(held)), Code.OVERLAP)
         # Include transfers started outside this journal, wherever the appliance exposes them.
         coverage = Window(**plan["coverage"])
+        ours = {row["task_id"] for row in self.journal.transfers(destination) if row.get("task_id")}
         for prior in self.env.history():
-            if prior.destination != destination:
+            if prior.destination != destination or (prior.task_id and prior.task_id in ours):
                 continue
             require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
             if not prior.bucket_ids and prior.complete:
@@ -326,6 +337,10 @@ class Engine:
             self._audit(run, "api_start_requested")
             try:
                 task = self.env.start(Window(**fresh["window"]), keys)
+            except Rejection:
+                self.journal.release_transfer(run_id)
+                self._audit(run, "api_start_rejected")
+                raise
             except Exception:
                 self._audit(run, "api_start_response_unavailable")
                 raise MigrationError(Code.UNCERTAIN) from None

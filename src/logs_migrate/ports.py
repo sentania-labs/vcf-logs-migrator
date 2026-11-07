@@ -41,6 +41,7 @@ class History:
     destination_nodes: tuple[str, ...]
     bucket_ids: tuple[str, ...]
     complete: bool
+    task_id: str = ""
 
 
 class Environment(Protocol):
