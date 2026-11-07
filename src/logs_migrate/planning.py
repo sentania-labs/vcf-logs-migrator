@@ -33,17 +33,23 @@ def partition_diff(source: Cluster, destination: Cluster) -> dict:
 
 def capacity(destination: Cluster, buckets: tuple[Bucket, ...]) -> dict:
     # The API, not the operator, assigns each bucket to a destination node, so every node's own
-    # available repository budget must be able to hold the whole selection.
+    # available repository budget must be able to hold the whole selection. A node whose budget
+    # was not observed cannot refuse the plan; it is listed as unknown and warned about.
     required = sum(b.size for b in buckets)
     nodes = [
         {
             "id": n.id,
             "available_bytes": n.repository_available,
-            "fits": n.repository_available >= required,
+            "fits": None if not n.storage_known else n.repository_available >= required,
         }
         for n in destination.nodes
     ]
-    return {"required_bytes": required, "nodes": nodes, "fits": all(n["fits"] for n in nodes)}
+    return {
+        "required_bytes": required,
+        "nodes": nodes,
+        "fits": all(n["fits"] is not False for n in nodes),
+        "unknown": [n["id"] for n in nodes if n["fits"] is None],
+    }
 
 
 BACKUP_ACK = (
@@ -93,6 +99,18 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             else ["Selected buckets exceed a destination node's available repository budget."]
         )
         + (
-            ["9.1.1 preview; live adapter qualification is pending."] if destination.preview else []
+            [
+                "Destination repository budget was not observed for: "
+                + ", ".join(space["unknown"])
+                + ". The API stops copying at 95% disk and reports the skipped buckets; "
+                "verification shows what landed."
+            ]
+            if space["unknown"]
+            else []
+        )
+        + (
+            ["9.1.1 preview; a 9.0 to 9.1.1 lab run has not been recorded."]
+            if destination.preview
+            else []
         ),
     }

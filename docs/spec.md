@@ -1,8 +1,9 @@
 # Spec: `logs-migrate`, an 8.x to 9 migration helper
 
-Date: 2026-11-06. Status: design draft. The engine and CLI landed as a fixture
-delivery with real appliance mutation disabled; shipped commands, flags and exit
-codes are in [`operator-cli.md`](operator-cli.md), which wins over this draft.
+Date: 2026-11-06. Status: design draft. The engine, CLI and GUI run against real
+appliances and a simulator; shipped commands, flags and exit codes are in
+[`operator-cli.md`](operator-cli.md), which wins over this draft, and the lab
+procedure is [`testing-against-a-lab.md`](testing-against-a-lab.md).
 The principal's later 2026-11-06 re-scope makes this delivery a tight API wrapper:
 date preview, start, direct API status/progress, per-day verification, partition
 comparison and a plain report. Local task/recovery states, close/reconcile,

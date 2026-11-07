@@ -95,9 +95,9 @@ def test_removed_controllers_are_unavailable(command, capsys):
     assert command not in capsys.readouterr().out
 
 
-def test_live_execution_remains_unqualified(tmp_path, capsys):
-    assert main(["--journal", str(tmp_path / "j.sqlite"), "discover"]) == 3
-    assert json.loads(capsys.readouterr().err)["error"] == "unsupported_capability"
+def test_neither_fixture_nor_hosts_is_invalid_input(tmp_path, capsys):
+    assert main(["--journal", str(tmp_path / "j.sqlite"), "discover"]) == 2
+    assert json.loads(capsys.readouterr().err)["error"] == "invalid_input"
 
 
 def test_connection_fault_exits_as_operation_failed_not_missing_prerequisite(tmp_path, capsys):

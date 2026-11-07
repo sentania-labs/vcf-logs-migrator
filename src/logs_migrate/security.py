@@ -2,6 +2,7 @@
 
 import getpass
 import json
+import os
 import sys
 
 from .errors import Code, MigrationError, require
@@ -40,18 +41,63 @@ class Secret:
         return "<redacted>"
 
 
+# Credential keys and the environment variables that may supply them. Never argv.
+ENVIRONMENT = {
+    "source_ssh": "LOGS_SOURCE_SSH_PASSWORD",
+    "source_api": "LOGS_SOURCE_API_PASSWORD",
+    "destination_api": "LOGS_DESTINATION_API_PASSWORD",
+    "destination_ssh": "LOGS_DESTINATION_SSH_PASSWORD",
+    "ops_token": "LOGS_OPS_TOKEN",
+}
+PROMPTS = {
+    "source_ssh": "Source SSH password",
+    "source_api": "Source Logs API password",
+    "destination_api": "Destination Logs API password",
+    "destination_ssh": "Destination SSH password",
+    "ops_token": "VCF Operations token",
+}
+
+
 class Credentials:
-    """Ephemeral only. No environment variable or argv password support."""
+    """Ephemeral. Values come from the GUI, environment variables, an operator-named file
+    (mode 600) or an interactive prompt; never from command arguments."""
 
     def __init__(self, values: dict[str, str] | None = None, interactive: bool = True):
-        self._values = {key: Secret(value) for key, value in (values or {}).items()}
+        self._values = {key: Secret(value) for key, value in (values or {}).items() if value}
         self.interactive = interactive
+
+    def has(self, key: str) -> bool:
+        return key in self._values or bool(os.environ.get(ENVIRONMENT.get(key, "")))
 
     def get(self, key: str) -> Secret:
         if key not in self._values:
+            variable = ENVIRONMENT.get(key)
+            if variable and os.environ.get(variable):
+                self._values[key] = Secret(os.environ[variable])
+                return self._values[key]
             require(self.interactive and sys.stdin.isatty(), Code.AUTH)
-            self._values[key] = Secret(getpass.getpass(f"Credential required for {key}: "))
+            self._values[key] = Secret(getpass.getpass(PROMPTS.get(key, key) + ": "))
         return self._values[key]
+
+    @classmethod
+    def from_file(cls, path, interactive: bool = False):
+        """JSON object of credential key to value; the file must be private (mode 600)."""
+        from pathlib import Path
+
+        target = Path(path)
+        try:
+            require(target.is_file() and not target.is_symlink(), Code.AUTH)
+            if os.name == "posix":
+                require(target.stat().st_mode & 0o077 == 0, Code.AUTH)
+            with open(target, encoding="utf-8") as handle:
+                credentials = cls.from_stream(handle)
+        except MigrationError:
+            raise
+        except Exception:
+            raise MigrationError(Code.AUTH) from None
+        credentials.interactive = interactive
+        require(set(credentials._values) <= set(ENVIRONMENT), Code.AUTH)
+        return credentials
 
     def destination_nodes(self, nodes: tuple[str, ...], same_password: bool):
         """UI/CLI asks 'same password on all N nodes?' before calling this method."""

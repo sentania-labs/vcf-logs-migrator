@@ -3,21 +3,75 @@
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from .config import ConfigMigration
 from .errors import Code, MigrationError, require, safe_boundary
-from .models import ACTIVE_ACK, EVERYTHING_END, Counts, Policy, Verification, Window, digest
+from .models import (
+    ACTIVE_ACK,
+    DAY,
+    EVERYTHING_END,
+    Counts,
+    Policy,
+    Verification,
+    Window,
+    digest,
+)
 from .planning import build_plan, partition_diff
 from .ports import SystemClock
 from .verification import combine, reconcile, stable_counts
 
 TERMINAL = {"idle", "completed", "cancelled", "failed"}
 EVERYTHING = Window(0, EVERYTHING_END)
+INGEST_WINDOW_SECONDS = 86_400
 
 
 def _ids(keys):
     return {key.rsplit("/", 1)[-1] for key in keys}
+
+
+def day_window(window: Window) -> Window:
+    """The whole UTC days a window touches; count queries are compared per day."""
+    return Window(window.start // DAY * DAY, ((window.end - 1) // DAY + 1) * DAY)
+
+
+def _day(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, UTC).date().isoformat()
+
+
+def partial_days(source, plan: dict) -> list[str]:
+    """Covered days whose source events are not all in the selected buckets: days shared
+    with an unselected sealed bucket, and days at or after the first active bucket's start
+    (every day when active bounds are unknown). Counts there are expected to differ."""
+    coverage = day_window(Window(**plan["coverage"]))
+    selected = {b["node"] + "/" + b["id"] for b in plan["selected"]}
+    days = []
+    cursor = coverage.start
+    while cursor < coverage.end:
+        days.append(cursor)
+        cursor += DAY
+    partial = set()
+    unproven_active = False
+    for bucket in source.buckets:
+        if bucket.key in selected:
+            continue
+        if bucket.status == "active" and not (bucket.bounds_proven and bucket.start is not None):
+            unproven_active = True
+            continue
+        if bucket.start is None or bucket.end is None:
+            unproven_active = True
+            continue
+        for start in days:
+            if bucket.start < start + DAY and bucket.end >= start:
+                partial.add(start)
+    if unproven_active:
+        last_sealed = plan.get("last_fully_sealed_day")
+        if last_sealed is None:
+            partial.update(days)
+        else:
+            partial.update(start for start in days if _day(start) > last_sealed)
+    return sorted(_day(start) for start in partial)
 
 
 class Engine:
@@ -26,6 +80,10 @@ class Engine:
         self.journal = journal
         self.clock = clock or SystemClock()
         self.on_event = on_event
+
+    @property
+    def attribution(self) -> bool:
+        return bool(getattr(self.env, "attribution", True))
 
     def config_compare(self):
         """Compare forwarding, partitions, masking and filters by name."""
@@ -55,13 +113,36 @@ class Engine:
         """Ledger what the API reports as transferred once a task has finished."""
         if self.journal is None or task.status not in TERMINAL:
             return
+        if task.status == "idle" and not self.attribution:
+            # A live API that shows no task says nothing about what an earlier task moved;
+            # the in-flight selection stays recorded until a finished task is observed.
+            return
         received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
-        for row in self.journal.transfers(destination):
-            if not row["closed"]:
-                matched = task.destination == destination and set(row["keys"]) == set(
-                    task.bucket_keys
+        received_ids = _ids(received)
+        rows = [row for row in self.journal.transfers(destination) if not row["closed"]]
+        for row in rows:
+            if task.destination != destination:
+                matched = False
+            elif task.bucket_keys:
+                matched = _ids(row["keys"]) == _ids(task.bucket_keys)
+            elif task.window is not None and row.get("window"):
+                matched = row["window"] == asdict(task.window)
+            else:
+                # The API reported neither the requested buckets nor the window; the only
+                # open selection for this destination is the one it answered for.
+                matched = len(rows) == 1
+            if not matched:
+                self.journal.settle_transfer(row["run"], [])
+            elif received or self.attribution:
+                self.journal.settle_transfer(
+                    row["run"],
+                    sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
                 )
-                self.journal.settle_transfer(row["run"], sorted(received) if matched else [])
+            else:
+                # No per-bucket detail: a completed task moved the selection by its own
+                # account; a cancelled or failed one may have moved part of it. Either way
+                # the selection stays recorded so it is never submitted twice.
+                self.journal.settle_transfer(row["run"], sorted(row["keys"]))
 
     def _settle(self, destination):
         task = self.env.transfer()
@@ -79,6 +160,17 @@ class Engine:
             if prior.destination == destination:
                 require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
 
+    def _source_ingest(self) -> dict:
+        """Whether the source is still receiving events: a cutover check that warns."""
+        reader = getattr(self.env, "recent_source_events", None)
+        events = None
+        if reader is not None:
+            try:
+                events = reader(INGEST_WINDOW_SECONDS)
+            except MigrationError:
+                events = None
+        return {"window_seconds": INGEST_WINDOW_SECONDS, "events": events}
+
     @safe_boundary
     def discover(self):
         source, destination = self.env.discover()
@@ -93,6 +185,27 @@ class Engine:
         with self._exclusive():
             source, destination = self.env.discover()
             plan = build_plan(source, destination, window)
+            plan["source_ingest"] = self._source_ingest()
+            events = plan["source_ingest"]["events"]
+            hours = INGEST_WINDOW_SECONDS // 3600
+            if events is None:
+                plan["warnings"].append(
+                    f"Source ingest in the last {hours} hours could not be observed; "
+                    "confirm cutover before relying on the last sealed day."
+                )
+            elif events:
+                plan["warnings"].append(
+                    f"The source received {events:,} events in the last {hours} hours. "
+                    "Open buckets keep growing; a later run of the same dates collects the "
+                    "tail once they seal."
+                )
+            plan["partial_days"] = partial_days(source, plan)
+            notes = getattr(self.env, "notes", {})
+            if notes.get("members_unreadable"):
+                plan["warnings"].append(
+                    "The source member list could not be read from the typed node's config; "
+                    "only that node was inventoried. The API itself discovers the others."
+                )
             self._settle(destination.id)
             self._overlap(plan)
             run = {
@@ -130,8 +243,6 @@ class Engine:
 
     @safe_boundary
     def run(self, run_id, *, backup_ack=False, active_ack=""):
-        # The CLI has no live Environment yet. Transport qualification remains separate.
-        require(self.env.mode == "simulation", Code.UNSUPPORTED)
         with self._exclusive():
             run = self.journal.load(run_id)
             require(run.get("schema_version") == 2, Code.SCHEMA)
@@ -164,11 +275,20 @@ class Engine:
             self.env.test_mover()
             policy = Policy(**run["query_policy"])
             coverage = Window(**run["plan"]["coverage"])
-            run["source_by_bucket"] = {
-                key: asdict(self._counts(policy, "source", coverage, (key,)))
-                for key in (b["node"] + "/" + b["id"] for b in run["plan"]["selected"])
-            }
-            run["baseline"] = asdict(self._counts(policy, "baseline", EVERYTHING, ()))
+            keys = tuple(b["node"] + "/" + b["id"] for b in run["plan"]["selected"])
+            if self.attribution:
+                run["source_by_bucket"] = {
+                    key: asdict(self._counts(policy, "source", coverage, (key,))) for key in keys
+                }
+                run["baseline"] = asdict(self._counts(policy, "baseline", EVERYTHING, ()))
+            else:
+                # Live counts are per day for the whole cluster, so the evidence is the
+                # covered days: source and destination baseline over the same days.
+                days = day_window(coverage)
+                run["source_by_bucket"] = {}
+                run["source_counts"] = asdict(self._counts(policy, "source", days, keys))
+                run["baseline"] = asdict(self._counts(policy, "baseline", days, ()))
+                run["partial_days"] = partial_days(source, fresh)
             run["backup_ack"] = True
             run["active_ack"] = active_ack == ACTIVE_ACK
             self._audit(run, "transfer_authorized", {"snapshot_verified": False})
@@ -177,10 +297,7 @@ class Engine:
             self.journal.record_transfer(run)
             self._audit(run, "api_start_requested")
             try:
-                task = self.env.start(
-                    Window(**fresh["window"]),
-                    tuple(b["node"] + "/" + b["id"] for b in fresh["selected"]),
-                )
+                task = self.env.start(Window(**fresh["window"]), keys)
             except Exception:
                 self._audit(run, "api_start_response_unavailable")
                 raise MigrationError(Code.UNCERTAIN) from None
@@ -220,7 +337,6 @@ class Engine:
     @safe_boundary
     def stop(self, task_id):
         """Explicit API cancellation, including tasks whose POST acknowledgment was lost."""
-        require(self.env.mode == "simulation", Code.UNSUPPORTED)
         with self._exclusive():
             task = self.env.transfer()
             require(task.id == task_id, Code.UNCERTAIN)
@@ -246,7 +362,10 @@ class Engine:
                 task = self._settle(destination.id)
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
-                result = self._reconcile(run, destination.id)
+                if self.attribution:
+                    result = self._reconcile(run, destination.id)
+                else:
+                    result = self._reconcile_days(run, destination.id)
             except MigrationError as error:
                 result = {
                     "outcome": Verification.INCOMPLETE.value,
@@ -289,6 +408,54 @@ class Engine:
         result["covered_days"] = [day for day, _ in source.daily]
         if result["buckets"]["not_received"]:
             # A selection that did not all land is never a success; a discrepancy stays one.
+            if result["outcome"] == Verification.SUCCESS.value:
+                result["outcome"] = Verification.INCOMPLETE.value
+            result["reason"] = Code.NOT_RECEIVED.value
+        return result
+
+    def _reconcile_days(self, run, destination):
+        """Live evidence: this run's covered days, source versus destination minus baseline.
+
+        New ingest cannot be attributed from counts alone, so a day shared with an open or
+        unselected bucket is marked partial and never decides the outcome; a difference on
+        a fully covered day is a discrepancy.
+        """
+        row = next((r for r in self.journal.transfers(destination) if r["run"] == run["id"]), None)
+        require(row is not None and row["closed"], Code.INCOMPLETE)
+        received = set(row["received"])
+        require(bool(received), Code.INCOMPLETE)
+        source = Counts.from_dict(run["source_counts"])
+        baseline = Counts.from_dict(run["baseline"])
+        policy = Policy(**run["query_policy"])
+        days = day_window(Window(**run["plan"]["coverage"]))
+        actual = self._counts(policy, "destination", days, ())
+        require(actual == self._counts(policy, "destination", days, ()), Code.INCOMPLETE)
+        ingest = Counts(True, (), (), "ingest")
+        result = reconcile(source, baseline, actual, ingest)
+        partial = set(run.get("partial_days", []))
+        for entry in result["daily"]:
+            entry["partial"] = entry["day"] in partial
+        full = [d for d in result["daily"] if not d["partial"]]
+        result["outcome"] = (
+            Verification.DISCREPANCY.value
+            if any(d["difference"] != 0 for d in full)
+            else Verification.SUCCESS.value
+        )
+        result["partial_days"] = sorted(partial)
+        result["partial_differences"] = any(
+            d["difference"] != 0 for d in result["daily"] if d["partial"]
+        )
+        result["method"] = (
+            "Two agreeing complete observations; per-day source counts over the covered days "
+            "against destination counts minus the baseline recorded at start. New ingest is "
+            "not attributed; days shared with open or unselected buckets are partial."
+        )
+        result["buckets"] = {
+            "covered": sorted(received),
+            "not_received": sorted(set(row["keys"]) - received),
+        }
+        result["covered_days"] = [day for day, _ in source.daily]
+        if result["buckets"]["not_received"]:
             if result["outcome"] == Verification.SUCCESS.value:
                 result["outcome"] = Verification.INCOMPLETE.value
             result["reason"] = Code.NOT_RECEIVED.value

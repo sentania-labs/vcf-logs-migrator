@@ -138,21 +138,36 @@ class Partition:
 
 @dataclass(frozen=True)
 class Node:
+    """Storage figures are None when the appliance did not report them (no SSH, or 9.1.1)."""
+
     id: str
-    capacity: int
-    used: int
-    repository_available: int
+    capacity: int | None
+    used: int | None
+    repository_available: int | None
     service: str = "running"
 
     def __post_init__(self):
         require(_label(self.id), Code.SCHEMA)
-        require(
-            all(type(n) is int for n in (self.capacity, self.used, self.repository_available)),
-            Code.SCHEMA,
-        )
-        require(self.capacity > 0 and 0 <= self.used <= self.capacity, Code.SCHEMA)
-        require(0 <= self.repository_available <= self.capacity, Code.SCHEMA)
+        figures = (self.capacity, self.used, self.repository_available)
+        require(all(n is None or type(n) is int for n in figures), Code.SCHEMA)
+        if self.capacity is not None:
+            require(self.capacity > 0, Code.SCHEMA)
+            require(self.used is None or 0 <= self.used <= self.capacity, Code.SCHEMA)
+            require(
+                self.repository_available is None
+                or 0 <= self.repository_available <= self.capacity,
+                Code.SCHEMA,
+            )
+        else:
+            require(self.used is None or self.used >= 0, Code.SCHEMA)
+            require(
+                self.repository_available is None or self.repository_available >= 0, Code.SCHEMA
+            )
         require(self.service in {"running", "stopped", "unknown"}, Code.SCHEMA)
+
+    @property
+    def storage_known(self) -> bool:
+        return self.repository_available is not None
 
 
 @dataclass(frozen=True)

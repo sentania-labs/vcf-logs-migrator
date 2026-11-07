@@ -119,7 +119,9 @@ class Journal:
                 run["id"],
                 plan["source"]["id"],
                 plan["destination"]["id"],
-                canonical({"keys": keys, "closed": False, "received": []}),
+                canonical(
+                    {"keys": keys, "closed": False, "received": [], "window": plan["window"]}
+                ),
             ),
         )
 
@@ -131,7 +133,7 @@ class Journal:
                 (
                     canonical(
                         {
-                            "keys": self._transfer_body(run_id)["keys"],
+                            **self._transfer_body(run_id),
                             "closed": True,
                             "received": sorted(received),
                         }

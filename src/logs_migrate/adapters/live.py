@@ -1,0 +1,905 @@
+"""Real appliances behind the Environment and ConfigEnvironment ports.
+
+Source: 8.18 Logs REST on 9543 (version, partitions, per-day counts) and root SSH to every
+cluster member for the bucket listing, directory sizes, free space and service state.
+Destination: 9.0 Logs REST (data-migrations test/start/status/cancel, partitions, counts,
+the four config rule types) or 9.1.1 through the VCF Operations token exchange. Optional
+root SSH to the 9.0 destination adds its node list, repository budget and bucket inventory.
+
+Everything here is read-only except the three operator-gated writes the engine asks for:
+start, cancel and config writes. Nothing stops a service or deletes a bucket.
+"""
+
+from __future__ import annotations
+
+import re
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+from ..errors import Code, MigrationError, require
+from ..models import Bucket, Cluster, Counts, Node, Partition, Window
+from ..ports import History, NodeTransfer, SystemClock, Transfer
+from ..security import Credentials, Secret
+from ..trust import Identity, TrustRequired, TrustStore, config_dir, probe_ssh, probe_tls
+from .config import RestConfigEnvironment
+from .rest import HTTPS, Logs90, Logs911, split_endpoint
+from .ssh import NodeSSH, ReadOperation
+
+UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+PAIR = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*(.*?)(?=,\s*[A-Za-z_][A-Za-z0-9_]*\s*[=:]|\s*[\]})]*\s*$)"
+)
+HOST_ATTRIBUTE = re.compile(r'host\s*=\s*"([^"]+)"')
+DISTRIBUTED = re.compile(r"<distributed\b.*?</distributed>", re.DOTALL | re.IGNORECASE)
+RECENT_SECONDS = 86_400
+
+LISTING_KEYS = {
+    "id": ("id", "bucketid", "bucket"),
+    "status": ("status", "state"),
+    "partition": ("partition", "partitionid"),
+    "created": ("created", "createtime", "creationtime", "createdtime"),
+    "size": ("size", "sizebytes", "bytes"),
+    "messages": ("messages", "messagecount", "count", "events"),
+    "start": ("starttime", "start", "mintimestamp", "starttimemillis", "from"),
+    "end": ("endtime", "end", "maxtimestamp", "endtimemillis", "to"),
+}
+STATUS_WORDS = {
+    "running": "running",
+    "in_progress": "running",
+    "inprogress": "running",
+    "started": "running",
+    "starting": "running",
+    "pending": "running",
+    "scheduled": "running",
+    "cancelling": "running",
+    "canceling": "running",
+    "completed": "completed",
+    "complete": "completed",
+    "success": "completed",
+    "succeeded": "completed",
+    "successful": "completed",
+    "finished": "completed",
+    "done": "completed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "failed": "failed",
+    "error": "failed",
+    "failure": "failed",
+    "idle": "idle",
+    "none": "idle",
+    "not_started": "idle",
+    "notstarted": "idle",
+}
+
+
+@dataclass(frozen=True)
+class Connection:
+    """Addresses and user names; never secrets. Secrets come from `Credentials`."""
+
+    source_host: str
+    destination: str
+    source_api_user: str = "admin"
+    source_ssh_user: str = "root"
+    destination_api_user: str = "admin"
+    destination_ssh_user: str = ""
+    ops_url: str = ""
+    source_api_port: int = 9543
+    ssh_port: int = 22
+    timeout: float = 60
+
+    @property
+    def preview(self) -> bool:
+        return bool(self.ops_url.strip())
+
+    @property
+    def destination_endpoint(self) -> tuple[str, int]:
+        return split_endpoint(self.destination, 9543)
+
+    @property
+    def ops_endpoint(self) -> tuple[str, int]:
+        return split_endpoint(self.ops_url, 443)
+
+
+@dataclass
+class ListedBucket:
+    id: str
+    status: str
+    partition: str = ""
+    created: int | None = None
+    size: int | None = None
+    messages: int | None = None
+    start: int | None = None
+    end: int | None = None
+    keys: tuple[str, ...] = ()
+
+
+@dataclass
+class NodeInventory:
+    host: str
+    service: str
+    capacity: int | None
+    used: int | None
+    available: int | None
+    buckets: list[ListedBucket]
+    usage: dict[str, int] = field(default_factory=dict)
+    listing_keys: tuple[str, ...] = ()
+
+
+# Parsers --------------------------------------------------------------------------------
+
+
+def parse_time(value: str) -> int | None:
+    text = value.strip().strip('"')
+    if not text or text.lower() in {"null", "none", "-", "n/a"}:
+        return None
+    if re.fullmatch(r"-?\d+", text):
+        number = int(text)
+        if number <= 0:
+            return None
+        return number if number >= 10**11 else number * 1000
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1000)
+
+
+def parse_int(value: str) -> int | None:
+    text = value.strip().strip('"').replace(",", "")
+    if re.fullmatch(r"\d+", text):
+        return int(text)
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KMGT]?)i?B?", text, re.IGNORECASE)
+    if match:
+        scale = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}[match.group(2).upper()]
+        return int(float(match.group(1)) * scale)
+    return None
+
+
+def parse_listing(text: str) -> list[ListedBucket]:
+    """`bucket-index show` lines to buckets. Key names vary by build; values are matched by
+    meaning and unknown keys are kept by name (never value) for the self-test report."""
+    buckets: list[ListedBucket] = []
+    for line in text.splitlines():
+        pairs = {k.lower(): v.strip() for k, v in PAIR.findall(line)}
+        if not pairs:
+            continue
+        found = {}
+        for name, aliases in LISTING_KEYS.items():
+            for alias in aliases:
+                if alias in pairs:
+                    found[name] = pairs[alias]
+                    break
+        ident = found.get("id", "")
+        match = UUID.search(ident.lower()) or UUID.search(line.lower())
+        if match is None or "status" not in found:
+            continue
+        status = found["status"].strip().strip('"').lower()
+        if status not in {"active", "archived", "inactive"}:
+            status = "active" if "active" in status else "archived"
+        bucket = ListedBucket(
+            id=match.group(0),
+            status=status,
+            partition=found.get("partition", "").strip().strip('"'),
+            created=parse_time(found.get("created", "")),
+            size=parse_int(found.get("size", "")),
+            messages=parse_int(found.get("messages", "")),
+            start=parse_time(found.get("start", "")),
+            end=parse_time(found.get("end", "")),
+            keys=tuple(sorted(pairs)),
+        )
+        buckets.append(bucket)
+    return buckets
+
+
+def parse_usage(text: str) -> dict[str, int]:
+    """`du -sB1 <store>/<id>` lines to bytes per bucket id."""
+    usage = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        match = UUID.search(parts[-1].lower())
+        if match:
+            usage[match.group(0)] = int(parts[0])
+    return usage
+
+
+def parse_space(text: str) -> tuple[int | None, int | None, int | None]:
+    """`df -B1 --output=size,used,avail` to (size, used, avail)."""
+    for line in reversed(text.splitlines()):
+        parts = line.split()
+        if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+            return int(parts[0]), int(parts[1]), int(parts[2])
+    return None, None, None
+
+
+def parse_members(text: str, fallback: str) -> list[str]:
+    """Hosts named in the <distributed> section of loginsight-config.xml."""
+    match = DISTRIBUTED.search(text)
+    hosts: list[str] = []
+    if match:
+        for host in HOST_ATTRIBUTE.findall(match.group(0)):
+            host = host.strip().lower().rstrip(".")
+            if host and host not in hosts and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", host):
+                hosts.append(host)
+    return hosts or [fallback]
+
+
+def parse_partitions(response) -> list[dict]:
+    if isinstance(response, dict):
+        for key in ("partitions", "items", "results"):
+            if isinstance(response.get(key), list):
+                response = response[key]
+                break
+    require(isinstance(response, list), Code.SCHEMA)
+    require(all(isinstance(p, dict) for p in response), Code.SCHEMA)
+    return response
+
+
+def partition_models(rules: list[dict]) -> tuple[Partition, ...]:
+    models = []
+    for index, rule in enumerate(rules):
+        name = str(rule.get("name") or "").strip() or "Default"
+        criteria = ""
+        for key in ("criteria", "filter", "routingFilter", "query"):
+            if isinstance(rule.get(key), str):
+                criteria = rule[key]
+                break
+        retention = 0
+        for key in ("retentionPeriodSeconds", "retention_seconds", "retentionSeconds"):
+            if type(rule.get(key)) is int:
+                retention = rule[key]
+                break
+        order = 0
+        for key in ("order", "priority"):
+            if type(rule.get(key)) is int:
+                order = rule[key]
+                break
+        ident = rule.get("id")
+        models.append(
+            Partition(
+                re.sub(r"[^A-Za-z0-9._:-]", "_", name)[:128],
+                ident if isinstance(ident, str) else "",
+                criteria,
+                max(0, retention),
+                max(0, order if order else index),
+            )
+        )
+    return tuple(models)
+
+
+def _walk(value, depth=0):
+    if depth > 6:
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key, item
+            yield from _walk(item, depth + 1)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk(item, depth + 1)
+
+
+def _status_word(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    word = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return STATUS_WORDS.get(word)
+
+
+def _uuids(value) -> tuple[str, ...]:
+    found = []
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                match = UUID.search(item.lower())
+                if match:
+                    found.append(match.group(0))
+            elif isinstance(item, dict):
+                for key in ("id", "bucketId", "bucket", "name"):
+                    if isinstance(item.get(key), str):
+                        match = UUID.search(item[key].lower())
+                        if match:
+                            found.append(match.group(0))
+                            break
+    return tuple(dict.fromkeys(found))
+
+
+def _first(mapping: dict, pattern: str, kind=str):
+    regex = re.compile(pattern, re.IGNORECASE)
+    for key, value in mapping.items():
+        if regex.search(key) and (
+            (kind is int and type(value) is int)
+            or (kind is str and isinstance(value, str))
+            or (kind is list and isinstance(value, list))
+        ):
+            return value
+    return None
+
+
+def _node_name(entry: dict) -> str | None:
+    for key in ("node", "nodeId", "nodeName", "host", "hostName", "hostname", "name", "ip"):
+        value = entry.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value.strip()):
+            return value.strip().lower()
+    return None
+
+
+def _node_entries(task: dict) -> list[dict]:
+    for key in (
+        "nodes",
+        "nodeStatuses",
+        "nodeStatus",
+        "perNode",
+        "nodeDetails",
+        "tasks",
+        "details",
+        "hosts",
+    ):
+        value = task.get(key)
+        if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+            return value
+        if isinstance(value, dict) and value and all(isinstance(v, dict) for v in value.values()):
+            return [{"node": name, **body} for name, body in value.items()]
+    return []
+
+
+def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
+    """Lenient decoding of the data-migrations status body. Unknown shapes decode to an
+    `unknown` task rather than to idle, so nothing is started on top of them."""
+    if response in ({}, [], None):
+        return Transfer("", "idle", destination=destination)
+    task = response
+    if isinstance(task, list):
+        task = task[-1]
+    require(isinstance(task, dict), Code.SCHEMA)
+    for key in ("dataMigration", "migration", "task", "result", "data"):
+        if isinstance(task.get(key), dict):
+            task = task[key]
+    status = None
+    for key in ("status", "state", "migrationStatus", "taskStatus", "phase"):
+        status = _status_word(task.get(key))
+        if status:
+            break
+    if status is None:
+        for key, value in _walk(task):
+            if key in {"status", "state"} and _status_word(value):
+                status = _status_word(value)
+                break
+    if status is None:
+        content = [v for v in task.values() if type(v) is not bool and v not in (None, "", [], {})]
+        if not content:
+            return Transfer("", "idle", destination=destination)
+        status = "unknown"
+    ident = ""
+    for key in ("id", "taskId", "migrationId", "requestId", "jobId"):
+        if isinstance(task.get(key), (str, int)) and task.get(key) != "":
+            ident = str(task[key])
+            break
+    completed = _uuids(
+        _first(task, r"(copied|completed|migrated|transferred|succeeded|done)", list) or []
+    )
+    skipped = _uuids(_first(task, r"(skipped|failed|errored|notCopied|not_copied)", list) or [])
+    nodes = []
+    for entry in _node_entries(task):
+        name = _node_name(entry)
+        if name is None:
+            continue
+        node_status = None
+        for key in ("status", "state"):
+            node_status = _status_word(entry.get(key))
+            if node_status:
+                break
+        node_completed = _uuids(
+            _first(entry, r"(copied|completed|migrated|transferred|succeeded|done)", list) or []
+        )
+        node_skipped = _uuids(
+            _first(entry, r"(skipped|failed|errored|notCopied|not_copied)", list) or []
+        )
+        node_bytes = (
+            _first(
+                entry,
+                r"(transferred|copied|migrated).*bytes|bytes.*(transferred|copied|migrated)",
+                int,
+            )
+            or _first(entry, r"bytes", int)
+            or 0
+        )
+        nodes.append(
+            NodeTransfer(name, node_status or status, node_completed, node_skipped, node_bytes)
+        )
+    completed = tuple(dict.fromkeys(completed + tuple(k for n in nodes for k in n.completed)))
+    skipped = tuple(dict.fromkeys(skipped + tuple(k for n in nodes for k in n.skipped)))
+    transferred = _first(
+        task, r"(transferred|copied|migrated).*bytes|bytes.*(transferred|copied|migrated)", int
+    )
+    if transferred is None:
+        transferred = sum(n.bytes_transferred for n in nodes)
+    total = _first(task, r"(total|planned|expected).*bytes|bytes.*(total|planned|expected)", int)
+    window = None
+    start_ms = task.get("bucketStartTimeMillis")
+    end_ms = task.get("bucketEndTimeMillis")
+    if type(start_ms) is int and type(end_ms) is int and 0 <= start_ms < end_ms:
+        window = Window(start_ms, end_ms)
+    elapsed = None
+    started = None
+    for key, value in task.items():
+        if re.search(
+            r"^(start|started|created|began|submitted)", key, re.IGNORECASE
+        ) and not key.startswith("bucket"):
+            started = parse_time(str(value)) if isinstance(value, (str, int)) else None
+            if started:
+                break
+    if started:
+        finished = None
+        for key, value in task.items():
+            if re.search(
+                r"^(end|ended|finished|completed|updated|last)", key, re.IGNORECASE
+            ) and not key.startswith("bucket"):
+                finished = parse_time(str(value)) if isinstance(value, (str, int)) else None
+                if finished:
+                    break
+        reference = finished if finished and status != "running" else now_ms
+        if reference >= started:
+            elapsed = (reference - started) / 1000
+    source = task.get("hostName") if isinstance(task.get("hostName"), str) else ""
+    return Transfer(
+        ident,
+        status,
+        completed,
+        skipped,
+        transferred,
+        tuple(nodes),
+        source,
+        destination,
+        window,
+        (),
+        elapsed,
+        total,
+    )
+
+
+def observed_keys(response, depth: int = 0) -> list[str]:
+    """Key names of a response, for the self-test's qualification notes. No values."""
+    names: list[str] = []
+    if isinstance(response, dict):
+        for key, value in response.items():
+            names.append(str(key))
+            names += (
+                [f"{key}.{inner}" for inner in observed_keys(value, depth + 1)] if depth < 2 else []
+            )
+    elif isinstance(response, list) and response:
+        names += (
+            [f"[].{inner}" for inner in observed_keys(response[0], depth + 1)] if depth < 2 else []
+        )
+    return names
+
+
+# Environment -----------------------------------------------------------------------------
+
+
+class LiveEnvironment:
+    """Implements `ports.Environment` and `config.ConfigEnvironment` against real hosts."""
+
+    mode = "live"
+    attribution = False  # Live counts carry no per-event identities; ingest is not attributed.
+
+    def __init__(
+        self,
+        connection: Connection,
+        credentials: Credentials,
+        trust: TrustStore | None = None,
+        clock=None,
+    ):
+        self.connection = connection
+        self.credentials = credentials
+        self.trust = trust or TrustStore()
+        self.clock = clock or SystemClock()
+        self.notes: dict[str, object] = {}
+        self.members: list[str] = []
+        self.destination_members: list[str] = []
+        self.source_client: Logs90 | None = None
+        self.destination_client: Logs90 | None = None
+        self.config_env: RestConfigEnvironment | None = None
+        self._pending: dict[str, str] = {}
+
+    # Identity trust ----------------------------------------------------------------------
+
+    def _check(self, identity: Identity, key_line: str | None, unknown: list[Identity]):
+        state = self.trust.check(identity)
+        if state == "trusted":
+            return
+        if state == "changed":
+            self.notes["identity_changed"] = identity.name
+            raise MigrationError(Code.AUTH)
+        unknown.append(identity)
+        if key_line:
+            self._pending[identity.name] = key_line
+
+    def key_line(self, identity: Identity) -> str | None:
+        return self._pending.get(identity.name)
+
+    def open(self) -> LiveEnvironment:
+        """Probe every identity, then build the clients. Raises TrustRequired first."""
+        connection = self.connection
+        unknown: list[Identity] = []
+        tls_source = (connection.source_host, connection.source_api_port)
+        tls_destination = connection.destination_endpoint
+        self._check(probe_tls(*tls_source), None, unknown)
+        self._check(probe_tls(*tls_destination), None, unknown)
+        if connection.preview:
+            self._check(probe_tls(*connection.ops_endpoint), None, unknown)
+        identity, line = probe_ssh(connection.source_host, connection.ssh_port)
+        self._check(identity, line, unknown)
+        if self._destination_ssh_enabled():
+            identity, line = probe_ssh(tls_destination[0], connection.ssh_port)
+            self._check(identity, line, unknown)
+        if unknown:
+            raise TrustRequired(unknown)
+        self.source_client = self._logs_client(tls_source, "source_api", connection.source_api_user)
+        if connection.preview:
+            logs = self._https(tls_destination)
+            ops = self._https(connection.ops_endpoint)
+            self.destination_client = Logs911(logs, ops, self.credentials.get("ops_token"))
+        else:
+            self.destination_client = self._logs_client(
+                tls_destination, "destination_api", connection.destination_api_user
+            )
+        # Cluster members come from the typed member's config; each needs its own SSH trust.
+        self.members = self.source_members()
+        for host in self.members:
+            if host != connection.source_host.lower():
+                identity, line = probe_ssh(host, connection.ssh_port)
+                self._check(identity, line, unknown)
+        if self._destination_ssh_enabled():
+            self.destination_members = self._members(
+                tls_destination[0], "destination_ssh", connection.destination_ssh_user
+            )
+            for host in self.destination_members:
+                if host != tls_destination[0].lower():
+                    identity, line = probe_ssh(host, connection.ssh_port)
+                    self._check(identity, line, unknown)
+        if unknown:
+            raise TrustRequired(unknown)
+        return self
+
+    def _https(self, endpoint: tuple[str, int]) -> HTTPS:
+        host, port = endpoint
+        pin = self.trust.known(Identity("tls", f"{host}:{port}", ""))
+        require(pin is not None, Code.AUTH)
+        return HTTPS(
+            f"https://{host}:{port}", certificate_sha256=pin, timeout=self.connection.timeout
+        )
+
+    def _logs_client(self, endpoint, credential: str, username: str) -> Logs90:
+        return Logs90(self._https(endpoint), username, self.credentials.get(credential))
+
+    def _ssh(self, host: str, credential: str, username: str) -> NodeSSH:
+        name = f"{host}:{self.connection.ssh_port}"
+        pin = self.trust.known(Identity("ssh", name, ""))
+        require(pin is not None, Code.AUTH)
+        return NodeSSH(
+            host,
+            username,
+            self.credentials.get(credential),
+            pin,
+            str(self.trust.known_hosts),
+            port=self.connection.ssh_port,
+            timeout=self.connection.timeout,
+        )
+
+    def _destination_ssh_enabled(self) -> bool:
+        return (
+            not self.connection.preview
+            and bool(self.connection.destination_ssh_user.strip())
+            and self.credentials.has("destination_ssh")
+        )
+
+    # Reads -------------------------------------------------------------------------------
+
+    def source_version(self) -> str:
+        require(self.source_client is not None, Code.STATE)
+        return self.source_client.version()
+
+    def destination_version(self) -> str:
+        require(self.destination_client is not None, Code.STATE)
+        if self.connection.preview:
+            try:
+                return self.destination_client.version()
+            except MigrationError as error:
+                if error.code == Code.AUTH:
+                    raise
+                # The 9.1.1 log-processor does not necessarily serve /api/v1/version; the
+                # operator chose the token path, which is 9.1.1's only route in.
+                self.notes["destination_version_assumed"] = True
+                return "9.1.1"
+        return self.destination_client.version()
+
+    def _members(self, host: str, credential: str, username: str) -> list[str]:
+        try:
+            text = self._ssh(host, credential, username).read(ReadOperation.MEMBERS)
+        except MigrationError as error:
+            if error.code == Code.AUTH:
+                raise
+            # The config file was not where this build keeps it; the typed member is the
+            # only node known. The self-test and plan say so.
+            self.notes["members_unreadable"] = host.lower()
+            return [host.lower()]
+        return parse_members(text, host.lower())
+
+    def source_members(self) -> list[str]:
+        return self._members(
+            self.connection.source_host, "source_ssh", self.connection.source_ssh_user
+        )
+
+    def node_inventory(
+        self, host: str, credential: str = "source_ssh", username: str | None = None
+    ) -> NodeInventory:
+        ssh = self._ssh(host, credential, username or self.connection.source_ssh_user)
+        service = ssh.read(ReadOperation.SERVICE).strip().lower()
+        capacity, used, available = parse_space(ssh.read(ReadOperation.SPACE))
+        listing = ssh.read(ReadOperation.INVENTORY)
+        buckets = parse_listing(listing)
+        usage = parse_usage(ssh.read(ReadOperation.USAGE))
+        keys = tuple(sorted({k for b in buckets for k in b.keys}))
+        return NodeInventory(
+            host,
+            "running"
+            if service == "active"
+            else "stopped"
+            if service in {"inactive", "failed"}
+            else "unknown",
+            capacity,
+            used,
+            available,
+            buckets,
+            usage,
+            keys,
+        )
+
+    def _partition_names(self, client: Logs90) -> dict[str, str]:
+        try:
+            rules = parse_partitions(client.partitions())
+        except MigrationError:
+            return {}
+        names = {}
+        for rule in rules:
+            if isinstance(rule.get("id"), str):
+                names[rule["id"]] = str(rule.get("name") or "").strip() or "Default"
+        return names
+
+    def _cluster_from_nodes(
+        self, ident: str, version: str, inventories: list[NodeInventory], partitions, identity: str
+    ) -> Cluster:
+        names = {p.id: p.name for p in partitions}
+        buckets = []
+        for inventory in inventories:
+            for listed in inventory.buckets:
+                active = listed.status == "active"
+                size = inventory.usage.get(listed.id, listed.size or 0) or 0
+                partition = listed.partition
+                if partition in names:
+                    partition = names[partition]
+                partition = re.sub(r"[^A-Za-z0-9._:-]", "_", partition)[:128]
+                if partition == "Default":
+                    partition = ""
+                proven = not active and listed.start is not None and listed.end is not None
+                buckets.append(
+                    Bucket(
+                        listed.id,
+                        inventory.host,
+                        partition,
+                        "active" if active else "archived",
+                        size,
+                        0 if active else (listed.messages or 0),
+                        None if active else listed.start,
+                        None if active else listed.end,
+                        None,
+                        proven,
+                        not active,
+                        True,
+                        listed.created,
+                    )
+                )
+        nodes = tuple(Node(i.host, i.capacity, i.used, i.available, i.service) for i in inventories)
+        return Cluster(ident, version, nodes, partitions, (), tuple(buckets), identity, True)
+
+    def source_cluster(self) -> Cluster:
+        require(self.source_client is not None, Code.STATE)
+        version = self.source_version()
+        partitions = partition_models(parse_partitions(self.source_client.partitions()))
+        members = self.members or self.source_members()
+        inventories = [self.node_inventory(host) for host in members]
+        self.notes["source_listing_keys"] = sorted({k for i in inventories for k in i.listing_keys})
+        return self._cluster_from_nodes(
+            self.connection.source_host.lower(),
+            version,
+            inventories,
+            partitions,
+            self.source_client.identity,
+        )
+
+    def destination_cluster(self) -> Cluster:
+        require(self.destination_client is not None, Code.STATE)
+        host, _ = self.connection.destination_endpoint
+        version = self.destination_version()
+        try:
+            partitions = partition_models(parse_partitions(self.destination_client.partitions()))
+        except MigrationError:
+            if not self.connection.preview:
+                raise
+            self.notes["destination_partitions_unavailable"] = True
+            partitions = ()
+        if self._destination_ssh_enabled():
+            members = self.destination_members or self._members(
+                host, "destination_ssh", self.connection.destination_ssh_user
+            )
+            inventories = [
+                self.node_inventory(member, "destination_ssh", self.connection.destination_ssh_user)
+                for member in members
+            ]
+            return self._cluster_from_nodes(
+                host.lower(), version, inventories, partitions, self.destination_client.identity
+            )
+        task = self.transfer()
+        names = [n.node for n in task.nodes] or [host.lower()]
+        nodes = tuple(Node(name, None, None, None, "running") for name in names)
+        return Cluster(
+            host.lower(), version, nodes, partitions, (), (), self.destination_client.identity, True
+        )
+
+    # ports.Environment -------------------------------------------------------------------
+
+    @contextmanager
+    def exclusive(self):
+        from ..journal import file_lock
+
+        host, port = self.connection.destination_endpoint
+        directory = config_dir() / "locks"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with file_lock(Path(directory) / f"{host}-{port}.lock"):
+            yield
+
+    def discover(self) -> tuple[Cluster, Cluster]:
+        return self.source_cluster(), self.destination_cluster()
+
+    def history(self) -> tuple[History, ...]:
+        task = self.transfer()
+        if task.status in {"idle", "running", "unknown"} or task.window is None:
+            return ()
+        host, _ = self.connection.destination_endpoint
+        return (
+            History(
+                task.source or self.connection.source_host.lower(),
+                host.lower(),
+                task.window,
+                tuple(n.node for n in task.nodes),
+                task.completed,
+                not task.skipped,
+            ),
+        )
+
+    def _counts(self, client: Logs90, scope: str, window: Window) -> Counts:
+        daily, complete = client.daily_counts(window)
+        return Counts(complete, tuple(sorted(daily.items())), (), scope)
+
+    def count(self, scope: str, window: Window, bucket_keys: tuple[str, ...]) -> Counts:
+        require(self.source_client is not None and self.destination_client is not None, Code.STATE)
+        if scope == "source":
+            return self._counts(self.source_client, scope, window)
+        if scope in {"destination", "baseline"}:
+            return self._counts(self.destination_client, scope, window)
+        if scope == "ingest":
+            return Counts(True, (), (), "ingest")
+        raise MigrationError(Code.SCHEMA)
+
+    def recent_source_events(self, seconds: int = RECENT_SECONDS) -> int | None:
+        """Events the source counted in the last `seconds`; None when the query was partial."""
+        require(self.source_client is not None, Code.STATE)
+        now = int(datetime.now(UTC).timestamp() * 1000)
+        # The server applies the timestamp bounds before binning, so the bin sum is the
+        # count inside the exact window, whatever the bins are aligned to.
+        daily, complete = self.source_client.daily_counts(Window(now - seconds * 1000, now))
+        if not complete:
+            return None
+        return sum(daily.values())
+
+    def test_mover(self) -> None:
+        require(self.destination_client is not None, Code.STATE)
+        self.destination_client.test_migration(
+            self.connection.source_host,
+            self.connection.source_ssh_user,
+            self.credentials.get("source_ssh"),
+        )
+
+    def test_source_credentials(self, node: str) -> None:
+        self._ssh(node, "source_ssh", self.connection.source_ssh_user).read(ReadOperation.SERVICE)
+
+    def _now_ms(self) -> int:
+        return int(datetime.now(UTC).timestamp() * 1000)
+
+    def start(self, window: Window, bucket_keys: tuple[str, ...]) -> Transfer:
+        require(self.destination_client is not None, Code.STATE)
+        host, _ = self.connection.destination_endpoint
+        response = self.destination_client.start_migration(
+            self.connection.source_host,
+            self.connection.source_ssh_user,
+            self.credentials.get("source_ssh"),
+            window,
+        )
+        self.notes["start_response_keys"] = observed_keys(response)
+        task = self.transfer()
+        if task.status == "idle":
+            decoded = decode_task(response, destination=host.lower(), now_ms=self._now_ms())
+            if decoded.status not in {"idle", "unknown"}:
+                return decoded
+            # The POST was accepted but the status route shows nothing yet; report it as
+            # running with the requested window so the operator polls rather than resubmits.
+            return Transfer("", "running", destination=host.lower(), window=window)
+        return task
+
+    def transfer(self) -> Transfer:
+        require(self.destination_client is not None, Code.STATE)
+        host, _ = self.connection.destination_endpoint
+        response = self.destination_client.migration_status()
+        self.notes["status_response_keys"] = observed_keys(response)
+        return decode_task(response, destination=host.lower(), now_ms=self._now_ms())
+
+    def cancel(self) -> None:
+        require(self.destination_client is not None, Code.STATE)
+        self.destination_client.cancel_migration()
+
+    # config.ConfigEnvironment ------------------------------------------------------------
+
+    def _config(self) -> RestConfigEnvironment:
+        require(self.source_client is not None and self.destination_client is not None, Code.STATE)
+        if self.config_env is None:
+            host, _ = self.connection.destination_endpoint
+            self.config_env = RestConfigEnvironment(
+                self.source_client,
+                self.destination_client,
+                self.destination_version(),
+                (host, *self.destination_members),
+            )
+        return self.config_env
+
+    def config_rules(self, scope: str, kind: str) -> list[dict]:
+        return self._config().config_rules(scope, kind)
+
+    def config_write(self, kind: str, rule: dict, existing: dict | None) -> None:
+        self._config().config_write(kind, rule, existing)
+
+
+def secret_free(connection: Connection) -> dict:
+    """Connection settings for display and reports; the dataclass never holds secrets."""
+    return {
+        "source_host": connection.source_host,
+        "destination": connection.destination,
+        "ops_url": connection.ops_url,
+        "source_api_user": connection.source_api_user,
+        "source_ssh_user": connection.source_ssh_user,
+        "destination_api_user": connection.destination_api_user,
+        "destination_ssh_user": connection.destination_ssh_user,
+    }
+
+
+__all__ = [
+    "Connection",
+    "LiveEnvironment",
+    "ListedBucket",
+    "NodeInventory",
+    "Secret",
+    "decode_task",
+    "observed_keys",
+    "parse_listing",
+    "parse_members",
+    "parse_partitions",
+    "parse_space",
+    "parse_usage",
+    "partition_models",
+    "secret_free",
+]

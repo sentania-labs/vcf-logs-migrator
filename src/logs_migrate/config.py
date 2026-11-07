@@ -21,7 +21,6 @@ class ConfigEnvironment(Protocol):
 
     Rules are JSON objects from the API, keyed by their exact, case-sensitive name.
     Adapters must reject ambiguous/malformed inventories, never treat them as empty.
-    The release gate permits simulation only, including recorded REST transports.
     """
 
     mode: str
@@ -134,7 +133,6 @@ class ConfigMigration:
 
     @safe_boundary
     def apply(self, selection):
-        require(self.env.mode == "simulation", Code.UNSUPPORTED)
         require(isinstance(selection, (list, tuple)) and bool(selection), Code.INVALID_INPUT)
         require(all(isinstance(s, str) for s in selection), Code.INVALID_INPUT)
         require(len(set(selection)) == len(selection), Code.INVALID_INPUT)

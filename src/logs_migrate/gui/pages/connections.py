@@ -78,6 +78,9 @@ class ConnectionsPage(Page):
         self.destination_host.setPlaceholderText("vcf-logs.lab.example:9543")
         self.destination_user = QLineEdit(settings.destination_api_user)
         self.destination_password = _secret()
+        self.destination_ssh_user = QLineEdit(settings.destination_ssh_user)
+        self.destination_ssh_user.setPlaceholderText("root (optional)")
+        self.destination_ssh_password = _secret()
         self.ops_url = QLineEdit(settings.ops_url)
         self.ops_url.setPlaceholderText("https://ops.lab.example")
         self.ops_token = _secret()
@@ -86,17 +89,31 @@ class ConnectionsPage(Page):
             field("Destination Logs API user", self.destination_user),
             field("Destination Logs API password", self.destination_password),
         )
+        self.ssh_fields = columns(
+            field("Destination SSH user (optional)", self.destination_ssh_user),
+            field("Destination SSH password", self.destination_ssh_password),
+        )
         self.token_fields = columns(
             field("VCF Operations URL", self.ops_url), field("VCF Operations token", self.ops_token)
         )
         self.token_fields.hide()
         destination_layout.addWidget(self.password_fields)
+        destination_layout.addWidget(self.ssh_fields)
         destination_layout.addWidget(self.token_fields)
+        destination_layout.addWidget(
+            label(
+                "Root SSH to the 9.0 destination is optional: it adds each node's repository "
+                "budget and bucket inventory to the plan. Without it the API's own 95% disk "
+                "stop is the only storage guard.",
+                "hint",
+                wrap=True,
+            )
+        )
         self.destination_badge = badge("Not tested")
         self.destination_button = button("Test destination", "", self.connect)
         destination_layout.addWidget(row(self.destination_button, self.destination_badge))
         self.switch_hint = label(
-            "Test detects 9.1.1 and switches this card to VCF Operations token sign-in.",
+            "Enter a VCF Operations URL in Settings to sign in to 9.1.1 with an Ops token.",
             "hint",
             wrap=True,
         )
@@ -125,6 +142,7 @@ class ConnectionsPage(Page):
 
         self.note.setText("Connection tests are read only.")
         self.disconnect_button = self.add_action("Disconnect", "", self.disconnect)
+        self.selftest_button = self.add_action("Run self-test", "", self.app.run_selftest)
         self.compare_button = self.add_action(
             "Compare configuration", "primary", lambda: self.app.show_page("configuration")
         )
@@ -140,6 +158,8 @@ class ConnectionsPage(Page):
             self.destination_host,
             self.destination_user,
             self.destination_password,
+            self.destination_ssh_user,
+            self.destination_ssh_password,
             self.ops_url,
             self.ops_token,
         ]
@@ -154,6 +174,8 @@ class ConnectionsPage(Page):
             "destination_host": self.destination_host.text(),
             "destination_user": self.destination_user.text(),
             "destination_password": self.destination_password.text(),
+            "destination_ssh_user": self.destination_ssh_user.text(),
+            "destination_ssh_password": self.destination_ssh_password.text(),
             "ops_url": self.ops_url.text(),
             "ops_token": self.ops_token.text(),
         }
@@ -163,6 +185,7 @@ class ConnectionsPage(Page):
             "source_ssh": self.ssh_password.text(),
             "source_api": self.source_password.text(),
             "destination_api": self.destination_password.text(),
+            "destination_ssh": self.destination_ssh_password.text(),
             "ops_token": self.ops_token.text(),
         }
 
@@ -173,12 +196,13 @@ class ConnectionsPage(Page):
         settings.source_api_user = self.source_user.text().strip()
         settings.destination_host = self.destination_host.text().strip()
         settings.destination_api_user = self.destination_user.text().strip()
+        settings.destination_ssh_user = self.destination_ssh_user.text().strip()
         settings.ops_url = self.ops_url.text().strip()
         self.app.save_settings()
 
     def connect(self) -> None:
         self.remember_addresses()
-        missing = vm.missing_fields(self.values(), self.app.state.preview)
+        missing = vm.missing_fields(self.values(), bool(self.ops_url.text().strip()))
         if missing:
             self.validation = "Enter " + ", ".join(missing) + " before testing."
             self.refresh()
@@ -193,6 +217,7 @@ class ConnectionsPage(Page):
             self.ssh_password,
             self.source_password,
             self.destination_password,
+            self.destination_ssh_password,
             self.ops_token,
         ):
             widget.clear()
@@ -223,10 +248,9 @@ class ConnectionsPage(Page):
             self.set_heading("Connections", "Use a member address for each cluster")
         else:
             source, destination = discovered["source"], discovered["destination"]
-            self.source_badge.setText(f"{vm.format_version(source['version'])} · simulator")
-            self.destination_badge.setText(
-                f"{vm.format_version(destination['version'])} · simulator"
-            )
+            mode = "live" if state.live else "simulator"
+            self.source_badge.setText(f"{vm.format_version(source['version'])} · {mode}")
+            self.destination_badge.setText(f"{vm.format_version(destination['version'])} · {mode}")
             for widget in (self.source_badge, self.destination_badge):
                 set_status(widget, "ok")
             self.set_heading(
@@ -237,16 +261,27 @@ class ConnectionsPage(Page):
                 if not state.preview
                 else "Same connection step; version selects the authentication method",
             )
+        token = state.preview or bool(self.ops_url.text().strip())
         self.preview.setVisible(state.preview)
         self.before_import.setVisible(state.preview)
-        self.token_fields.setVisible(state.preview)
-        self.password_fields.setVisible(not state.preview)
-        self.switch_hint.setVisible(not state.preview)
-        self.destination_button.setText(
-            "Exchange token and test" if state.preview else "Test destination"
+        self.token_fields.setVisible(token)
+        self.password_fields.setVisible(not token)
+        self.ssh_fields.setVisible(not token)
+        self.switch_hint.setVisible(not token)
+        self.destination_button.setText("Exchange token and test" if token else "Test destination")
+        rows = vm.connection_checks(
+            discovered, discovered.get("compatible") if discovered else None, state.mode
         )
-        self.checks.set_rows(
-            vm.connection_checks(discovered, discovered.get("compatible") if discovered else None)
-        )
+        if state.checks:
+            rows = state.checks + rows[1:]
+        if state.selftest:
+            rows = vm.selftest_rows(state.selftest) + rows
+        elif state.selftest_error:
+            rows = [("Self-test", "Failed · " + vm.describe_error(state.selftest_error))] + rows
+        self.checks.set_rows(rows)
         self.disconnect_button.setEnabled(state.connected)
+        self.selftest_button.setVisible(state.live)
+        self.selftest_button.setEnabled(
+            state.connected and state.live and "selftest" not in self.app.worker.pending
+        )
         self.compare_button.setEnabled(state.connected)

@@ -24,7 +24,7 @@ class SettingsPage(Page):
         super().__init__("Settings")
         self.app = app
         self.subtitle.setText(
-            "Display, polling, verification limits, local report destination and simulator"
+            "Display, polling, verification limits, local report destination and mode"
         )
         self.hints: dict[str, object] = {}
         display, display_layout = card("Display")
@@ -75,12 +75,12 @@ class SettingsPage(Page):
             )
         )
         self.body.addWidget(reports)
-        simulator, simulator_layout = card("Simulator and journal")
+        simulator, simulator_layout = card("Appliances or simulator, and journal")
         self.fixture = QLineEdit()
-        self.fixture.setPlaceholderText("tests/fixtures/sealed-populated.fixture")
+        self.fixture.setPlaceholderText("Empty: connect to real appliances from Connections")
         self.journal = QLineEdit()
         simulator_layout.addWidget(
-            field("Simulator fixture file", self.fixture, self._hint("fixture"))
+            field("Simulator fixture file (optional)", self.fixture, self._hint("fixture"))
         )
         simulator_layout.addWidget(row(button("Choose fixture…", "", self.choose_fixture)))
         simulator_layout.addWidget(
@@ -89,8 +89,8 @@ class SettingsPage(Page):
         simulator_layout.addWidget(row(button("Choose journal…", "", self.choose_journal)))
         simulator_layout.addWidget(
             label(
-                "This build runs the deterministic simulator only; "
-                "live appliance connections are not qualified. "
+                "Leave the fixture empty to connect to real appliances; set one to drive the "
+                "deterministic simulator for demos. "
                 "The journal keeps plans, sent groups and count evidence, never credentials. "
                 "Changing the fixture or journal while connected disconnects the session; "
                 "reconnect from Connections.",
@@ -187,6 +187,7 @@ class SettingsPage(Page):
             source_api_user=current.source_api_user,
             destination_host=current.destination_host,
             destination_api_user=current.destination_api_user,
+            destination_ssh_user=current.destination_ssh_user,
             ops_url=current.ops_url,
         )
         self.app.apply_settings(updated)

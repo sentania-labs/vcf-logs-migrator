@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from uuid import UUID
@@ -14,7 +15,18 @@ from .journal import Journal
 from .models import Verification, Window, parse_time
 from .planning import BACKUP_ACK
 from .reporting import markdown, report_data
-from .security import harden_process
+from .security import ENVIRONMENT, Credentials, harden_process
+from .trust import TrustRequired, TrustStore
+
+CONNECTION_ENVIRONMENT = {
+    "source": "LOGS_SOURCE",
+    "destination": "LOGS_DESTINATION",
+    "ops_url": "LOGS_OPS_URL",
+    "source_api_user": "LOGS_SOURCE_API_USER",
+    "source_ssh_user": "LOGS_SOURCE_SSH_USER",
+    "destination_api_user": "LOGS_DESTINATION_API_USER",
+    "destination_ssh_user": "LOGS_DESTINATION_SSH_USER",
+}
 
 
 class Parser(argparse.ArgumentParser):
@@ -34,16 +46,53 @@ def uuid_arg(value):
     raise argparse.ArgumentTypeError("invalid run id")
 
 
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(CONNECTION_ENVIRONMENT[name], default)
+
+
 def parser():
-    p = Parser(prog="logs-migrate", description="Migration API wrapper (fixture delivery)")
+    p = Parser(prog="logs-migrate", description="Migration API wrapper for 8.18 to 9.x")
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument(
         "--journal", type=Path, help="Private plans, sent-bucket ledger and count evidence"
     )
-    p.add_argument("--fixture", type=Path, help="Synthetic appliance fixture")
-    p.add_argument(
+    simulator = p.add_argument_group("simulator (CI and demos)")
+    simulator.add_argument("--fixture", type=Path, help="Synthetic appliance fixture")
+    simulator.add_argument(
         "--remote-state", type=Path, help="Persisted simulated appliance; independent of journal"
     )
+    live = p.add_argument_group(
+        "live appliances",
+        "Secrets come from the environment ("
+        + ", ".join(ENVIRONMENT.values())
+        + "), a --credentials file (mode 600, JSON keyed "
+        + ", ".join(ENVIRONMENT)
+        + ") or a prompt. Addresses may also come from "
+        + ", ".join(CONNECTION_ENVIRONMENT.values())
+        + ".",
+    )
+    live.add_argument("--source", default=_env("source"), help="Any 8.18 cluster member")
+    live.add_argument(
+        "--destination", default=_env("destination"), help="9.x Logs host[:port], default 9543"
+    )
+    live.add_argument(
+        "--ops-url", default=_env("ops_url"), help="VCF Operations URL; selects 9.1.1 token sign-in"
+    )
+    live.add_argument("--source-api-user", default=_env("source_api_user", "admin"))
+    live.add_argument("--source-ssh-user", default=_env("source_ssh_user", "root"))
+    live.add_argument("--destination-api-user", default=_env("destination_api_user", "admin"))
+    live.add_argument(
+        "--destination-ssh-user",
+        default=_env("destination_ssh_user"),
+        help="Optional 9.0 root SSH for node budgets and bucket inventory",
+    )
+    live.add_argument("--credentials", type=Path, help="JSON file, mode 600; never argv")
+    live.add_argument(
+        "--trust-new",
+        action="store_true",
+        help="Enroll unknown TLS certificates and SSH host keys after printing them",
+    )
+    live.add_argument("--timeout", type=float, default=60.0, help="Seconds per request")
     sub = p.add_subparsers(dest="command", required=True)
     config = sub.add_parser("config", help="Compare/apply selected configuration rules")
     config_sub = config.add_subparsers(dest="config_command", required=True)
@@ -64,6 +113,18 @@ def parser():
     sub.add_parser("discover")
     sub.add_parser("partitions", help="Compare partitions (and extracted fields on 9.1.1)")
     sub.add_parser("status", help="Read current task and per-node progress directly from the API")
+    selftest = sub.add_parser(
+        "selftest", help="Read-only checks against real hosts with a pass/fail summary"
+    )
+    selftest.add_argument("--since", help="Plan preview start, ISO 8601 with timezone")
+    selftest.add_argument("--until", help="Plan preview exclusive end, ISO 8601 with timezone")
+    selftest.add_argument("--json", action="store_true", help="Machine-readable result")
+    trust = sub.add_parser("trust", help="List or forget enrolled appliance identities")
+    trust_sub = trust.add_subparsers(dest="trust_command", required=True)
+    trust_sub.add_parser("list")
+    forget = trust_sub.add_parser("forget")
+    forget.add_argument("kind", choices=("tls", "ssh"))
+    forget.add_argument("name", help="host:port as listed")
     plan = sub.add_parser("plan", help="Preview whole sealed buckets selected by date")
     plan.add_argument("--since", required=True, help="ISO 8601 with timezone")
     plan.add_argument("--until", required=True, help="Exclusive end, ISO 8601 with timezone")
@@ -94,6 +155,61 @@ EXIT_CODES = {
 }
 
 
+def _accept(identity, trust_new: bool) -> bool:
+    print("Unknown appliance identity: " + identity.display, file=sys.stderr)
+    if trust_new:
+        print("Enrolled (--trust-new).", file=sys.stderr)
+        return True
+    if not sys.stdin.isatty():
+        return False
+    answer = input("Trust this identity and remember it? [y/N] ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def open_live(args):
+    """Build the live environment; enroll identities the operator accepts."""
+    from .adapters.live import Connection, LiveEnvironment
+
+    require(bool(args.source.strip()) and bool(args.destination.strip()), Code.INVALID_INPUT)
+    connection = Connection(
+        source_host=args.source.strip(),
+        destination=args.destination.strip(),
+        source_api_user=args.source_api_user,
+        source_ssh_user=args.source_ssh_user,
+        destination_api_user=args.destination_api_user,
+        destination_ssh_user=args.destination_ssh_user or "",
+        ops_url=args.ops_url or "",
+        timeout=args.timeout,
+    )
+    credentials = (
+        Credentials.from_file(args.credentials, interactive=sys.stdin.isatty())
+        if args.credentials
+        else Credentials(interactive=True)
+    )
+    trust = TrustStore()
+    env = LiveEnvironment(connection, credentials, trust)
+    for _ in range(4):
+        try:
+            return env.open()
+        except TrustRequired as pending:
+            refused = [i for i in pending.identities if not _accept(i, args.trust_new)]
+            if refused:
+                print(
+                    json.dumps(
+                        {
+                            "error": Code.AUTH.value,
+                            "untrusted": [i.display for i in refused],
+                            "hint": "Rerun with --trust-new or answer the prompt on a terminal.",
+                        }
+                    ),
+                    file=sys.stderr,
+                )
+                raise MigrationError(Code.AUTH) from None
+            for identity in pending.identities:
+                trust.trust(identity, env.key_line(identity))
+    raise MigrationError(Code.AUTH)
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     journal = None
@@ -105,6 +221,15 @@ def main(argv=None):
             return run(
                 fixture=args.gui_fixture or args.fixture, journal=args.gui_journal or args.journal
             )
+        if args.command == "trust":
+            store = TrustStore()
+            if args.trust_command == "list":
+                print(
+                    json.dumps([{"kind": k, "name": n, "sha256": d} for k, n, d in store.entries()])
+                )
+                return 0
+            print(json.dumps({"forgotten": store.forget(args.kind, args.name)}))
+            return 0
         if args.command in {"plan", "copy", "verify", "report"}:
             require(args.journal is not None, Code.INVALID_INPUT)
             journal = Journal(args.journal)
@@ -117,13 +242,32 @@ def main(argv=None):
             else:
                 print(json.dumps(report_data(run, events), sort_keys=True))
             return 0
-        require(args.fixture is not None, Code.UNSUPPORTED)
-        remote = args.remote_state or (
-            args.journal.with_suffix(".simulated-state") if args.journal else None
-        )
-        require(remote is not None, Code.INVALID_INPUT)
-        env = SimulatedEnvironment.from_file(args.fixture, remote)
-        engine = Engine(env, journal, SimulatedClock())
+        live = bool(args.source.strip() or args.destination.strip())
+        require(args.fixture is not None or live, Code.INVALID_INPUT)
+        if args.fixture is not None:
+            require(args.command != "selftest", Code.INVALID_INPUT)
+            remote = args.remote_state or (
+                args.journal.with_suffix(".simulated-state") if args.journal else None
+            )
+            require(remote is not None, Code.INVALID_INPUT)
+            env = SimulatedEnvironment.from_file(args.fixture, remote)
+            engine = Engine(env, journal, SimulatedClock())
+        else:
+            env = open_live(args)
+            engine = Engine(env, journal)
+        if args.command == "selftest":
+            from . import selftest
+
+            window = None
+            if args.since or args.until:
+                require(bool(args.since and args.until), Code.INVALID_INPUT)
+                window = Window(parse_time(args.since), parse_time(args.until))
+            result = selftest.run(env, window)
+            if args.json:
+                print(json.dumps(result.data(), sort_keys=True))
+            else:
+                sys.stdout.write(result.text())
+            return 0 if result.passed else 1
         if args.command == "config":
             result = (
                 engine.config_compare()

@@ -33,6 +33,14 @@ class AppState:
     runs: list[dict] = field(default_factory=list)
     exported: list[str] = field(default_factory=list)
     export_error: str | None = None
+    mode: str = "simulation"
+    checks: list[tuple[str, str]] = field(default_factory=list)
+    selftest: dict | None = None
+    selftest_error: str | None = None
+
+    @property
+    def live(self) -> bool:
+        return self.mode == "live"
 
     @property
     def preview(self) -> bool:
@@ -75,3 +83,6 @@ class AppState:
         self.runs = []
         self.exported = []
         self.export_error = None
+        self.checks = []
+        self.selftest = None
+        self.selftest_error = None

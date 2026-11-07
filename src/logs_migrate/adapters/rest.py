@@ -1,7 +1,8 @@
-"""Known wire operations only; unknown vendor response shapes require a qualified codec.
+"""Logs REST clients for 8.18, 9.0 and 9.1.1 with an explicit route allowlist.
 
-The repository documents request bodies, but does not include raw task/9.1 query
-responses. Do not mistake the normalized simulator schema for those wire schemas.
+Request bodies follow docs/validation-2026-11-06-official-api.md and docs/config-migration.md.
+Response decoding is lenient where no raw capture exists (task status, token exchange); the
+`selftest` command prints the key names it saw so a decoder can be tightened from evidence.
 """
 
 from __future__ import annotations
@@ -10,14 +11,21 @@ import hashlib
 import http.client
 import json
 import re
+import socket
 import ssl
 import urllib.parse
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Protocol
 
 from ..errors import Code, MigrationError, require, safe_boundary
-from ..models import Window
+from ..models import DAY, Window
 from ..security import Secret
+
+MAX_BODY = 16 * 1024 * 1024
+COUNT_CHUNK_DAYS = 30  # One aggregated-events query returns at most 100 bins (newest first).
+VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
+JWT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$")
 
 
 class Transport(Protocol):
@@ -30,7 +38,42 @@ class Transport(Protocol):
     ) -> dict | list: ...
 
 
+def peer_certificate_sha256(host: str, port: int, timeout: float = 15) -> str:
+    """Read the presented leaf certificate's digest without trusting it. No request is sent."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                return hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
+    except Exception:
+        raise MigrationError(Code.CONNECTION) from None
+
+
+def split_endpoint(value: str, default_port: int) -> tuple[str, int]:
+    """`host`, `host:port` or `https://host:port` to a host and port pair."""
+    text = value.strip()
+    if "://" in text:
+        parsed = urllib.parse.urlsplit(text)
+        require(parsed.scheme == "https" and parsed.hostname is not None, Code.INVALID_INPUT)
+        require(parsed.username is None and parsed.password is None, Code.INVALID_INPUT)
+        return parsed.hostname, parsed.port or default_port
+    parsed = urllib.parse.urlsplit("https://" + text)
+    require(
+        parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query,
+        Code.INVALID_INPUT,
+    )
+    return parsed.hostname, parsed.port or default_port
+
+
 class HTTPS:
+    """JSON over TLS. The enrolled certificate digest is checked before any request is sent."""
+
     def __init__(
         self,
         base_url: str,
@@ -56,9 +99,19 @@ class HTTPS:
         self.pin = certificate_sha256
         self.timeout = timeout
         try:
-            self.context = ssl.create_default_context(cafile=ca_file)
+            if ca_file is not None:
+                self.context = ssl.create_default_context(cafile=ca_file)
+            else:
+                # Appliances ship self-signed certificates; the enrolled digest is the identity.
+                self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                self.context.check_hostname = False
+                self.context.verify_mode = ssl.CERT_NONE
         except Exception:
             raise MigrationError(Code.CONNECTION) from None
+
+    @property
+    def identity(self) -> str:
+        return self.pin
 
     def request(self, method, path, body=None, headers=None):
         require(
@@ -72,7 +125,7 @@ class HTTPS:
             self.host, self.port, timeout=self.timeout, context=self.context
         )
         try:
-            # Handshake and BOTH CA/hostname and enrolled certificate checks before credentials.
+            # Handshake and enrolled certificate check before any credential leaves the client.
             connection.connect()
             require(
                 hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
@@ -88,8 +141,8 @@ class HTTPS:
             response = connection.getresponse()
             require(response.status not in {401, 403}, Code.AUTH)
             require(200 <= response.status < 300, Code.CONNECTION)  # No credential redirects.
-            raw = response.read(16 * 1024 * 1024 + 1)
-            require(len(raw) <= 16 * 1024 * 1024, Code.SCHEMA)
+            raw = response.read(MAX_BODY + 1)
+            require(len(raw) <= MAX_BODY, Code.SCHEMA)
             if not raw:
                 return {}
             parsed = json.loads(raw)
@@ -103,12 +156,78 @@ class HTTPS:
             connection.close()
 
 
+CONFIG_PATHS = {
+    "/api/v1/" + name for name in ("partitioning", "log-filter", "log-mask", "log-forwarder")
+}
+# Every route the wrapper may call. Nothing else reaches the wire, whatever the caller asks.
+ROUTES = {
+    ("GET", "/api/v1/version"),
+    ("POST", "/api/v1/sessions"),
+    ("POST", "/api/v2/data-migrations/test"),
+    ("POST", "/api/v2/data-migrations"),
+    ("GET", "/api/v2/data-migrations"),
+    ("DELETE", "/api/v2/data-migrations"),
+    ("POST", "/api/v1/log-forwarder/batch"),
+} | {(method, path) for path in CONFIG_PATHS for method in ("GET", "POST")}
+
+
+def allowed(method: str, path: str) -> bool:
+    if (method, path) in ROUTES:
+        return True
+    if method == "GET" and path.startswith("/api/v1/aggregated-events/timestamp/"):
+        return True
+    if method == "PUT":
+        for base in CONFIG_PATHS:
+            rest = path[len(base) + 1 :] if path.startswith(base + "/") else ""
+            if rest and "/" not in rest and "?" not in rest and "#" not in rest:
+                return True
+    return False
+
+
+def parse_version(response) -> str:
+    """`{"version": "8.18.7-25423541", ...}` to `8.18.7`; any string field holding a version."""
+    require(isinstance(response, dict), Code.SCHEMA)
+    for key in ("version", "releaseVersion", "productVersion"):
+        value = response.get(key)
+        if isinstance(value, str):
+            match = VERSION_PATTERN.search(value)
+            if match:
+                return match.group(0)
+    for value in response.values():
+        if isinstance(value, str):
+            match = VERSION_PATTERN.search(value)
+            if match:
+                return match.group(0)
+    raise MigrationError(Code.SCHEMA)
+
+
+def decode_token_exchange(response) -> str:
+    """The Ops exchange body is not captured in the repository; accept a `token` field or the
+    single JWT-shaped string in the body. Anything else is an unrecognized schema."""
+    require(isinstance(response, dict), Code.SCHEMA)
+    for key in ("token", "jwt", "accessToken", "access_token"):
+        value = response.get(key)
+        if isinstance(value, str) and value:
+            return value
+    candidates = [
+        v for v in response.values() if isinstance(v, str) and JWT_PATTERN.fullmatch(v.strip())
+    ]
+    require(len(candidates) == 1, Code.SCHEMA)
+    return candidates[0].strip()
+
+
 class Logs90:
+    """Logs session (Bearer) client; serves 8.18 sources and 9.0 destinations."""
+
     def __init__(self, transport: Transport, username: str, password: Secret):
         self.transport = transport
         self.username = username
         self.password = password
         self.token: Secret | None = None
+
+    @property
+    def identity(self) -> str:
+        return getattr(self.transport, "identity", "")
 
     @safe_boundary
     def authenticate(self):
@@ -128,60 +247,22 @@ class Logs90:
         return {"Authorization": "Bearer " + self.token.reveal()}
 
     def call(self, method, path, body=None):
-        allowed = {
-            ("POST", "/api/v2/data-migrations/test"),
-            ("POST", "/api/v2/data-migrations"),
-            ("GET", "/api/v2/data-migrations"),
-            ("DELETE", "/api/v2/data-migrations"),
-            ("GET", "/api/v1/partitioning"),
-            ("POST", "/api/v1/partitioning"),
-        }
-        config_paths = {
-            "/api/v1/" + name
-            for name in ("partitioning", "log-filter", "log-mask", "log-forwarder")
-        }
-        config_call = (
-            (method in {"GET", "POST"} and path in config_paths)
-            or (method == "POST" and path == "/api/v1/log-forwarder/batch")
-            or (
-                method == "PUT"
-                and any(
-                    path.startswith(base + "/")
-                    and bool(path[len(base) + 1 :])
-                    and "/" not in path[len(base) + 1 :]
-                    and "?" not in path
-                    and "#" not in path
-                    for base in config_paths
-                )
-            )
-        )
-        config_only = config_call and (method, path) not in allowed
-        require(
-            (method, path) in allowed
-            or config_call
-            or (method == "GET" and path.startswith("/api/v1/aggregated-events/timestamp/")),
-            Code.UNSUPPORTED,
-        )
-        if method != "GET" or config_only:
-            require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
-        if config_only:
-            require(
-                isinstance(getattr(self, "ops_transport", self.transport), RecordedTransport),
-                Code.UNSUPPORTED,
-            )
+        require(allowed(method, path), Code.UNSUPPORTED)
         try:
             return self.transport.request(method, path, body, self.headers())
         except MigrationError as error:
             if error.code == Code.AUTH and method == "GET":
                 self.token = None
                 return self.transport.request(method, path, body, self.headers())
-            # Never replay a POST or DELETE after an uncertain response.
+            # Never replay a POST, PUT or DELETE after an uncertain response.
             raise
         except Exception:
             raise MigrationError(Code.CONNECTION) from None
 
+    def version(self) -> str:
+        return parse_version(self.call("GET", "/api/v1/version"))
+
     def test_migration(self, host: str, username: str, password: Secret):
-        require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
         return self.call(
             "POST",
             "/api/v2/data-migrations/test",
@@ -189,7 +270,6 @@ class Logs90:
         )
 
     def start_migration(self, host: str, username: str, password: Secret, window: Window):
-        require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
         return self.call(
             "POST",
             "/api/v2/data-migrations",
@@ -206,37 +286,33 @@ class Logs90:
         return self.call("GET", "/api/v2/data-migrations")
 
     def cancel_migration(self):
-        require(isinstance(self.transport, RecordedTransport), Code.UNSUPPORTED)
         return self.call("DELETE", "/api/v2/data-migrations")
 
     def partitions(self):
         return self.call("GET", "/api/v1/partitioning")
 
-    def daily_counts(self, window: Window) -> dict[str, int]:
-        """One frozen daily interval per request: avoids the legacy 100-bin response cap.
+    def daily_counts(self, window: Window) -> tuple[dict[str, int], bool]:
+        """Per-UTC-day counts over the window, in 30-day queries with 1-day bins.
 
-        These are count evidence only. Exact cohort/multiset verification requires a
-        separate qualified query adapter; counts alone cannot detect compensated loss.
+        Returns the counts and whether every response was `complete`. Partial responses
+        (right after a service start, or on a busy node) are evidence of nothing.
         """
-        from datetime import UTC, datetime
-
-        from ..models import DAY
-
-        daily = {}
+        daily: dict[str, int] = {}
+        complete = True
         cursor = window.start
         while cursor < window.end:
-            end = min((cursor // DAY + 1) * DAY, window.end)
+            end = min(cursor + COUNT_CHUNK_DAYS * DAY, window.end)
             path = (
                 f"/api/v1/aggregated-events/timestamp/%3E%3D{cursor}/timestamp/%3C{end}"
                 f"?bin-width={DAY}&timeout=580000"
             )
             response = self.call("GET", path)
-            require(
-                isinstance(response, dict) and response.get("complete") is True, Code.INCOMPLETE
-            )
-            bins = response.get("bins")
-            require(isinstance(bins, list) and len(bins) <= 1, Code.SCHEMA)
-            count = 0
+            require(isinstance(response, dict), Code.SCHEMA)
+            if response.get("complete") is not True:
+                complete = False
+            bins = response.get("bins", [])
+            require(isinstance(bins, list) and len(bins) <= 100, Code.SCHEMA)
+            seen: set[int] = set()
             for row in bins:
                 require(
                     isinstance(row, dict)
@@ -246,28 +322,36 @@ class Logs90:
                     Code.SCHEMA,
                 )
                 require(cursor // DAY * DAY <= row["minTimestamp"] < end, Code.SCHEMA)
-                count += row["value"]
-            day = datetime.fromtimestamp(cursor / 1000, UTC).date().isoformat()
-            daily[day] = count
+                require(row["minTimestamp"] not in seen, Code.SCHEMA)
+                seen.add(row["minTimestamp"])
+                day = datetime.fromtimestamp(row["minTimestamp"] / 1000, UTC).date().isoformat()
+                daily[day] = daily.get(day, 0) + row["value"]
+            day_cursor = cursor
+            while day_cursor < end:
+                day = datetime.fromtimestamp(day_cursor / 1000, UTC).date().isoformat()
+                daily.setdefault(day, 0)
+                day_cursor = (day_cursor // DAY + 1) * DAY
             cursor = end
-        return daily
+        return dict(sorted(daily.items())), complete
 
 
 class Logs911(Logs90):
-    """OpsToken exchange plus X-JWT-Token. Response decoding is evidence-versioned."""
+    """OpsToken exchange plus X-JWT-Token to the Logs FQDN on 9543 (9.1.1 preview)."""
 
     def __init__(
         self,
         logs_transport: Transport,
         ops_transport: Transport,
         ops_token: Secret,
-        decode_exchange: Callable[[dict | list], str],
+        decode_exchange: Callable[[dict | list], str] | None = None,
     ):
         self.transport = logs_transport
         self.ops_transport = ops_transport
         self.ops_token = ops_token
-        self.decode_exchange = decode_exchange
+        self.decode_exchange = decode_exchange or decode_token_exchange
         self.token = None
+        self.username = ""
+        self.password = None
 
     def authenticate(self):
         try:
@@ -288,13 +372,16 @@ class Logs911(Logs90):
             self.authenticate()
         return {"X-JWT-Token": self.token.reveal()}
 
-    def daily_counts(self, window: Window) -> dict[str, int]:
-        # 9.1 is an OpenSearch-backed engine. The 9.0 query route must not be reused.
+    def daily_counts(self, window: Window) -> tuple[dict[str, int], bool]:
+        # 9.1 is an OpenSearch-backed engine; its query route is not qualified in this
+        # repository, so counts there are reported as unavailable rather than guessed.
         raise MigrationError(Code.UNSUPPORTED)
 
 
 class RecordedTransport:
     """Replay sanitized wire captures. Never records live request bodies or authentication."""
+
+    identity = "recorded"
 
     def __init__(self, records: list[dict]):
         self.records = list(records)

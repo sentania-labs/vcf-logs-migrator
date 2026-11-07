@@ -24,8 +24,8 @@ PRESETS = (
 ERROR_TEXT = {
     Code.INVALID_INPUT: "The request was rejected as invalid input.",
     Code.UNSUPPORTED: (
-        "Live appliance connections are not qualified in this build. "
-        "Choose a simulator fixture in Settings to run the migration workflow."
+        "The appliance does not support this operation on this version "
+        "(for example counts on 9.1.1)."
     ),
     Code.INVENTORY_CHANGED: "The appliance inventory changed since the preview. Refresh it.",
     Code.CAPACITY: "A destination node cannot hold the selected history.",
@@ -244,7 +244,9 @@ def cluster_summary(cluster: dict) -> str:
     )
 
 
-def connection_checks(discovered: dict | None, compatible: str | None) -> list[tuple[str, str]]:
+def connection_checks(
+    discovered: dict | None, compatible: str | None, mode: str = "simulation"
+) -> list[tuple[str, str]]:
     if discovered is None:
         return [
             ("Source and destination API inventory", "Not tested"),
@@ -258,7 +260,12 @@ def connection_checks(discovered: dict | None, compatible: str | None) -> list[t
             "Source and destination API inventory",
             f"Passed · {cluster_summary(source)} → {cluster_summary(destination)}",
         ),
-        ("Appliance addresses", "Not contacted; this build reads the simulator fixture"),
+        (
+            "Appliance addresses",
+            "Contacted over TLS and SSH with enrolled identities"
+            if mode == "live"
+            else "Not contacted; this session reads the simulator fixture",
+        ),
         (
             "Version compatibility",
             "Passed" if compatible is None else "Failed · " + describe_error(compatible),
@@ -266,6 +273,28 @@ def connection_checks(discovered: dict | None, compatible: str | None) -> list[t
         ("Destination → every source node on SSH", "Checked when the transfer starts"),
         ("Credentials", "Session memory only; excluded from reports"),
     ]
+
+
+def selftest_rows(result: dict) -> list[tuple[str, str]]:
+    """Self-test steps as check rows: `PASS · detail`."""
+    rows = []
+    for step in result.get("steps", []):
+        label = {"pass": "Passed", "fail": "Failed", "skip": "Skipped"}.get(
+            step["status"], step["status"]
+        )
+        detail = step.get("detail", "")
+        if step["status"] == "fail" and detail:
+            detail = describe_error(detail)
+        rows.append((step["name"], label + (" · " + detail if detail else "")))
+    summary = result.get("summary", {})
+    rows.append(
+        (
+            "Self-test",
+            f"{summary.get('pass', 0)} passed, {summary.get('fail', 0)} failed, "
+            f"{summary.get('skip', 0)} skipped · read only",
+        )
+    )
+    return rows
 
 
 # Plan -------------------------------------------------------------------------------------
@@ -355,10 +384,15 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
                 "Present" if not diff["missing_fields"] else ", ".join(diff["missing_fields"]),
             )
         )
+    unknown = capacity.get("unknown", [])
     checks.append(
         (
             "Storage",
-            "Every node fits" if capacity["fits"] else "A node cannot hold the selection",
+            "A node cannot hold the selection"
+            if not capacity["fits"]
+            else "Budget not observed; the API stops at 95% disk"
+            if unknown
+            else "Every node fits",
         )
     )
     checks.append(
@@ -369,13 +403,30 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
             else "No open groups",
         )
     )
+    ingest = plan.get("source_ingest")
+    if ingest is not None:
+        recent = ingest.get("events")
+        hours = ingest.get("window_seconds", 86400) // 3600
+        checks.append(
+            (
+                "Source ingest",
+                UNAVAILABLE
+                if recent is None
+                else f"{format_count(recent)} events in the last {hours} h"
+                + ("; source still receiving" if recent else "; source quiet"),
+            )
+        )
     required = capacity["required_bytes"]
     storage = [
         (
             n["id"],
             format_bytes(n["available_bytes"]),
             format_bytes(required),
-            format_bytes(n["available_bytes"] - required) if n["fits"] else "Short",
+            "Unknown"
+            if n["fits"] is None
+            else format_bytes(n["available_bytes"] - required)
+            if n["fits"]
+            else "Short",
         )
         for n in capacity["nodes"]
     ]
@@ -732,6 +783,9 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
             current.append(row)
             continue
         flush()
+        difference = f"{row['difference']:+,}".replace("-", "−")
+        if row.get("partial"):
+            difference += " · partial day"
         keyed.append(
             (
                 row["day"],
@@ -739,7 +793,7 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
                     format_day_label(row["day"]),
                     format_count(row["expected"]),
                     format_count(row["actual"]),
-                    f"{row['difference']:+,}".replace("-", "−"),
+                    difference,
                 ),
             )
         )
@@ -816,16 +870,27 @@ def verification_view(
             "for the appliance administrator.",
         )
     elif outcome == "verified_success":
+        partial = result.get("partial_days", [])
         banner = (
-            "warn" if active_count else "ok",
+            "warn" if active_count or partial else "ok",
             "Included history verified",
-            "Complete repeated daily counts match. "
-            "Open groups were excluded; requested coverage is not complete."
-            if active_count
-            else "Complete repeated daily counts match.",
+            "Complete repeated daily counts match on every fully covered day. "
+            + (
+                f"{len(partial)} partial day{'s' if len(partial) != 1 else ''} shared with open "
+                "or unselected groups "
+                + ("differ as expected. " if result.get("partial_differences") else "match too. ")
+                if partial
+                else ""
+            )
+            + (
+                "Open groups were excluded; requested coverage is not complete."
+                if active_count
+                else ""
+            ),
         )
     elif outcome == "verified_discrepancy":
-        differing = [d for d in result["daily"] if d["difference"] != 0]
+        differing = [d for d in result["daily"] if d["difference"] != 0 and not d.get("partial")]
+        differing = differing or [d for d in result["daily"] if d["difference"] != 0]
         first = differing[0]
         banner = (
             "bad",
@@ -1290,6 +1355,8 @@ def missing_fields(values: dict[str, str], preview: bool) -> list[str]:
             ("destination_user", "Destination Logs API user"),
             ("destination_password", "Destination Logs API password"),
         ]
+        if (values.get("destination_ssh_user") or "").strip():
+            required.append(("destination_ssh_password", "Destination SSH password"))
     return [label for key, label in required if not (values.get(key) or "").strip()]
 
 

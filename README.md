@@ -4,10 +4,11 @@ A shared Python engine and automation CLI for historical log migration from
 **Aria Operations for Logs 8.18.x** to **VCF Operations for Logs 9.0.x** and
 **9.1.1 preview**, including history older than 90 days.
 
-**Current delivery: engine, CLI and desktop GUI with deterministic fixtures. Real
-appliance mutation is disabled pending safety and lab qualification.** Standalone
-downloads for Windows, macOS and Linux need no Python install. This project is not
-supported by Broadcom.
+The engine, CLI and desktop GUI run against real appliances (Logs REST on 9543,
+root SSH to the 8.18 members, the 9.0 data-migrations API, the 9.1.1 Ops token
+exchange) and against a built-in simulator for CI and demos. Start with
+[Testing against a lab](docs/testing-against-a-lab.md). Standalone downloads for Windows, macOS and
+Linux need no Python install ([Download](#download)). This project is not supported by Broadcom.
 
 The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
 sealed buckets by date, starts the transfer once, reads status directly from the
@@ -83,10 +84,20 @@ a rerun. To build locally: `python -m pip install -r packaging/requirements.txt 
 then `python packaging/build.py build <platform>`, `python packaging/build.py package
 <platform>` and `python packaging/smoke.py dist/<archive>` (unsigned).
 
-## Try the fixture CLI
+## Try it
+
+Against a lab (read-only until `copy`):
 
 ```sh
-python -m pip install .
+python -m pip install '.[ssh]'
+export LOGS_SOURCE=aria-logs-1.lab.example LOGS_DESTINATION=vcf-logs.lab.example
+export LOGS_SOURCE_API_PASSWORD=... LOGS_SOURCE_SSH_PASSWORD=... LOGS_DESTINATION_API_PASSWORD=...
+logs-migrate --trust-new selftest
+```
+
+Against the simulator:
+
+```sh
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture discover
 logs-migrate --journal /private/migration/run.sqlite \
@@ -111,9 +122,13 @@ Configuration migration supports forwarding, partition, masking and filter rules
 through `config compare` and `config apply --select TYPE:NAME`. Only explicitly
 selected rules are created or updated; nothing is deleted, and source rules stay
 untouched. New partitions report a destination restart for normal maintenance.
-Configuration execution remains fixture-only, with the same live release gate.
 Existing fixup code is retained privately and **set aside**, unavailable from the
 engine/CLI, pending migration qualification.
+
+Appliance identities (TLS certificates, SSH host keys) are trusted on first use with
+an explicit prompt or dialog and remembered under the user's config directory.
+Credentials come from the GUI, environment variables, a private file or a prompt;
+never from command arguments, logs or reports.
 
 ## Desktop GUI
 
@@ -133,8 +148,8 @@ logs-migrate gui --fixture tests/fixtures/sealed-populated.fixture \
   --journal /private/migration/run.sqlite
 ```
 
-This build connects to the deterministic simulator only; live appliance connections
-remain behind the same release gate as the CLI. `python tests/gui_screenshots.py
+Leave the fixture path empty in Settings to connect to real appliances from the
+Connections page; set one to drive the simulator. `python tests/gui_screenshots.py
 --output DIR` renders every workspace state offscreen for review
 (`QT_QPA_PLATFORM=offscreen`).
 
@@ -152,12 +167,14 @@ make smoke
 GUI tests use Qt's offscreen platform and skip when PySide6 is absent.
 
 `make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
-contracts, and simulated failures. `make smoke` drives the installed `logs-migrate`
+contracts (including the live adapter's listing, status and token-exchange codecs),
+and simulated failures. `make smoke` drives the installed `logs-migrate`
 console script from a temporary directory through both data fixtures and the
 configuration workflow. Linux CI installs the package and runs these same targets
-on pull requests and pushes to main. These checks do not contact appliances. In particular,
-fixture helper behavior does not prove that updating an already-registered vendor
-bucket is safe; fixup is not an enabled operation.
+on pull requests and pushes to main. These checks do not contact appliances; the
+lab guide's `selftest` is the check that does. Fixture helper behavior does not
+prove that updating an already-registered vendor bucket is safe; fixup is not an
+enabled operation.
 
 ## Research and historical evidence
 
@@ -170,6 +187,7 @@ bucket is safe; fixup is not an enabled operation.
 | [Research guide](docs/research-guide.md) | Original investigation and experimental procedures |
 | [Config migration](docs/config-migration.md) | Config API findings; broader config migration is outside this delivery |
 | [Specification](docs/spec.md) | Product design and historical appendix; the operator guide describes shipped commands |
+| [Testing against a lab](docs/testing-against-a-lab.md) | Step-by-step for real hosts: setup, exact commands, what correct output looks like |
 
 The files under `scripts/` are historical research prototypes, not this CLI's
 execution path. Some contain source stops, insecure transport or deletion flows.
@@ -177,4 +195,5 @@ Do not use them as production operator instructions. The engine invokes none of
 them, including the destructive stock bucket migration command.
 
 MIT licensed. No production-readiness claim is made from fixture tests or the
-recorded lab results alone.
+recorded lab results alone; a lab run of this tool against real appliances is the
+evidence that counts.

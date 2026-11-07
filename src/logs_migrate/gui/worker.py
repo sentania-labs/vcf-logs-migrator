@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..errors import MigrationError
+from ..trust import TrustRequired
 from .session import LocalError, Session
 
 
@@ -18,6 +19,7 @@ class EngineWorker(QObject):
 
     done = Signal(str, object)
     failed = Signal(str, str)
+    trust_required = Signal(str, list)
     _queued = Signal(str, str, dict)
 
     def __init__(self):
@@ -51,6 +53,19 @@ class EngineWorker(QObject):
     def _run(self, job: str, method: str, kwargs: dict) -> None:
         try:
             result = getattr(self.session, method)(**kwargs)
+        except TrustRequired as pending:
+            self.trust_required.emit(
+                job,
+                [
+                    {
+                        "kind": i.kind,
+                        "name": i.name,
+                        "fingerprint": i.fingerprint,
+                        "display": i.display,
+                    }
+                    for i in pending.identities
+                ],
+            )
         except MigrationError as error:
             self.failed.emit(job, error.code.value)
         except LocalError as error:

@@ -47,11 +47,105 @@ def test_window_walks_the_workflow_off_the_ui_thread(driver):
     assert state.settings.theme == "dark"
 
 
-def test_connect_without_a_fixture_explains_the_release_gate(driver):
+def _live_simulator(monkeypatch, driver, *, refuse=False):
+    """Make Session open the simulator as if it were real appliances: the first attempt
+    asks to trust two identities, the second succeeds. Counts carry no attribution."""
+    import json
+
+    from logs_migrate.adapters.simulated import SimulatedEnvironment
+    from logs_migrate.gui import session
+    from logs_migrate.trust import Identity, TrustRequired
+
+    attempts = []
+
+    def open_live(self):
+        attempts.append(1)
+        if len(attempts) == 1:
+            identities = [
+                Identity("tls", "aria-logs.lab.example:9543", "a" * 64),
+                Identity("ssh", "aria-logs.lab.example:22", "b" * 64, "ssh-ed25519"),
+            ]
+            self.pending_trust = {i.name: (i, None) for i in identities}
+            raise TrustRequired(identities)
+        env = SimulatedEnvironment(
+            json.loads(driver.fixture.read_text()),
+            driver.journal.with_suffix(".simulated-state"),
+        )
+        env.mode = "live"
+        env.attribution = False
+        return env
+
+    class Store:
+        def __init__(self):
+            self.enrolled = []
+
+        def trust(self, identity, line):
+            self.enrolled.append(identity.name)
+
+    store = Store()
+    monkeypatch.setattr(session.Session, "_open_live", open_live)
+    monkeypatch.setattr(session, "TrustStore", lambda: store)
+    asked = []
+
+    def ask(identities):
+        asked.append([i["display"] for i in identities])
+        return not refuse
+
+    driver.window.ask_trust = ask
     driver.state.settings.fixture_path = ""
+    # Live counts are spaced by the real clock; the test does not wait 30 s between them.
+    driver.state.settings.count_poll_seconds = 0
+    return attempts, asked, store
+
+
+def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypatch):
+    attempts, asked, store = _live_simulator(monkeypatch, driver)
+    state = driver.state
     driver.connect()
-    assert driver.state.connect_error == "unsupported_capability"
-    assert "not qualified" in driver.pages["connections"].error.text()
+    assert len(asked) == 1 and all("SHA256" in text for text in asked[0])
+    assert store.enrolled == ["aria-logs.lab.example:9543", "aria-logs.lab.example:22"]
+    assert len(attempts) == 2 and state.connected and state.live
+    page = driver.pages["connections"]
+    driver.show("connections")
+    assert page.source_badge.text() == "8.18.7 · live"
+    rows = dict(page.checks.rows())
+    assert rows["Source Logs API"].startswith("Passed") and "Destination repository budget" in rows
+    assert page.selftest_button.isVisible()
+    from logs_migrate.gui import session
+
+    monkeypatch.setattr(
+        session.Session,
+        "selftest",
+        lambda self: {
+            "steps": [{"name": "Source API version", "status": "pass", "detail": "8.18.7"}],
+            "summary": {"pass": 1, "fail": 0, "skip": 0},
+            "passed": True,
+            "notes": {},
+        },
+    )
+    driver.window.run_selftest()
+    driver.idle()
+    assert dict(page.checks.rows())["Self-test"].startswith("1 passed")
+    driver.plan()
+    plan_page = driver.pages["plan"]
+    checks = dict(plan_page.checks.rows())
+    assert checks["Source ingest"].endswith("source quiet")
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.verify()
+    assert state.verification["outcome"] == "verified_success"
+    assert state.verification["partial_days"]
+    verification = driver.pages["verification"]
+    assert "partial day" in verification.daily.rows()[0][3]
+    assert "fully covered day" in verification.banner.text()
+
+
+def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
+    attempts, asked, store = _live_simulator(monkeypatch, driver, refuse=True)
+    driver.connect()
+    assert len(attempts) == 1 and store.enrolled == [] and not driver.state.connected
+    assert "not trusted" in driver.pages["connections"].error.text()
 
 
 def _stub_config(monkeypatch, applied):

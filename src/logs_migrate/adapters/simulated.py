@@ -46,6 +46,7 @@ class SimulatedEnvironment:
     """
 
     mode = "simulation"
+    attribution = True
 
     def __init__(self, fixture: dict, state_path: Path | None = None):
         require(fixture.get("fixture_schema") == "logs-migrate.simulator.v1", Code.SCHEMA)
@@ -246,6 +247,19 @@ class SimulatedEnvironment:
         require(type(complete) is bool, Code.SCHEMA)
         return Counts(
             complete, tuple(sorted(daily.items())), tuple(sorted(identities.items())), scope
+        )
+
+    def recent_source_events(self, seconds=86_400):
+        """Source events stamped within `seconds` of the fixture's `now_ms` (the simulated
+        clock epoch by default); `recent_events` overrides the figure, `null` means unknown."""
+        if "recent_events" in self.data:
+            value = self.data["recent_events"]
+            require(value is None or type(value) is int and value >= 0, Code.SCHEMA)
+            return value
+        now = self.data.get("now_ms", 1_793_923_200_000)
+        cutoff = now - seconds * 1000
+        return sum(
+            e.get("multiplicity", 1) for e in self.data["source_events"] if e["time"] >= cutoff
         )
 
     def test_mover(self):

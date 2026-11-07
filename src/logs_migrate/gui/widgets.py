@@ -137,6 +137,16 @@ class KeyValues(QWidget):
             self.grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(value_label, row, 1)
 
+    def rows(self) -> list[tuple[str, str]]:
+        """The displayed pairs, for tests and reports."""
+        pairs = []
+        for row in range(self.grid.rowCount()):
+            key = self.grid.itemAtPosition(row, 0)
+            value = self.grid.itemAtPosition(row, 1)
+            if key and value and key.widget() and value.widget():
+                pairs.append((key.widget().text(), value.widget().text()))
+        return pairs
+
 
 class Table(QTableWidget):
     """Read-only table with Lattice headers; rows are plain tuples of strings."""
@@ -182,6 +192,15 @@ class Table(QTableWidget):
             self.setCellWidget(r, c, widget)
         self.resizeRowsToContents()
         self._fit()
+
+    def rows(self) -> list[tuple[str, ...]]:
+        """The displayed cell texts, for tests and reports."""
+        return [
+            tuple(
+                self.item(r, c).text() if self.item(r, c) else "" for c in range(self.columnCount())
+            )
+            for r in range(self.rowCount())
+        ]
 
     def _fit(self) -> None:
         height = self.horizontalHeader().height() + 2

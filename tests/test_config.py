@@ -128,31 +128,29 @@ def test_self_forwarding_is_reported_without_mutation(config_env):
     assert config_env.data["trace"] == []
 
 
-def test_live_engine_and_rest_are_gated_before_network(config_env):
-    config_env.mode = "live"
-    with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
-        Engine(config_env, None).config_apply(["masking:mask-secret"])
+def test_unknown_routes_never_reach_the_transport():
+    """Live config calls are allowed; routes outside the allowlist are refused before any
+    request, whatever the client asks for."""
 
     class NoNetwork:
-        def request(self, *args, **kwargs):
-            pytest.fail("live call escaped release gate")
+        identity = "x"
 
-    source = Logs90(NoNetwork(), "admin", Secret("test"))
+        def request(self, *args, **kwargs):
+            pytest.fail("a route outside the allowlist reached the transport")
+
     destination = Logs911(NoNetwork(), NoNetwork(), Secret("test"), lambda x: "test")
-    rest = RestConfigEnvironment(source, destination, "9.1.1")
-    with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
-        ConfigMigration(rest).compare()
     for path, _ in ROUTES.values():
         for method, route in [
-            ("GET", path),
-            ("POST", path),
-            ("PUT", path + "/id"),
             ("DELETE", path + "/id"),
+            ("PATCH", path),
+            ("POST", path + "/other/thing"),
+            ("PUT", path + "/id/extra"),
+            ("PUT", path + "/id?x=1"),
         ]:
-            if (method, route) == ("GET", ROUTES["partitions"][0]):
-                continue
             with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
                 destination.call(method, route, {})
+    with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
+        destination.call("GET", "/api/v1/config")
 
 
 class InspectingTransport(RecordedTransport):
@@ -309,17 +307,16 @@ def test_schema_failure_after_write_is_uncertain(config_env):
     assert result["rules"][0]["status"] == "uncertain"
 
 
-def test_preview_auth_exchange_cannot_escape_config_gate():
-    class NoNetwork:
-        def request(self, *args, **kwargs):
-            pytest.fail("Live OpsToken exchange escaped config release gate")
-
-    destination = Logs911(RecordedTransport([]), NoNetwork(), Secret("test"), lambda r: "test")
+def test_preview_auth_exchange_runs_before_the_first_destination_read():
+    ops = InspectingTransport(
+        [record("POST", "/suite-api/api/auth/token/exchange", {"token": "jwt-fixture"})]
+    )
+    logs = InspectingTransport([record("GET", "/api/v1/log-mask", {"logMaskRules": []})])
+    destination = Logs911(logs, ops, Secret("ops-fixture"))
     env = RestConfigEnvironment(client([]), destination, "9.1.1")
-    with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
-        ConfigMigration(env).compare()
-    with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
-        destination.call("GET", "/api/v1/log-mask")
+    assert env.config_rules("destination", "masking") == []
+    assert ops.requests[0][3] == {"Authorization": "OpsToken ops-fixture"}
+    assert logs.requests[0][3] == {"X-JWT-Token": "jwt-fixture"}
 
 
 def test_prewrite_validation_failure_is_failed_not_uncertain(config_env):
@@ -352,22 +349,25 @@ def test_rest_default_partition_empty_id_fails_before_any_write():
     ]
 
 
-def test_partitions_read_is_not_narrowed_by_config_gate():
+def test_config_reads_use_documented_routes_only():
     class Live:
+        identity = "x"
+
         def __init__(self):
             self.requests = []
 
         def request(self, method, path, body=None, headers=None):
             self.requests.append((method, path))
-            return {"partitions": []}
+            return {"partitions": []} if "partition" in path else {"logMaskRules": []}
 
     transport = Live()
     live = Logs90(transport, "admin", Secret("test"))
     live.token = Secret("t")
     assert live.partitions() == {"partitions": []}
-    assert transport.requests == [("GET", "/api/v1/partitioning")]
+    assert live.call("GET", "/api/v1/log-mask") == {"logMaskRules": []}
+    assert transport.requests == [("GET", "/api/v1/partitioning"), ("GET", "/api/v1/log-mask")]
     with pytest.raises(MigrationError, match=Code.UNSUPPORTED):
-        live.call("GET", "/api/v1/log-mask")
+        live.call("GET", "/api/v1/users")
 
 
 @pytest.mark.parametrize("kind,name", [("partitions", "Archive"), ("masking", "mask-secret")])

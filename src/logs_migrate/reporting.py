@@ -8,7 +8,10 @@ def report_data(run, events):
         "schema_version": 2,
         "run": run,
         "events": events,
-        "qualification": "Fixture evidence only; real appliance execution is not qualified.",
+        "qualification": (
+            "Count evidence from the appliances' own query APIs; counts do not prove "
+            "identical event content."
+        ),
         "task_status": (
             "Query status for the current destination API task; this is an audit report."
         ),
@@ -23,7 +26,7 @@ def markdown(run, events):
         "",
         f"Run: `{run['id']}`",
         "",
-        "Fixture evidence only. Query `status` for current API task progress.",
+        "Count evidence only. Query `status` for current API task progress.",
         "",
         f"Verification: **{verification['outcome']}**. "
         f"Complete query evidence: **{verification.get('complete', False)}**.",
@@ -68,8 +71,14 @@ def markdown(run, events):
                         "difference",
                     )
                 )
-                + " |"
+                + (" (partial day) |" if row.get("partial") else " |")
             )
+        if verification.get("partial_days"):
+            lines += [
+                "",
+                "Partial days share events with open or unselected buckets; their differences "
+                "are expected and do not decide the outcome.",
+            ]
     lines += [
         "",
         "Counts do not establish full event-content equality.",
