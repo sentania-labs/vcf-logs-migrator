@@ -13,20 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import Code, MigrationError, require
-
-APP_DIR = "vcf-logs-migrator"
-
-
-def config_dir() -> Path:
-    if os.environ.get("LOGS_MIGRATE_CONFIG_DIR"):
-        return Path(os.environ["LOGS_MIGRATE_CONFIG_DIR"])
-    if os.name == "nt":
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-    elif os.environ.get("XDG_CONFIG_HOME"):
-        base = Path(os.environ["XDG_CONFIG_HOME"])
-    else:
-        base = Path.home() / ".config"
-    return base / APP_DIR
+from .gui.settings import config_dir
 
 
 @dataclass(frozen=True)

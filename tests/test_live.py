@@ -1015,7 +1015,7 @@ def test_cli_selftest_uses_open_live_and_prints_a_summary(monkeypatch, capsys):
 def test_cli_refuses_untrusted_identities_without_a_terminal(monkeypatch, capsys, tmp_path):
     from logs_migrate import cli
 
-    monkeypatch.setenv("LOGS_MIGRATE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("LOGS_SOURCE_SSH_PASSWORD", "canary-ssh")
     monkeypatch.setenv("LOGS_SOURCE_API_PASSWORD", "canary-api")
     monkeypatch.setenv("LOGS_DESTINATION_API_PASSWORD", "canary-dst")
@@ -1043,7 +1043,7 @@ def test_cli_refuses_untrusted_identities_without_a_terminal(monkeypatch, capsys
     monkeypatch.setattr(LiveEnvironment, "open", open_then_fail)
     code = cli.main(["--source", "src.lab", "--destination", "dst.lab", "--trust-new", "discover"])
     assert code == 7 and len(calls) == 2
-    assert TrustStore(tmp_path / "cfg").check(identity) == "trusted"
+    assert TrustStore(tmp_path / "cfg" / "vcf-logs-migrator").check(identity) == "trusted"
     assert "canary" not in capsys.readouterr().err
 
 
