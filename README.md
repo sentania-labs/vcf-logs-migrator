@@ -5,8 +5,9 @@ A shared Python engine and automation CLI for historical log migration from
 **9.1.1 preview**, including history older than 90 days.
 
 **Current delivery: engine, CLI and desktop GUI with deterministic fixtures. Real
-appliance mutation is disabled pending safety and lab qualification.** Native
-installers are a separate delivery. This project is not supported by Broadcom.
+appliance mutation is disabled pending safety and lab qualification.** Standalone
+downloads for Windows, macOS and Linux need no Python install. This project is not
+supported by Broadcom.
 
 The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
 sealed buckets by date, starts the transfer once, reads status directly from the
@@ -14,6 +15,73 @@ API, checks partitions, verifies per-day counts, and produces Markdown/JSON repo
 A small local record keeps sent buckets, baseline counts and audit evidence. There
 is no local task state machine. It never stops the source, deletes buckets,
 overwrites destination data, or falls back to manual copying.
+
+## Download
+
+Each platform gets one archive holding the desktop window and the `logs-migrate` CLI
+over one engine, plus a quickstart (`README.txt`), the simulator fixtures under
+`examples/`, and license notices:
+
+| Platform | Archive | Open the window | Run the CLI |
+|---|---|---|---|
+| Windows x64 | `vcf-logs-migrator-vX.Y.Z-windows-x64.zip` | double-click `VCF Logs Migrator.exe` | `logs-migrate.exe <command>` |
+| macOS Apple silicon / Intel | `vcf-logs-migrator-vX.Y.Z-macos-arm64.zip` / `-macos-x86_64.zip` | double-click `VCF Logs Migrator.app` | `"VCF Logs Migrator.app/Contents/MacOS/logs-migrate" <command>` |
+| Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64.tar.gz` | `./logs-migrate gui` | `./logs-migrate <command>` |
+
+Tagged versions are attached to [GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases)
+with `SHA256SUMS`. Every push to `main` also leaves signed builds as artifacts of its
+*Binaries* workflow run. Arguments always mean the CLI, so an agent drives the same
+engine a person opens by double-click; on macOS, with no arguments, only a Finder
+launch opens the window. On Linux the window needs a desktop session with the usual
+Qt libraries (libEGL/libGL, fontconfig, libxkbcommon-x11, libxcb-cursor0); the CLI
+needs none of them.
+
+### How the downloads are built and signed
+
+`packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
+`packaging/requirements.txt`) on Python 3.12.10, also the interpreter `release.yml`
+tests with: a one-file console executable on Windows and Linux, a
+one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
+(`packaging/gui_entry.py`) so opening the window never shows a console.
+`.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
+Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each
+final archive into an empty directory and runs it with no Python on its path:
+`--version`, `--help`, argument refusal, both simulator migrations end to end, the
+configuration workflow, and the `gui` path rendered once offscreen and once natively (the windowed program with no console on Windows,
+`open` and a PATH symlink on macOS, X11 under Xvfb on Linux). Launch screenshots are
+kept as workflow artifacts.
+
+Signing uses the org's shared actions in `sentania-labs/.github`, pinned by commit,
+with credentials held as sentania-labs organization secrets (none are stored in
+this repository):
+
+- **macOS**: `macos-sign` signs the app's nested code and then the bundle with the
+  Developer ID Application identity, hardened runtime and a secure timestamp
+  (`MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_TEAM_ID`); `macos-notarize`
+  submits it to Apple's notary service, staples the ticket and requires Gatekeeper
+  to accept it (`NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8`).
+- **Windows**: `windows-sign` Authenticode-signs `logs-migrate.exe` and
+  `VCF Logs Migrator.exe` through Azure Artifact Signing with an RFC 3161 timestamp
+  (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
+  `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`).
+
+Only validated refs of this repository sign: a push to `main`, or a `vX.Y.Z` tag
+reachable from `main` that `release.yml` has validated. The signing job re-checks the
+ref before it touches a signing secret, and the smoke then verifies the signatures on
+the extracted archive (`codesign --verify --deep --strict`, `stapler validate` and
+`spctl --assess` on macOS, `Get-AuthenticodeSignature` on Windows). Pull requests and
+manual runs on any branch build and smoke unsigned and never reference the signing
+secrets. Linux archives are not signed; they are covered by
+`SHA256SUMS`.
+
+`.github/workflows/release.yml` runs on a `vX.Y.Z` tag. It refuses a malformed tag, a
+tag not reachable from `main`, a tag that differs from the program's version, or a
+missing signing secret, runs the test suite, builds and smoke-tests every platform
+through `binaries.yml` with signing required, and only then publishes all four
+archives with `SHA256SUMS` on the release. A published release is never modified by
+a rerun. To build locally: `python -m pip install -r packaging/requirements.txt .`,
+then `python packaging/build.py build <platform>`, `python packaging/build.py package
+<platform>` and `python packaging/smoke.py dist/<archive>` (unsigned).
 
 ## Try the fixture CLI
 

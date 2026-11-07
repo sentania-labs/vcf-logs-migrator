@@ -255,5 +255,6 @@ polls `status`, Cancel runs `stop` for the observed task ID, Verification runs `
 and Reports writes the `report` Markdown and JSON. Configuration runs `config compare`
 and `config apply` with the selected rules.
 
-Native packaging, live appliance qualification and further live config qualification
-are separate deliveries.
+Live appliance qualification and further live config qualification are separate
+deliveries. Standalone downloads of this same CLI and window are described in the
+README.

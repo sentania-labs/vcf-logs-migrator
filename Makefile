@@ -5,8 +5,8 @@ PYTHON ?= python3
 check: lint test
 
 lint:
-	ruff check src tests
-	ruff format --check src tests
+	ruff check src tests packaging
+	ruff format --check src tests packaging
 
 test:
 	$(PYTHON) -m pytest
