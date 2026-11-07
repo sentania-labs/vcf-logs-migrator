@@ -4,9 +4,9 @@ A shared Python engine and automation CLI for historical log migration from
 **Aria Operations for Logs 8.18.x** to **VCF Operations for Logs 9.0.x** and
 **9.1.1 preview**, including history older than 90 days.
 
-**Current delivery: engine and CLI with deterministic fixtures. Real appliance
-mutation is disabled pending safety and lab qualification.** The GUI and native
-installers are separate deliveries. This project is not supported by Broadcom.
+**Current delivery: engine, CLI and desktop GUI with deterministic fixtures. Real
+appliance mutation is disabled pending safety and lab qualification.** Native
+installers are a separate delivery. This project is not supported by Broadcom.
 
 The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
 sealed buckets by date, starts the transfer once, reads status directly from the
@@ -47,16 +47,41 @@ Configuration execution remains fixture-only, with the same live release gate.
 Existing fixup code is retained privately and **set aside**, unavailable from the
 engine/CLI, pending migration qualification.
 
-## Development
+## Desktop GUI
 
-Python 3.11+; the core and CLI do not import Qt. `gui` reserves the optional
-PySide6 dependency for the later GUI. `ssh` installs the optional Paramiko adapter.
+`logs-migrate gui` opens a PySide6 window over the same engine: Overview, Connections,
+Configuration, Discovery & Plan, Migration, Verification, Reports and Settings, styled
+with the shared [Lattice](https://github.com/sentania-labs/lattice) tokens in light and
+dark. The GUI holds no migration logic; every number it shows is an engine or API
+observation, and estimates read Unavailable when the API gives no counters. Engine
+calls run on a worker thread so the window stays responsive. Settings (theme, display
+timezone, status refresh, verification budget, report folder, simulator fixture and
+journal file) are editable in the window and stored in an INI file under the user's
+config directory; credentials stay in session memory only.
 
 ```sh
-python -m pip install '.[dev]'
+python -m pip install '.[gui]'
+logs-migrate gui --fixture tests/fixtures/sealed-populated.fixture \
+  --journal /private/migration/run.sqlite
+```
+
+This build connects to the deterministic simulator only; live appliance connections
+remain behind the same release gate as the CLI. `python tests/gui_screenshots.py
+--output DIR` renders every workspace state offscreen for review
+(`QT_QPA_PLATFORM=offscreen`).
+
+## Development
+
+Python 3.11+; the core and CLI do not import Qt. `gui` installs the optional PySide6
+dependency for the desktop window. `ssh` installs the optional Paramiko adapter.
+
+```sh
+python -m pip install '.[dev,gui]'
 make check
 make smoke
 ```
+
+GUI tests use Qt's offscreen platform and skip when PySide6 is absent.
 
 `make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
 contracts, and simulated failures. `make smoke` drives the installed `logs-migrate`

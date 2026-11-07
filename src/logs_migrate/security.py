@@ -71,6 +71,10 @@ class Credentials:
         except Exception:
             raise MigrationError(Code.AUTH) from None
 
+    def snapshot(self) -> dict[str, str]:
+        """Revealed copy for re-opening the same session; never persisted or logged."""
+        return {key: secret.reveal() for key, secret in self._values.items()}
+
     def clear(self):
         # Python cannot guarantee cryptographic erasure of previously allocated strings.
         self._values.clear()

@@ -37,7 +37,8 @@ Verification is cumulative per destination: one result for everything the API ha
 reported as received so far, with expected counts attributed per received bucket.
 Re-running it after a later transfer recomputes the cumulative result and never
 turns an earlier success into a discrepancy. The result lists covered and
-not-received buckets and covered days; a running transfer makes it incomplete.
+not-received buckets and covered days; a running transfer or any not-received
+bucket makes it incomplete.
 
 Active buckets may never seal after ingestion moves away. Leave uncopied data
 available under the operator's retention plan. Fixup is set aside and hidden until

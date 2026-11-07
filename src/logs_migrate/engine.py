@@ -287,4 +287,9 @@ class Engine:
             "not_received": sorted(selected - received),
         }
         result["covered_days"] = [day for day, _ in source.daily]
+        if result["buckets"]["not_received"]:
+            # A selection that did not all land is never a success; a discrepancy stays one.
+            if result["outcome"] == Verification.SUCCESS.value:
+                result["outcome"] = Verification.INCOMPLETE.value
+            result["reason"] = Code.NOT_RECEIVED.value
         return result

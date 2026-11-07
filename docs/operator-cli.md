@@ -199,7 +199,11 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   beyond it are ingest, so nothing is counted twice when coverage intersects.
   Re-running after a later transfer recomputes the result and never invalidates an
   earlier success. The result lists covered buckets and days and buckets selected
-  but not received (for example API-skipped); those are reported, not verified.
+  but not received (for example API-skipped). A selection with any bucket not
+  received is reported with reason `selected_buckets_not_received`. When every
+  received bucket reconciles the outcome is `incomplete_verification` (exit 6):
+  the counts are evidence, not a success for the requested dates. A count
+  difference stays `verified_discrepancy` (exit 5).
   The fixture adapter supplies attribution; unverifiable attribution must remain
   incomplete on a future live adapter.
 - Daily count equality is count evidence, not proof of identical message content,
@@ -233,5 +237,23 @@ adapter qualification, trusted helper integrity, independent restart safeguards
 and actual appliance tests. The current migration path never stops services.
 
 Run `make check` and, after installing the package, `make smoke` for the same
-fixture checks used by CI. GUI, native packaging, live appliance qualification and
-further live config qualification are separate deliveries.
+fixture checks used by CI.
+
+## Desktop GUI
+
+`logs-migrate gui [--fixture FILE] [--journal FILE]` opens the desktop window (install
+the `gui` extra first). The flags prefill the simulator fixture and private journal; both
+are also editable on the Settings page, together with theme, display timezone, status
+refresh interval, verification retry budget, count query interval and the report export
+folder. Settings persist in `settings.ini` under the user's configuration directory.
+Credentials entered on the Connections page stay in session memory and never reach the
+journal, the settings file or exports.
+
+The window is a presentation layer over the commands above: Discovery & Plan runs
+`plan`, Start runs `copy` with the snapshot and latest-data acknowledgments, Migration
+polls `status`, Cancel runs `stop` for the observed task ID, Verification runs `verify`
+and Reports writes the `report` Markdown and JSON. Configuration runs `config compare`
+and `config apply` with the selected rules.
+
+Native packaging, live appliance qualification and further live config qualification
+are separate deliveries.

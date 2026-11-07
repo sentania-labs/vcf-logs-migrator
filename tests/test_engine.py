@@ -357,11 +357,30 @@ def test_api_skipped_bucket_is_reported_as_not_received_in_result_and_report(rig
     status = engine.status()
     assert status["status"] == "completed" and list(status["skipped"]) == [skipped]
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_success"
+    # Regression: the received groups reconcile, but a skipped selection is never a success.
+    assert result["outcome"] == "incomplete_verification"
+    assert result["reason"] == Code.NOT_RECEIVED and result["complete"] is True
     assert result["buckets"]["not_received"] == [skipped]
     assert skipped not in result["buckets"]["covered"] and result["source_count"] == 4
+    assert all(d["difference"] == 0 for d in result["daily"])
     text = markdown(journal.load(run["id"]), journal.events(run["id"]))
+    assert "verified_success" not in text and "incomplete_verification" in text
     assert f"selected but not received: {skipped}" in text
+
+
+def test_skipped_bucket_with_count_loss_stays_a_discrepancy(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    skipped = env.data["source_events"][0]["bucket"]
+    env.data["skip_buckets"] = [skipped]
+    execute(engine, run)
+    engine.status()
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e.get("cohort") != "baseline"
+    ]
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["reason"] == Code.NOT_RECEIVED and result["buckets"]["not_received"] == [skipped]
 
 
 def test_destination_restart_or_inventory_drift_does_not_cancel_transfer(rig):

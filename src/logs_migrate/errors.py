@@ -27,6 +27,7 @@ class Code(StrEnum):
     INTEGRITY = "integrity_mismatch"
     STATE = "invalid_state_transition"
     STORAGE = "journal_unavailable"
+    NOT_RECEIVED = "selected_buckets_not_received"
 
 
 class MigrationError(Exception):
