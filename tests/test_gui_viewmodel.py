@@ -148,7 +148,7 @@ def test_daily_rows_compress_matching_periods_and_isolate_differences():
         {"day": "2026-06-01", "expected": 5, "actual": 5, "difference": 0},
         {"day": "2026-06-03", "expected": 5, "actual": 5, "difference": 0},
     ]
-    assert vm.compress_daily(daily) == [
+    assert vm.daily_rows({"daily": daily}, None) == [
         ("May 29–May 30", "20", "20", "Match"),
         ("May 31", "4", "3", "−1"),
         ("Jun 1", "5", "5", "Match"),

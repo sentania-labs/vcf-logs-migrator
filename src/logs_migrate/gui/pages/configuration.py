@@ -65,6 +65,7 @@ class ConfigurationPage(Page):
                 "it out.",
                 "body",
                 wrap=True,
+                rich=True,
             )
         )
         forwarding_layout.addWidget(
@@ -83,6 +84,7 @@ class ConfigurationPage(Page):
                 "Apply writes definitions only; it does not restart services.",
                 "body",
                 wrap=True,
+                rich=True,
             )
         )
         partition_layout.addWidget(
@@ -102,7 +104,7 @@ class ConfigurationPage(Page):
         )
         self.filter_warning.hide()
         layout.addWidget(self.filter_warning)
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
+        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         return holder
 
     def _results_view(self) -> QWidget:
@@ -138,7 +140,7 @@ class ConfigurationPage(Page):
             )
         )
         layout.addWidget(next_card)
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
+        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         return holder
 
     def _showing_results(self) -> bool:

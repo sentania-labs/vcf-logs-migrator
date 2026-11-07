@@ -648,51 +648,6 @@ def progress_view(
 # Verification -----------------------------------------------------------------------------
 
 
-def compress_daily(daily: list[dict]) -> list[tuple[str, str, str, str]]:
-    """Consecutive matching days collapse into one period row; differences stand alone."""
-    rows = []
-    run: list[dict] = []
-
-    def flush():
-        if not run:
-            return
-        first, last = run[0]["day"], run[-1]["day"]
-        label = (
-            format_day_label(first)
-            if first == last
-            else f"{format_day_label(first)}–{format_day_label(last)}"
-        )
-        rows.append(
-            (
-                label,
-                format_count(sum(r["expected"] for r in run)),
-                format_count(sum(r["actual"] for r in run)),
-                "Match",
-            )
-        )
-        run.clear()
-
-    for row in daily:
-        if row["difference"] == 0:
-            if run and date.fromisoformat(row["day"]) - date.fromisoformat(
-                run[-1]["day"]
-            ) != timedelta(days=1):
-                flush()
-            run.append(row)
-            continue
-        flush()
-        rows.append(
-            (
-                format_day_label(row["day"]),
-                format_count(row["expected"]),
-                format_count(row["actual"]),
-                f"{row['difference']:+,}".replace("-", "−"),
-            )
-        )
-    flush()
-    return rows
-
-
 def outcome_label(verification: dict | None) -> str:
     """Plain words for a run's verification state; never 'success' with groups missing."""
     if not verification:

@@ -32,8 +32,11 @@ def repolish(widget: QWidget) -> None:
     widget.update()
 
 
-def label(text: str, kind: str = "", status: str = "", wrap: bool = False) -> QLabel:
+def label(
+    text: str, kind: str = "", status: str = "", wrap: bool = False, rich: bool = False
+) -> QLabel:
     widget = QLabel(text)
+    widget.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
     if kind:
         widget.setProperty("lattice", kind)
     if status:
@@ -45,6 +48,10 @@ def label(text: str, kind: str = "", status: str = "", wrap: bool = False) -> QL
         widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
     widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     return widget
+
+
+def plain_tip(text: str) -> str:
+    return "<p>" + escape(text).replace("\n", "<br>") + "</p>"
 
 
 def set_status(widget: QLabel, status: str) -> None:
@@ -126,7 +133,6 @@ class KeyValues(QWidget):
         for row, (key, value) in enumerate(rows):
             key_label = label(key, "muted")
             value_label = label(value, "value", wrap=True)
-            value_label.setTextFormat(Qt.TextFormat.PlainText)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(value_label, row, 1)
@@ -170,7 +176,7 @@ class Table(QTableWidget):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 # Narrow windows truncate cells; the full text stays one hover away.
-                item.setToolTip(tips[r] if tips and tips[r] else str(value))
+                item.setToolTip(plain_tip(tips[r] if tips and tips[r] else str(value)))
                 self.setItem(r, c, item)
         for (r, c), widget in (widgets or {}).items():
             self.setCellWidget(r, c, widget)
@@ -199,7 +205,7 @@ class TimelineBar(QWidget):
 
     def set_span(self, extent, span, text: str, style_name: str = "solid") -> None:
         self.extent, self.span, self.text, self.style_name = extent, span, text, style_name
-        self.setToolTip(f"{self.caption}: {text}")
+        self.setToolTip(plain_tip(f"{self.caption}: {text}"))
         self.update()
 
     def paintEvent(self, event):  # noqa: N802 (Qt override)
@@ -350,4 +356,4 @@ def elide(widget: QLabel, text: str, width: int = 640) -> None:
     """Show a long path in the middle-elided form, keeping the full text as a tooltip."""
     metrics = QFontMetrics(widget.font())
     widget.setText(metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, width))
-    widget.setToolTip(text)
+    widget.setToolTip(plain_tip(text))

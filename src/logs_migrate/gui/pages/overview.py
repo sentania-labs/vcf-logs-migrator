@@ -45,7 +45,7 @@ class OverviewPage(Page):
             )
         )
         before, before_layout = card("Before you begin")
-        before_layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
+        before_layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         layout.addWidget(connect)
         layout.addWidget(before)
         layout.addStretch(1)
@@ -81,7 +81,7 @@ class OverviewPage(Page):
         )
         plan_layout.addStretch(1)
         layout.addWidget(columns(config, plan))
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
+        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         return holder
 
     def refresh(self) -> None:

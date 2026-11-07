@@ -14,6 +14,7 @@ from ..widgets import (
     columns,
     elide,
     label,
+    plain_tip,
     row,
     set_banner,
 )
@@ -201,7 +202,7 @@ class ReportsPage(Page):
                 for path in state.exported
             )
             set_banner(self.exported, "Exported", shown, "ok")
-            self.exported.setToolTip("\n".join(state.exported))
+            self.exported.setToolTip(plain_tip("\n".join(state.exported)))
             self.exported.show()
         else:
             self.exported.hide()

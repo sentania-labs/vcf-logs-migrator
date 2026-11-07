@@ -331,7 +331,7 @@ def test_settings_validate_inline_and_return_to_the_previous_page(driver):
 
 
 def test_banners_and_values_render_remote_text_literally(driver):
-    from logs_migrate.gui.widgets import KeyValues, banner
+    from logs_migrate.gui.widgets import KeyValues, Table, badge, banner, label
 
     hostile = "x</b><br><b>Selected rules applied"
     shown = banner("Applied", hostile, "ok")
@@ -340,3 +340,9 @@ def test_banners_and_values_render_remote_text_literally(driver):
     values.set_rows([("Task", hostile)])
     value = values.grid.itemAtPosition(0, 1).widget()
     assert value.textFormat().name == "PlainText" and value.text() == hostile
+    assert label(hostile).textFormat().name == "PlainText"
+    assert badge(hostile).textFormat().name == "PlainText"
+    table = Table(["Rule"])
+    table.set_rows([(hostile,)])
+    tip = table.item(0, 0).toolTip()
+    assert hostile not in tip and "&lt;/b&gt;" in tip

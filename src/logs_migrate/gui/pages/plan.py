@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from html import escape
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
@@ -133,7 +134,7 @@ class PlanPage(Page):
         grid_holder = QWidget()
         grid_holder.setLayout(grid)
         window_layout.addWidget(grid_holder)
-        self.included = label("", "body", wrap=True)
+        self.included = label("", "body", wrap=True, rich=True)
         self.sealed = label("", "hint", wrap=True)
         window_layout.addWidget(self.included)
         window_layout.addWidget(self.sealed)
@@ -166,7 +167,6 @@ class PlanPage(Page):
         )
         retention_card, retention_layout = card("Retention and warnings")
         self.warnings = label("", "hint", wrap=True)
-        self.warnings.setTextFormat(Qt.TextFormat.PlainText)
         retention_layout.addWidget(self.warnings)
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -184,7 +184,7 @@ class PlanPage(Page):
         self.split_holder = QWidget()
         self.split_holder.setLayout(self.split)
         layout.addWidget(self.split_holder)
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True))
+        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         self.ack = QCheckBox("I understand you aren't going to copy the latest data.")
         self.ack.setAccessibleName("Latest-data acknowledgment")
         self.ack.stateChanged.connect(self._ack_changed)
@@ -517,7 +517,7 @@ class PlanPage(Page):
         else:
             self.bars["Latest excluded"].set_span(extent, None, "No open groups", "soft")
         self.included.setText(
-            f"<b>Included: {view['included']}.</b> "
+            f"<b>Included: {escape(view['included'])}.</b> "
             "Whole groups can extend beyond the requested dates."
         )
         self.sealed.setText(
