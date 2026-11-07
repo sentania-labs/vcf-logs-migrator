@@ -4,7 +4,7 @@ import json
 import pytest
 
 from logs_migrate.adapters.rest import HTTPS, Logs90, Logs911, RecordedTransport
-from logs_migrate.adapters.ssh import ReadOperation, RecordedSSH, SourceSSH
+from logs_migrate.adapters.ssh import NodeSSH, ReadOperation, RecordedSSH
 from logs_migrate.errors import Code, MigrationError
 from logs_migrate.models import Window
 from logs_migrate.security import Credentials, Secret
@@ -120,7 +120,7 @@ def test_mutations_reach_only_the_documented_routes():
 
 
 def test_forbidden_operations_are_structurally_absent():
-    source = SourceSSH("source.invalid", "root", Secret("pw"), "0" * 64, "/missing")
+    source = NodeSSH("source.invalid", "root", Secret("pw"), "0" * 64, "/missing")
     assert not hasattr(source, "stop_service")
     assert not hasattr(source, "write")
     assert not hasattr(source, "exec")

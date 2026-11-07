@@ -732,17 +732,6 @@ class LiveEnvironment:
             keys,
         )
 
-    def _partition_names(self, client: Logs90) -> dict[str, str]:
-        try:
-            rules = parse_partitions(client.partitions())
-        except MigrationError:
-            return {}
-        names = {}
-        for rule in rules:
-            if isinstance(rule.get("id"), str):
-                names[rule["id"]] = str(rule.get("name") or "").strip() or "Default"
-        return names
-
     def _cluster_from_nodes(
         self, ident: str, version: str, inventories: list[NodeInventory], partitions, identity: str
     ) -> Cluster:

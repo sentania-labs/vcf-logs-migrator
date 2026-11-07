@@ -139,7 +139,7 @@ consumers, `logs_migrate.config.ConfigMigration(environment).compare()` and
 protocol has `exclusive()`, `config_rules(scope, kind)`, `config_write(kind, rule,
 existing)` and `mode`. Reads return lists of API rule objects; `scope` is source
 or destination. Writes always target the destination, with `existing=None` for a
-create. Use the simulator for now; config apply accepts only simulation mode.
+create. Apply works against real hosts and writes only to the destination.
 
 `adapters.config.RestConfigEnvironment` uses the `Logs90` source/Bearer client and
 `Logs90` or `Logs911` destination auth client, including OpsToken exchange for 9.1.1

@@ -105,9 +105,6 @@ class NodeSSH:
                 client.close()
 
 
-SourceSSH = NodeSSH
-
-
 class RecordedSSH:
     def __init__(self, replies: list[tuple[ReadOperation, str]]):
         self.replies = list(replies)
