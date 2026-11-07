@@ -3,3 +3,5 @@ __pycache__/
 *.json
 .env
 !src/logs_migrate/gui/lattice/lattice-palette.json
+/build/
+/dist/

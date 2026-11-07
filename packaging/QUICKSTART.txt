@@ -1,0 +1,63 @@
+VCF Logs Migrator - standalone download
+========================================
+
+One program is both the desktop window and the automation CLI. No Python install is
+needed. It migrates historical logs from Aria Operations for Logs 8.18.x to VCF
+Operations for Logs 9.0.x and 9.1.1 preview through the destination's migration API.
+
+This build drives the deterministic appliance simulator. The examples/ folder holds
+the simulator fixtures used below. Real appliance mutation stays disabled until it
+passes lab qualification; nothing here contacts an appliance.
+
+Open the window
+---------------
+  Windows  Double-click logs-migrate.exe (the console it opens is hidden at once).
+  macOS    Double-click "VCF Logs Migrator.app".
+  Linux    ./logs-migrate gui   (needs a desktop session; see Linux below)
+
+In Settings or Connections, choose examples/sealed-populated.fixture as the
+simulator fixture, then walk Discovery & Plan, Migration, Verification and Reports.
+
+Use the CLI
+-----------
+Arguments always mean the CLI, so scripts and agents call the same program:
+
+  Windows  logs-migrate.exe --version
+  macOS    "VCF Logs Migrator.app/Contents/MacOS/logs-migrate" --version
+           (or link it onto your PATH:
+            ln -s "$PWD/VCF Logs Migrator.app/Contents/MacOS/logs-migrate" ~/bin/)
+  Linux    ./logs-migrate --version
+
+A complete simulated migration (Linux/macOS shell shown; on Windows use
+logs-migrate.exe and a Windows path for --journal):
+
+  J=/tmp/vlm-demo/run.sqlite; F=examples/sealed-populated.fixture
+  ./logs-migrate --journal $J --fixture $F discover
+  ./logs-migrate --journal $J --fixture $F plan \
+      --since 2026-03-01T00:00:00Z --until 2026-04-01T00:00:00Z
+  ./logs-migrate --journal $J --fixture $F copy RUN_ID --ack-backup \
+      --ack-active "i understand you aren't going to copy the latest data"
+  ./logs-migrate --journal $J --fixture $F verify RUN_ID
+  ./logs-migrate --journal $J report RUN_ID
+
+Every command prints JSON on stdout (report prints Markdown unless --format json),
+errors as JSON on stderr, and documented exit codes: 0 success, 2 invalid input,
+3 refused (for example a missing acknowledgment), 5 count discrepancy,
+6 incomplete verification, 7 connection/storage failure, 8 uncertain outcome.
+Credentials are never accepted as arguments. The operator guide is
+https://github.com/sentania-labs/vcf-logs-migrator/blob/main/docs/operator-cli.md
+
+Signatures
+----------
+Release and main-branch builds of logs-migrate.exe are Authenticode signed through
+Azure Artifact Signing, and macOS apps are Developer ID signed, notarized and
+stapled. Pull request builds are unsigned test artifacts. SmartScreen can still warn
+about a new publisher until it builds reputation. Release pages list SHA-256
+checksums in SHA256SUMS.
+
+Linux
+-----
+Built on glibc 2.35 (Ubuntu 22.04); needs glibc 2.35 or newer. The CLI needs nothing
+else. The window additionally needs a desktop session and the Qt runtime libraries a
+desktop normally has: libEGL/libGL, fontconfig, libxkbcommon, libxkbcommon-x11 and
+libxcb-cursor0 (Debian/Ubuntu names; xcb-util-cursor on Fedora/RHEL).

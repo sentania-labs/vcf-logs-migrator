@@ -1,0 +1,193 @@
+# Standalone downloads: one archive per OS holding the GUI and the CLI in a single
+# program (packaging/build.py), built natively on each platform and smoke-tested
+# from the extracted archive (packaging/smoke.py).
+#
+# Signing follows vcf-ops-telegraf-helper's binaries workflow through the org's
+# shared actions in sentania-labs/.github, pinned by commit: macOS apps are
+# Developer ID signed with the hardened runtime, notarized and stapled; Windows
+# executables are Authenticode signed through Azure Artifact Signing. The
+# credentials are sentania-labs org secrets; nothing is configured in this repo.
+# Pushes to main, tags (through release.yml) and manual runs sign; a signing or
+# notarization failure fails the leg. Pull requests build and smoke unsigned,
+# because pull requests from forks cannot read secrets.
+#
+# Placement (github-ci skill): GitHub-hosted. The repository is public, the matrix
+# needs Windows and macOS, and no step reaches the lab.
+
+name: Binaries
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binaries-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 sets the glibc floor (2.35); PySide6 6.11 itself needs 2.34.
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+            archive: tar.gz
+            minutes: 30
+          - platform: windows-x64
+            os: windows-2025
+            archive: zip
+            minutes: 45
+          - platform: macos-arm64
+            os: macos-15
+            archive: zip
+            minutes: 150
+          - platform: macos-x86_64
+            os: macos-15-intel
+            archive: zip
+            minutes: 150
+    runs-on: ${{ matrix.os }}
+    # macOS includes Apple's notary round trip, which has taken over an hour.
+    timeout-minutes: ${{ matrix.minutes }}
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      SIGN: ${{ github.event_name != 'pull_request' && !startsWith(matrix.platform, 'linux') }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Qt runtime and X server for the Linux smoke
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb xauth libegl1 libgl1 libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 \
+            libxcb-xkb1 libxcb-randr0 libxcb-shape0 libdbus-1-3 libglib2.0-0
+
+      - name: Install the package and pinned build tools
+        run: python -m pip install -r packaging/requirements.txt .
+
+      - name: Name this build
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          version="$(python packaging/build.py version)"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then label="$GITHUB_REF_NAME"
+          else label="v${version}-dev.${SHA::7}"; fi
+          echo "LABEL=$label" >> "$GITHUB_ENV"
+          echo "ARCHIVE=dist/vcf-logs-migrator-$label-$PLATFORM.${{ matrix.archive }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: python packaging/build.py build "$PLATFORM"
+
+      - name: Sign the app (macOS)
+        if: env.SIGN == 'true' && runner.os == 'macOS'
+        uses: sentania-labs/.github/.github/actions/macos-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
+        with:
+          bundle: dist/VCF Logs Migrator.app
+          macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
+          macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+          macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
+
+      - name: Notarize and staple the app (macOS)
+        if: env.SIGN == 'true' && runner.os == 'macOS'
+        uses: sentania-labs/.github/.github/actions/macos-notarize@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
+        with:
+          bundle: dist/VCF Logs Migrator.app
+          # The action's own zip holds only the app; packaging adds the examples.
+          output-zip: build/notarized-app.zip
+          notary-issuer-id: ${{ secrets.NOTARY_ISSUER_ID }}
+          notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
+          notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
+
+      # macos-sign and macos-notarize clean up their own failures; this covers a
+      # cancellation between them.
+      - name: Remove the signing keychain (macOS)
+        if: always() && env.SIGN == 'true' && runner.os == 'macOS'
+        run: security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
+
+      - name: Sign the executable (Windows)
+        if: env.SIGN == 'true' && runner.os == 'Windows'
+        uses: sentania-labs/.github/.github/actions/windows-sign@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
+        with:
+          files: ${{ github.workspace }}\dist\logs-migrate.exe
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      - name: Package the download
+        run: python packaging/build.py package "$PLATFORM" --label "$LABEL"
+
+      - name: Smoke-test the extracted download (Linux, X11 under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s '-screen 0 1600x1000x24' python packaging/smoke.py "$ARCHIVE" --native
+
+      - name: Smoke-test the extracted download (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: python packaging/smoke.py "$ARCHIVE" --native ${{ env.SIGN == 'true' && '--signed' || '' }}
+
+      - name: Upload the download
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vcf-logs-migrator-${{ matrix.platform }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+      - name: Upload launch screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-evidence-${{ matrix.platform }}
+          path: dist/smoke-evidence/
+          if-no-files-found: warn
+
+  linux-current:
+    # The Linux build job smokes on its own glibc floor; this runs the same bytes on
+    # a current Ubuntu with only the system Python used to drive the smoke script.
+    name: linux-x86_64 on Ubuntu 24.04
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install Qt runtime and X server
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            xvfb xauth libegl1 libgl1 libfontconfig1 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 \
+            libxcb-xkb1 libxcb-randr0 libxcb-shape0 libdbus-1-3 libglib2.0-0
+
+      - name: Download the Linux build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vcf-logs-migrator-linux-x86_64
+          path: downloaded
+
+      - name: Smoke-test the extracted download
+        run: |
+          archives=(downloaded/*.tar.gz)
+          xvfb-run -a -s '-screen 0 1600x1000x24' /usr/bin/python3 packaging/smoke.py "${archives[0]}" --native
