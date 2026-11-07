@@ -158,7 +158,7 @@ class InspectingTransport(RecordedTransport):
         super().__init__(records)
         self.requests = []
 
-    def request(self, method, path, body=None, headers=None):
+    def request(self, method, path, body=None, headers=None, timeout=None):
         self.requests.append((method, path, deepcopy(body), deepcopy(headers)))
         return super().request(method, path, body, headers)
 
@@ -356,7 +356,7 @@ def test_config_reads_use_documented_routes_only():
         def __init__(self):
             self.requests = []
 
-        def request(self, method, path, body=None, headers=None):
+        def request(self, method, path, body=None, headers=None, timeout=None):
             self.requests.append((method, path))
             return {"partitions": []} if "partition" in path else {"logMaskRules": []}
 

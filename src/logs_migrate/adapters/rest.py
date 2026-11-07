@@ -24,6 +24,7 @@ from ..security import Secret
 
 MAX_BODY = 16 * 1024 * 1024
 COUNT_CHUNK_DAYS = 30  # One aggregated-events query returns at most 100 bins (newest first).
+COUNT_TIMEOUT_SECONDS = 600.0
 VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
 JWT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$")
 
@@ -113,7 +114,7 @@ class HTTPS:
     def identity(self) -> str:
         return self.pin
 
-    def request(self, method, path, body=None, headers=None):
+    def request(self, method, path, body=None, headers=None, timeout=None):
         require(
             path.startswith("/")
             and not path.startswith("//")
@@ -122,7 +123,7 @@ class HTTPS:
             Code.INVALID_INPUT,
         )
         connection = http.client.HTTPSConnection(
-            self.host, self.port, timeout=self.timeout, context=self.context
+            self.host, self.port, timeout=timeout or self.timeout, context=self.context
         )
         try:
             # Handshake and enrolled certificate check before any credential leaves the client.
@@ -246,14 +247,15 @@ class Logs90:
             self.authenticate()
         return {"Authorization": "Bearer " + self.token.reveal()}
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, timeout=None):
         require(allowed(method, path), Code.UNSUPPORTED)
+        extra = {"timeout": timeout} if timeout else {}
         try:
-            return self.transport.request(method, path, body, self.headers())
+            return self.transport.request(method, path, body, self.headers(), **extra)
         except MigrationError as error:
             if error.code == Code.AUTH and method == "GET":
                 self.token = None
-                return self.transport.request(method, path, body, self.headers())
+                return self.transport.request(method, path, body, self.headers(), **extra)
             # Never replay a POST, PUT or DELETE after an uncertain response.
             raise
         except Exception:
@@ -306,7 +308,8 @@ class Logs90:
                 f"/api/v1/aggregated-events/timestamp/%3E%3D{cursor}/timestamp/%3C{end}"
                 f"?bin-width={DAY}&timeout=580000"
             )
-            response = self.call("GET", path)
+            # The server is asked for up to 580 s; the socket waits a little longer.
+            response = self.call("GET", path, timeout=COUNT_TIMEOUT_SECONDS)
             require(isinstance(response, dict), Code.SCHEMA)
             if response.get("complete") is not True:
                 complete = False
@@ -387,7 +390,7 @@ class RecordedTransport:
         self.records = list(records)
         self.calls: list[tuple[str, str]] = []
 
-    def request(self, method, path, body=None, headers=None):
+    def request(self, method, path, body=None, headers=None, timeout=None):
         require(bool(self.records), Code.SCHEMA)
         record = self.records.pop(0)
         require((method, path) == (record["method"], record["path"]), Code.SCHEMA)

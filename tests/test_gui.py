@@ -67,10 +67,9 @@ def _live_simulator(monkeypatch, driver, *, refuse=False):
             ]
             self.pending_trust = {i.name: (i, None) for i in identities}
             raise TrustRequired(identities)
-        env = SimulatedEnvironment(
-            json.loads(driver.fixture.read_text()),
-            driver.journal.with_suffix(".simulated-state"),
-        )
+        data = json.loads(driver.fixture.read_text())
+        data["ingest_during_run"] = []  # Live counts cannot attribute ingest; keep it out.
+        env = SimulatedEnvironment(data, driver.journal.with_suffix(".simulated-state"))
         env.mode = "live"
         env.attribution = False
         return env
@@ -135,10 +134,10 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.poll_until_finished()
     driver.verify()
     assert state.verification["outcome"] == "verified_success"
-    assert state.verification["partial_days"]
+    assert state.verification["partial_days"] == ["2026-03-03"]
     verification = driver.pages["verification"]
-    assert "partial day" in verification.daily.rows()[0][3]
     assert "fully covered day" in verification.banner.text()
+    assert "1 partial day" in verification.banner.text()
 
 
 def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):

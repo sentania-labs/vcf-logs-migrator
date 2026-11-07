@@ -20,16 +20,15 @@ preview; see the end). Every step before "Start the transfer" is read-only.
 Secrets never go on the command line. Give them one of three ways:
 
 ```sh
-# 1. Environment variables
-export LOGS_SOURCE_API_PASSWORD='...'
-export LOGS_SOURCE_SSH_PASSWORD='...'
-export LOGS_DESTINATION_API_PASSWORD='...'
-export LOGS_DESTINATION_SSH_PASSWORD='...'   # optional
-export LOGS_OPS_TOKEN='...'                  # 9.1.1 only
+# 1. Environment variables, read without echo so they never enter shell history
+read -rs -p 'Source API password: ' LOGS_SOURCE_API_PASSWORD; echo; export LOGS_SOURCE_API_PASSWORD
+read -rs -p 'Source SSH password: ' LOGS_SOURCE_SSH_PASSWORD; echo; export LOGS_SOURCE_SSH_PASSWORD
+read -rs -p 'Destination API password: ' LOGS_DESTINATION_API_PASSWORD; echo; export LOGS_DESTINATION_API_PASSWORD
+# optional: LOGS_DESTINATION_SSH_PASSWORD; 9.1.1 only: LOGS_OPS_TOKEN
 
-# 2. A private file (mode 600), JSON keyed by the same names without the LOGS_ prefix
-#    in lower case: source_api, source_ssh, destination_api, destination_ssh, ops_token
-umask 077; printf '{"source_api":"...","source_ssh":"...","destination_api":"..."}' > ~/.logs-creds.json
+# 2. A private file (mode 600) written in an editor, never with echo or printf:
+#    JSON keyed source_api, source_ssh, destination_api, destination_ssh, ops_token
+umask 077; "${EDITOR:-vi}" ~/.logs-creds.json
 logs-migrate --credentials ~/.logs-creds.json ...
 
 # 3. A prompt, when nothing above supplies a value and you are on a terminal
@@ -62,6 +61,10 @@ Enrolled (--trust-new).
 ```
 
 Cluster members found in the config file get their own prompt on the same run.
+A probe that fails prints which host it was contacting, for example
+`{"stage": "tls aria-logs-1.lab.example:9543", "error": "connection_failed"}`, and
+nothing from the remote side.
+
 Enrolled identities live in `~/.config/vcf-logs-migrator/trusted-identities.json`
 and `known_hosts` (mode 600). `logs-migrate trust list` shows them;
 `logs-migrate trust forget ssh host:22` removes one. A changed identity is refused
@@ -168,9 +171,12 @@ logs-migrate --journal ~/migration/lab.sqlite report RUN_ID
 `verify` waits for a finished task, counts the destination over the covered days
 again (two agreeing complete observations), subtracts the baseline and compares
 with the source per day. Exit 0 is `verified_success`: every fully covered day
-matches. Partial days are listed with their differences and do not decide the
-outcome. Exit 5 is a difference on a fully covered day. Exit 6 is incomplete
-evidence (task still running, counts not complete, or nothing received).
+matches. Partial days (shared with an unselected bucket, or at or after the sealed
+frontier where open buckets hold the newest data) are listed with their differences
+and do not decide the outcome. Exit 5 is a difference on a fully covered day,
+including new ingest that landed on those dates, which counts cannot tell apart from
+migrated events. Exit 6 is incomplete evidence (task still running, counts not
+complete, nothing received, or no fully covered day at all).
 
 A 9.0 task can report COMPLETED after skipping buckets at its disk limit; the
 verification is what says whether the dates landed.
@@ -203,16 +209,22 @@ Discovery & Plan, Start, Migration, Verification, Reports.
 Set `--ops-url https://ops.lab.example` (or the VCF Operations URL in the window) and
 supply `LOGS_OPS_TOKEN`. The tool exchanges the Ops token for a Logs JWT at
 `POST /suite-api/api/auth/token/exchange` and sends `X-JWT-Token` to the Logs FQDN on
-9543. What is not qualified: the 9.1 query route for counts (verification reports
-incomplete), the version route on the log-processor (the self-test says when the
-version is assumed) and partition routing of migrated events. A 9.0 to 9.1.1 lab run
-has not been recorded.
+9543. What is not qualified: the 9.1 query route for counts (a transfer can start, but
+no destination baseline is recorded and verification reports `unsupported_capability`),
+the version route on the log-processor (the self-test says when the version is
+assumed) and partition routing of migrated events. A 9.0 to 9.1.1 lab run has not been
+recorded.
 
 ## What the self-test cannot tell you
 
 - Whether the destination can reach every source node on port 22. The API's own
   test call (`copy` runs it before starting) is the check for that.
 - Whether the status body's bucket lists are complete. If the API reports no
-  per-bucket detail, a completed task is recorded as having moved the whole selection
-  and a cancelled or failed one keeps the selection recorded so it is never sent
-  twice; the counts then show what landed.
+  per-bucket detail, the selection minus whatever the API lists as skipped stays
+  recorded as sent, for completed, cancelled and failed tasks alike, so it is never
+  sent twice; the counts then show what landed.
+- The ledger is keyed on the destination's TLS certificate, not on the address you
+  typed, so a VIP, a node name and an IP of the same endpoint share one record. Two
+  nodes with different certificates do not.
+- The source member list must be readable from the typed node's config file; if it is
+  not, the connection fails (stage `source members`) rather than planning from one node.

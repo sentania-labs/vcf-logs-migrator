@@ -161,12 +161,49 @@ def test_task_decoder_handles_empty_nested_list_and_node_shapes():
     assert task.elapsed_seconds == 60.0
     assert [n.node for n in task.nodes] == ["dst-1.lab", "dst-2.lab"]
     assert task.nodes[1].status == "running"
-    done = decode_task(
-        [{"status": "FAILED"}, {"status": "Completed", "id": 7}], destination="d", now_ms=0
+    # Several parts: any part still running keeps the task running; all done is done.
+    mixed = decode_task(
+        [{"status": "RUNNING"}, {"status": "Completed", "id": 7}], destination="d", now_ms=0
     )
-    assert done.status == "completed" and done.id == "7"
+    assert mixed.status == "running" and mixed.id == "7"
+    done = decode_task(
+        [{"status": "COMPLETED"}, {"status": "COMPLETED"}], destination="d", now_ms=0
+    )
+    assert done.status == "completed"
+    failed = decode_task([{"status": "FAILED"}, {"status": "COMPLETED"}], destination="d", now_ms=0)
+    assert failed.status == "failed"
+    nested = decode_task(
+        {"nodes": [{"host": "a", "status": "COMPLETED"}, {"host": "b", "status": "RUNNING"}]},
+        destination="d",
+        now_ms=0,
+    )
+    assert nested.status == "running"
+    walked = decode_task(
+        {"details": {"x": {"status": "COMPLETED"}, "y": {"status": "RUNNING"}}},
+        destination="d",
+        now_ms=0,
+    )
+    assert walked.status == "running"
+    top_done = decode_task(
+        {"status": "COMPLETED", "nodes": [{"host": "a", "status": "RUNNING"}]},
+        destination="d",
+        now_ms=0,
+    )
+    assert top_done.status == "running"
     odd = decode_task({"id": "x", "phase": "wobbling"}, destination="d", now_ms=0)
     assert odd.status == "unknown"
+    assert (
+        decode_task({"inProgress": True, "status": None}, destination="d", now_ms=0).status
+        == "unknown"
+    )
+    negative = decode_task(
+        {"status": "COMPLETED", "notCopied": [B], "copied": [A]}, destination="d", now_ms=0
+    )
+    assert negative.completed == (A,) and negative.skipped == (B,)
+    only_negative = decode_task(
+        {"status": "COMPLETED", "notMigratedBuckets": [B]}, destination="d", now_ms=0
+    )
+    assert only_negative.completed == () and only_negative.skipped == (B,)
     assert observed_keys(body)[:2] == ["dataMigration", "dataMigration.taskId"]
 
 
@@ -414,15 +451,16 @@ def test_selftest_reports_every_read_and_sends_nothing(rigged):
         record("GET", "/api/v2/data-migrations", {}),
     ]
 
-    def any_counts(method, path, body=None, headers=None):
+    def any_counts(method, path, body=None, headers=None, timeout=None):
         if "aggregated-events" in path:
+            assert timeout == 600.0
             return count()
         return RecordedTransport.request(source, method, path, body, headers)
 
     source.request = any_counts
     destination_request = destination.request
 
-    def destination_counts(method, path, body=None, headers=None):
+    def destination_counts(method, path, body=None, headers=None, timeout=None):
         if "aggregated-events" in path:
             return count()
         return destination_request(method, path, body, headers)
@@ -457,18 +495,135 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
         Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
         Policy(poll_seconds=0),
     )
-    assert run["plan"]["partial_days"] == ["2026-03-01", "2026-03-02", "2026-03-03"]
+    # The open bucket has no bounds, so the sealed frontier (newest sealed end, Mar 3) starts
+    # the partial tail; Mar 1 and Mar 2 are fully covered days.
+    assert run["plan"]["partial_days"] == ["2026-03-03"]
     started = engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert started["task"]["status"] == "running"
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    # Every covered day is partial (an open bucket with unknown bounds), so the new ingest
-    # on Mar 1 is reported, not judged.
-    assert result["outcome"] == "verified_success" and result["partial_differences"]
+    # New ingest landed on Mar 1, a fully covered day; counts cannot attribute it, so the
+    # honest answer is a discrepancy on that day, never a pass.
+    assert result["outcome"] == "verified_discrepancy"
     assert [d["difference"] for d in result["daily"]] == [1, 0, 0]
-    assert all(d["partial"] for d in result["daily"])
+    assert [d["partial"] for d in result["daily"]] == [False, False, True]
     assert result["buckets"]["covered"] and not result["buckets"]["not_received"]
     assert "not attributed" in result["method"]
+
+
+def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path):
+    from conftest import FIXTURES
+
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.journal import Journal
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    data["ingest_during_run"] = []
+    env = SimulatedEnvironment(data)
+    env.mode = "live"
+    env.attribution = False
+    clock = SimulatedClock()
+    engine = Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    assert engine.status()["status"] == "completed"
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_success" and result["partial_days"] == ["2026-03-03"]
+    assert not result["partial_differences"]
+    # Nothing landed (the API said COMPLETED anyway): a discrepancy, never a pass.
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e.get("cohort") == "baseline"
+    ]
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+
+
+def _live_rig(tmp_path, data_changes=None):
+    from conftest import FIXTURES
+
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.journal import Journal
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    data["ingest_during_run"] = []
+    data.update(data_changes or {})
+    env = SimulatedEnvironment(data)
+    env.mode = "live"
+    env.attribution = False
+    clock = SimulatedClock()
+    return env, Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
+
+
+def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_list(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination = run["plan"]["destination"]["id"]
+    # The API's finished task names only what it skipped (the documented disk-limit trap).
+    first = "00000000-0000-0000-0000-000000000001"  # A fixture bucket, listed as skipped.
+    env.transfer = lambda: Transfer("sim-1", "completed", (), (first,), destination=destination)
+    engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert row["closed"] and first not in {k.rsplit("/", 1)[-1] for k in row["received"]}
+    assert len(row["received"]) == 2
+    result = engine.verify(run["id"])
+    assert result["buckets"]["not_received"] == ["src-1/" + first]
+    assert (
+        result["outcome"] != "verified_success"
+        and result["reason"] == "selected_buckets_not_received"
+    )
+
+
+def test_live_ledger_stays_open_while_status_still_shows_the_previous_task(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination = run["plan"]["destination"]["id"]
+    stale = Transfer("old", "completed", (), (), destination=destination, window=Window(1, 2))
+    env.transfer = lambda: stale
+    engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"], "a status for another window must not settle this selection"
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(
+            Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+            Policy(poll_seconds=0),
+        )
+    # A finished transfer with a window but no bucket list (started from the product UI)
+    # blocks anything overlapping its window.
+    from logs_migrate.ports import History
+
+    env.transfer = lambda: Transfer("", "idle", destination=destination)
+    env.history = lambda: (
+        History(
+            "src",
+            destination,
+            Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-02T12:00:00Z")),
+            ("dst-1",),
+            (),
+            True,
+        ),
+    )
+    engine.journal.settle_transfer(run["id"], [])
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(
+            Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-03-03T00:00:00Z")),
+            Policy(poll_seconds=0),
+        )
 
 
 def test_partial_days_and_day_window_helpers():
@@ -490,9 +645,14 @@ def test_partial_days_and_day_window_helpers():
     assert partial_days(cluster, plan) == ["1970-01-02"]
     assert day_window(Window(5, DAY + 6)) == Window(0, 2 * DAY)
     active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
+    # Active bounds unknown: the tail starts at the sealed frontier (the selected bucket's
+    # end, day 2), so day 1 stays fully covered.
     cluster = Cluster("c", "8.18.7", (Node("n", 10, 1, 9),), (), (), (selected, active), "i")
-    assert partial_days(cluster, plan) == ["1970-01-01", "1970-01-02"]
+    assert partial_days(cluster, plan) == ["1970-01-02"]
     assert partial_days(cluster, {**plan, "last_fully_sealed_day": "1970-01-01"}) == ["1970-01-02"]
+    # No sealed bucket at all to bound the tail: every day is partial.
+    cluster = Cluster("c", "8.18.7", (Node("n", 10, 1, 9),), (), (), (active,), "i")
+    assert partial_days(cluster, {**plan, "selected": []}) == ["1970-01-01", "1970-01-02"]
 
 
 def test_cli_selftest_uses_open_live_and_prints_a_summary(monkeypatch, capsys):

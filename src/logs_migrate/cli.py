@@ -207,6 +207,11 @@ def open_live(args):
                 raise MigrationError(Code.AUTH) from None
             for identity in pending.identities:
                 trust.trust(identity, env.key_line(identity))
+        except MigrationError as error:
+            stage = env.notes.get("stage")
+            if stage:
+                print(json.dumps({"stage": stage, "error": error.code.value}), file=sys.stderr)
+            raise
     raise MigrationError(Code.AUTH)
 
 

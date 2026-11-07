@@ -42,8 +42,11 @@ def _day(ms: int) -> str:
 
 def partial_days(source, plan: dict) -> list[str]:
     """Covered days whose source events are not all in the selected buckets: days shared
-    with an unselected sealed bucket, and days at or after the first active bucket's start
-    (every day when active bounds are unknown). Counts there are expected to differ."""
+    with an unselected sealed bucket, and days at or after the active tail. The tail starts
+    at the first active bucket's proven start; when active bounds are unknown (the 8.18
+    listing shows none) it starts at the newest sealed bucket's end, the sealed frontier.
+    Counts on partial days are reported, never judged; a day before the frontier that an
+    open bucket secretly holds late arrivals for shows up as a discrepancy, not a pass."""
     coverage = day_window(Window(**plan["coverage"]))
     selected = {b["node"] + "/" + b["id"] for b in plan["selected"]}
     days = []
@@ -67,10 +70,17 @@ def partial_days(source, plan: dict) -> list[str]:
                 partial.add(start)
     if unproven_active:
         last_sealed = plan.get("last_fully_sealed_day")
-        if last_sealed is None:
-            partial.update(days)
-        else:
+        if last_sealed is not None:
             partial.update(start for start in days if _day(start) > last_sealed)
+        else:
+            sealed_ends = [
+                b.end for b in source.buckets if b.status != "active" and b.end is not None
+            ]
+            if not sealed_ends:
+                partial.update(days)
+            else:
+                frontier = max(sealed_ends) // DAY * DAY
+                partial.update(start for start in days if start >= frontier)
     return sorted(_day(start) for start in partial)
 
 
@@ -119,30 +129,41 @@ class Engine:
             return
         received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
         received_ids = _ids(received)
+        skipped_ids = _ids({*task.skipped, *(k for n in task.nodes for k in n.skipped)})
         rows = [row for row in self.journal.transfers(destination) if not row["closed"]]
         for row in rows:
             if task.destination != destination:
                 matched = False
             elif task.bucket_keys:
                 matched = _ids(row["keys"]) == _ids(task.bucket_keys)
+            elif task.id and row.get("task_id"):
+                matched = task.id == row["task_id"]
             elif task.window is not None and row.get("window"):
-                matched = row["window"] == asdict(task.window)
+                # Compared by day: a server may echo the window on day boundaries.
+                matched = day_window(Window(**row["window"])) == day_window(task.window)
             else:
                 # The API reported neither the requested buckets nor the window; the only
                 # open selection for this destination is the one it answered for.
                 matched = len(rows) == 1
             if not matched:
-                self.journal.settle_transfer(row["run"], [])
+                if self.attribution:
+                    self.journal.settle_transfer(row["run"], [])
+                # Live: a status that belongs to another task (the previous one, still
+                # shown) says nothing about this selection; the row stays open.
             elif received or self.attribution:
                 self.journal.settle_transfer(
                     row["run"],
                     sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
                 )
             else:
-                # No per-bucket detail: a completed task moved the selection by its own
-                # account; a cancelled or failed one may have moved part of it. Either way
-                # the selection stays recorded so it is never submitted twice.
-                self.journal.settle_transfer(row["run"], sorted(row["keys"]))
+                # No per-bucket detail: by the API's own account a completed task moved
+                # everything it did not list as skipped; a cancelled or failed one may have
+                # moved any of it. The selection minus the skipped stays recorded so it is
+                # never submitted twice, and the skipped can be planned again.
+                self.journal.settle_transfer(
+                    row["run"],
+                    sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] not in skipped_ids),
+                )
 
     def _settle(self, destination):
         task = self.env.transfer()
@@ -156,9 +177,16 @@ class Engine:
             held = prior["received"] if prior["closed"] else prior["keys"]
             require(not selected.intersection(_ids(held)), Code.OVERLAP)
         # Include transfers started outside this journal, wherever the appliance exposes them.
+        coverage = Window(**plan["coverage"])
         for prior in self.env.history():
-            if prior.destination == destination:
-                require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
+            if prior.destination != destination:
+                continue
+            require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
+            if not prior.bucket_ids and prior.complete:
+                # A finished transfer with no bucket list (one started from the product UI,
+                # say) covered whole buckets in its window; anything of ours overlapping
+                # that window may already be there.
+                require(not coverage.overlaps(prior.window), Code.OVERLAP)
 
     def _source_ingest(self) -> dict:
         """Whether the source is still receiving events: a cutover check that warns."""
@@ -200,12 +228,6 @@ class Engine:
                     "tail once they seal."
                 )
             plan["partial_days"] = partial_days(source, plan)
-            notes = getattr(self.env, "notes", {})
-            if notes.get("members_unreadable"):
-                plan["warnings"].append(
-                    "The source member list could not be read from the typed node's config; "
-                    "only that node was inventoried. The API itself discovers the others."
-                )
             self._settle(destination.id)
             self._overlap(plan)
             run = {
@@ -287,7 +309,13 @@ class Engine:
                 days = day_window(coverage)
                 run["source_by_bucket"] = {}
                 run["source_counts"] = asdict(self._counts(policy, "source", days, keys))
-                run["baseline"] = asdict(self._counts(policy, "baseline", days, ()))
+                try:
+                    run["baseline"] = asdict(self._counts(policy, "baseline", days, ()))
+                except MigrationError as error:
+                    # 9.1.1: no qualified count route. The transfer can still run; the
+                    # verification will report incomplete evidence.
+                    require(error.code == Code.UNSUPPORTED, error.code)
+                    run["baseline"] = None
                 run["partial_days"] = partial_days(source, fresh)
             run["backup_ack"] = True
             run["active_ack"] = active_ack == ACTIVE_ACK
@@ -302,6 +330,8 @@ class Engine:
                 self._audit(run, "api_start_response_unavailable")
                 raise MigrationError(Code.UNCERTAIN) from None
             self._audit(run, "api_start_response", asdict(task))
+            if task.id:
+                self.journal.note_transfer_task(run_id, task.id)
             return {
                 "run_id": run_id,
                 "task": self._progress(task),
@@ -424,6 +454,7 @@ class Engine:
         require(row is not None and row["closed"], Code.INCOMPLETE)
         received = set(row["received"])
         require(bool(received), Code.INCOMPLETE)
+        require(run.get("baseline") is not None, Code.UNSUPPORTED)
         source = Counts.from_dict(run["source_counts"])
         baseline = Counts.from_dict(run["baseline"])
         policy = Policy(**run["query_policy"])
@@ -436,6 +467,9 @@ class Engine:
         for entry in result["daily"]:
             entry["partial"] = entry["day"] in partial
         full = [d for d in result["daily"] if not d["partial"]]
+        # Without a single fully covered day there is no evidence to judge; that is
+        # incomplete, never success.
+        require(bool(full), Code.INCOMPLETE)
         result["outcome"] = (
             Verification.DISCREPANCY.value
             if any(d["difference"] != 0 for d in full)

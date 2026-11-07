@@ -108,8 +108,6 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         hosts = env.members or env.source_members()
         env.members = hosts
         detail = f"{len(hosts)} member" + ("s" if len(hosts) != 1 else "") + ": " + ", ".join(hosts)
-        if env.notes.get("members_unreadable"):
-            detail += " (config file not readable; typed host only)"
         return hosts, detail
 
     hosts = step("Source cluster members (SSH)", members) or []

@@ -101,7 +101,7 @@ def test_mutations_reach_only_the_documented_routes():
     class Live:
         identity = "x"
 
-        def request(self, method, path, body=None, headers=None):
+        def request(self, method, path, body=None, headers=None, timeout=None):
             sent.append((method, path))
             return {"sessionId": "s"} if path.endswith("sessions") else {}
 

@@ -296,7 +296,13 @@ class MainWindow(QMainWindow):
         if not self._settle(job):
             return
         if self.ask_trust(list(identities)):
-            self.submit("trust", "trust", names=[i["name"] for i in identities])
+            self.submit(
+                "trust",
+                "trust",
+                identities=[
+                    {"name": i["name"], "fingerprint": i["fingerprint"]} for i in identities
+                ],
+            )
         else:
             self.state.connected = False
             self.state.discovered = None

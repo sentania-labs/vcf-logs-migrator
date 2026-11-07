@@ -125,6 +125,14 @@ class Journal:
             ),
         )
 
+    def note_transfer_task(self, run_id: str, task_id: str):
+        """Remember the API task id the start response carried, for matching later polls."""
+        try:
+            body = {**self._transfer_body(run_id), "task_id": task_id}
+            self.db.execute("UPDATE transfers SET body=? WHERE run=?", (canonical(body), run_id))
+        except sqlite3.Error:
+            raise MigrationError(Code.STORAGE) from None
+
     def settle_transfer(self, run_id: str, received: list[str]):
         """Replace the in-flight selection with the bucket keys the API reported as transferred."""
         try:

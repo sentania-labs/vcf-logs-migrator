@@ -103,17 +103,28 @@ class Session:
                 identity.name: (identity, env.key_line(identity)) for identity in pending.identities
             }
             raise
+        except MigrationError as error:
+            stage = env.notes.get("stage")
+            if stage:
+                # Which host the failure concerns, with no remote text.
+                raise LocalError(
+                    f"{vm.describe_error(error.code.value)} While contacting {stage}."
+                ) from None
+            raise
 
-    def trust(self, *, names: list[str]) -> list[str]:
-        """Enroll the identities the operator accepted in the dialog."""
+    def trust(self, *, identities: list[dict]) -> list[str]:
+        """Enroll the identities the operator accepted in the dialog, by the fingerprint
+        the dialog showed; a pending entry with another fingerprint is not enrolled."""
         require(bool(self.pending_trust), Code.STATE)
         self.store = self.store or TrustStore()
         enrolled = []
-        for name in names:
-            if name in self.pending_trust:
-                identity, line = self.pending_trust.pop(name)
-                self.store.trust(identity, line)
-                enrolled.append(name)
+        for shown in identities:
+            pending = self.pending_trust.get(shown["name"])
+            if pending is None or pending[0].fingerprint != shown["fingerprint"]:
+                continue
+            identity, line = self.pending_trust.pop(shown["name"])
+            self.store.trust(identity, line)
+            enrolled.append(shown["name"])
         return enrolled
 
     def _checks(self, discovered: dict) -> list[tuple[str, str]]:

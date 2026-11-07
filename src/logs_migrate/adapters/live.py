@@ -89,6 +89,11 @@ class Connection:
     ssh_port: int = 22
     timeout: float = 60
 
+    def __post_init__(self):
+        # Host names are compared with the config file's member list, which is lower-cased.
+        object.__setattr__(self, "source_host", self.source_host.strip().lower())
+        object.__setattr__(self, "destination", self.destination.strip().lower())
+
     @property
     def preview(self) -> bool:
         return bool(self.ops_url.strip())
@@ -309,9 +314,12 @@ def _uuids(value) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
-def _first(mapping: dict, pattern: str, kind=str):
+def _first(mapping: dict, pattern: str, kind=str, exclude: str | None = None):
     regex = re.compile(pattern, re.IGNORECASE)
+    excluded = re.compile(exclude, re.IGNORECASE) if exclude else None
     for key, value in mapping.items():
+        if excluded is not None and excluded.search(key):
+            continue
         if regex.search(key) and (
             (kind is int and type(value) is int)
             or (kind is str and isinstance(value, str))
@@ -319,6 +327,38 @@ def _first(mapping: dict, pattern: str, kind=str):
         ):
             return value
     return None
+
+
+POSITIVE_BUCKETS = r"(copied|completed|migrated|transferred|succeeded|done)"
+NEGATIVE_BUCKETS = r"(^not|^un|skipped|failed|errored|not_|missing|pending|remaining)"
+
+
+def _bucket_lists(entry: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(completed, skipped) bucket ids; a key naming the negative wins over the positive."""
+    completed = _uuids(_first(entry, POSITIVE_BUCKETS, list, exclude=NEGATIVE_BUCKETS) or [])
+    skipped = _uuids(
+        _first(entry, r"(skipped|failed|errored|notCopied|not_copied|notMigrated|missing)", list)
+        or []
+    )
+    return completed, skipped
+
+
+def _aggregate(statuses: list[str]) -> str | None:
+    """One status for several parts: any part still running means running."""
+    statuses = [s for s in statuses if s]
+    if not statuses:
+        return None
+    if "running" in statuses or "unknown" in statuses:
+        return "running" if "running" in statuses else "unknown"
+    if "failed" in statuses:
+        return "failed"
+    if "cancelled" in statuses:
+        return "cancelled"
+    if all(s == "completed" for s in statuses):
+        return "completed"
+    if all(s == "idle" for s in statuses):
+        return "idle"
+    return "unknown"
 
 
 def _node_name(entry: dict) -> str | None:
@@ -355,7 +395,25 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         return Transfer("", "idle", destination=destination)
     task = response
     if isinstance(task, list):
-        task = task[-1]
+        # A list is one entry per node or per task; a part still running means running.
+        require(all(isinstance(t, dict) for t in task), Code.SCHEMA)
+        parts = [decode_task(t, destination=destination, now_ms=now_ms) for t in task]
+        status = _aggregate([p.status for p in parts]) or "unknown"
+        latest = parts[-1]
+        return Transfer(
+            latest.id,
+            status,
+            tuple(dict.fromkeys(k for p in parts for k in p.completed)),
+            tuple(dict.fromkeys(k for p in parts for k in p.skipped)),
+            sum(p.bytes_transferred for p in parts),
+            tuple(n for p in parts for n in p.nodes),
+            latest.source,
+            destination,
+            latest.window,
+            (),
+            latest.elapsed_seconds,
+            latest.total_bytes,
+        )
     require(isinstance(task, dict), Code.SCHEMA)
     for key in ("dataMigration", "migration", "task", "result", "data"):
         if isinstance(task.get(key), dict):
@@ -366,12 +424,12 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         if status:
             break
     if status is None:
-        for key, value in _walk(task):
-            if key in {"status", "state"} and _status_word(value):
-                status = _status_word(value)
-                break
+        # No top-level status: every nested one counts, and any running part wins.
+        status = _aggregate(
+            [_status_word(value) for key, value in _walk(task) if key in {"status", "state"}]
+        )
     if status is None:
-        content = [v for v in task.values() if type(v) is not bool and v not in (None, "", [], {})]
+        content = [v for v in task.values() if v not in (None, "", [], {})]
         if not content:
             return Transfer("", "idle", destination=destination)
         status = "unknown"
@@ -380,10 +438,7 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         if isinstance(task.get(key), (str, int)) and task.get(key) != "":
             ident = str(task[key])
             break
-    completed = _uuids(
-        _first(task, r"(copied|completed|migrated|transferred|succeeded|done)", list) or []
-    )
-    skipped = _uuids(_first(task, r"(skipped|failed|errored|notCopied|not_copied)", list) or [])
+    completed, skipped = _bucket_lists(task)
     nodes = []
     for entry in _node_entries(task):
         name = _node_name(entry)
@@ -394,12 +449,7 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
             node_status = _status_word(entry.get(key))
             if node_status:
                 break
-        node_completed = _uuids(
-            _first(entry, r"(copied|completed|migrated|transferred|succeeded|done)", list) or []
-        )
-        node_skipped = _uuids(
-            _first(entry, r"(skipped|failed|errored|notCopied|not_copied)", list) or []
-        )
+        node_completed, node_skipped = _bucket_lists(entry)
         node_bytes = (
             _first(
                 entry,
@@ -414,6 +464,9 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         )
     completed = tuple(dict.fromkeys(completed + tuple(k for n in nodes for k in n.completed)))
     skipped = tuple(dict.fromkeys(skipped + tuple(k for n in nodes for k in n.skipped)))
+    if nodes:
+        # The task is finished only when every node is; a running node keeps it running.
+        status = _aggregate([status, *(n.status for n in nodes)]) or status
     transferred = _first(
         task, r"(transferred|copied|migrated).*bytes|bytes.*(transferred|copied|migrated)", int
     )
@@ -479,6 +532,12 @@ def observed_keys(response, depth: int = 0) -> list[str]:
     return names
 
 
+def cluster_id(identity: str) -> str:
+    """The ledger key for an appliance: its TLS identity, not the spelling of its address,
+    so a VIP, a node name and an IP of the same endpoint share one record."""
+    return "logs-" + identity[:16]
+
+
 # Environment -----------------------------------------------------------------------------
 
 
@@ -529,17 +588,26 @@ class LiveEnvironment:
         unknown: list[Identity] = []
         tls_source = (connection.source_host, connection.source_api_port)
         tls_destination = connection.destination_endpoint
+        # `stage` names the probe in flight so a failure can say which host, without any
+        # remote text.
+        self.notes["stage"] = f"tls {tls_source[0]}:{tls_source[1]}"
         self._check(probe_tls(*tls_source), None, unknown)
+        self.notes["stage"] = f"tls {tls_destination[0]}:{tls_destination[1]}"
         self._check(probe_tls(*tls_destination), None, unknown)
         if connection.preview:
-            self._check(probe_tls(*connection.ops_endpoint), None, unknown)
+            ops = connection.ops_endpoint
+            self.notes["stage"] = f"tls {ops[0]}:{ops[1]}"
+            self._check(probe_tls(*ops), None, unknown)
+        self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port}"
         identity, line = probe_ssh(connection.source_host, connection.ssh_port)
         self._check(identity, line, unknown)
         if self._destination_ssh_enabled():
+            self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port}"
             identity, line = probe_ssh(tls_destination[0], connection.ssh_port)
             self._check(identity, line, unknown)
         if unknown:
             raise TrustRequired(unknown)
+        self.notes["stage"] = "source members"
         self.source_client = self._logs_client(tls_source, "source_api", connection.source_api_user)
         if connection.preview:
             logs = self._https(tls_destination)
@@ -565,6 +633,7 @@ class LiveEnvironment:
                     self._check(identity, line, unknown)
         if unknown:
             raise TrustRequired(unknown)
+        self.notes.pop("stage", None)
         return self
 
     def _https(self, endpoint: tuple[str, int]) -> HTTPS:
@@ -620,15 +689,9 @@ class LiveEnvironment:
         return self.destination_client.version()
 
     def _members(self, host: str, credential: str, username: str) -> list[str]:
-        try:
-            text = self._ssh(host, credential, username).read(ReadOperation.MEMBERS)
-        except MigrationError as error:
-            if error.code == Code.AUTH:
-                raise
-            # The config file was not where this build keeps it; the typed member is the
-            # only node known. The self-test and plan say so.
-            self.notes["members_unreadable"] = host.lower()
-            return [host.lower()]
+        # An unreadable member list fails closed: the API copies from every member, so a
+        # plan and ledger built from one node would be short.
+        text = self._ssh(host, credential, username).read(ReadOperation.MEMBERS)
         return parse_members(text, host.lower())
 
     def source_members(self) -> list[str]:
@@ -716,7 +779,7 @@ class LiveEnvironment:
         inventories = [self.node_inventory(host) for host in members]
         self.notes["source_listing_keys"] = sorted({k for i in inventories for k in i.listing_keys})
         return self._cluster_from_nodes(
-            self.connection.source_host.lower(),
+            cluster_id(self.source_client.identity),
             version,
             inventories,
             partitions,
@@ -743,13 +806,24 @@ class LiveEnvironment:
                 for member in members
             ]
             return self._cluster_from_nodes(
-                host.lower(), version, inventories, partitions, self.destination_client.identity
+                cluster_id(self.destination_client.identity),
+                version,
+                inventories,
+                partitions,
+                self.destination_client.identity,
             )
         task = self.transfer()
         names = [n.node for n in task.nodes] or [host.lower()]
         nodes = tuple(Node(name, None, None, None, "running") for name in names)
         return Cluster(
-            host.lower(), version, nodes, partitions, (), (), self.destination_client.identity, True
+            cluster_id(self.destination_client.identity),
+            version,
+            nodes,
+            partitions,
+            (),
+            (),
+            self.destination_client.identity,
+            True,
         )
 
     # ports.Environment -------------------------------------------------------------------
@@ -771,11 +845,10 @@ class LiveEnvironment:
         task = self.transfer()
         if task.status in {"idle", "running", "unknown"} or task.window is None:
             return ()
-        host, _ = self.connection.destination_endpoint
         return (
             History(
-                task.source or self.connection.source_host.lower(),
-                host.lower(),
+                task.source or self.connection.source_host,
+                cluster_id(self.destination_client.identity),
                 task.window,
                 tuple(n.node for n in task.nodes),
                 task.completed,
@@ -824,7 +897,7 @@ class LiveEnvironment:
 
     def start(self, window: Window, bucket_keys: tuple[str, ...]) -> Transfer:
         require(self.destination_client is not None, Code.STATE)
-        host, _ = self.connection.destination_endpoint
+        destination = cluster_id(self.destination_client.identity)
         response = self.destination_client.start_migration(
             self.connection.source_host,
             self.connection.source_ssh_user,
@@ -832,22 +905,23 @@ class LiveEnvironment:
             window,
         )
         self.notes["start_response_keys"] = observed_keys(response)
+        decoded = decode_task(response, destination=destination, now_ms=self._now_ms())
+        if decoded.status not in {"idle", "unknown"}:
+            return decoded
         task = self.transfer()
-        if task.status == "idle":
-            decoded = decode_task(response, destination=host.lower(), now_ms=self._now_ms())
-            if decoded.status not in {"idle", "unknown"}:
-                return decoded
-            # The POST was accepted but the status route shows nothing yet; report it as
-            # running with the requested window so the operator polls rather than resubmits.
-            return Transfer("", "running", destination=host.lower(), window=window)
-        return task
+        if task.status != "idle" and (task.window is None or task.window == window):
+            return task
+        # The status route shows nothing yet, or still the previous task. Report the new
+        # one as running with the requested window so the operator polls rather than
+        # resubmits; the ledger row stays open until a task with this window is observed.
+        return Transfer(decoded.id, "running", destination=destination, window=window)
 
     def transfer(self) -> Transfer:
         require(self.destination_client is not None, Code.STATE)
-        host, _ = self.connection.destination_endpoint
+        destination = cluster_id(self.destination_client.identity)
         response = self.destination_client.migration_status()
         self.notes["status_response_keys"] = observed_keys(response)
-        return decode_task(response, destination=host.lower(), now_ms=self._now_ms())
+        return decode_task(response, destination=destination, now_ms=self._now_ms())
 
     def cancel(self) -> None:
         require(self.destination_client is not None, Code.STATE)
