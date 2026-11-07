@@ -676,48 +676,138 @@ def _ready_run(engine, window):
     return run, lambda: engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
 
 
-def test_a_start_the_appliance_rejected_leaves_nothing_to_block_the_retry(tmp_path):
-    from logs_migrate.errors import Rejection
-    from logs_migrate.models import Policy, parse_time
+class Wire:
+    """Stands in for the TLS socket: answers each HTTPS request from a script."""
 
+    def __init__(self, script):
+        self.script = list(script)
+
+    def __call__(self, host, port, timeout=None, context=None):
+        wire = self
+
+        class Response:
+            def __init__(self, status, body):
+                self.status = status
+                self.raw = b"" if body is None else json.dumps(body).encode()
+
+            def read(self, limit):
+                return self.raw
+
+        class Connection:
+            sock = type("Socket", (), {"getpeercert": staticmethod(lambda binary_form: b"cert")})()
+
+            def connect(self):
+                pass
+
+            def request(self, method, path, body=None, headers=None):
+                self.sent = (method, path)
+
+            def getresponse(self):
+                method, path, outcome = wire.script.pop(0)
+                assert (method, path) == self.sent
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return Response(*outcome)
+
+            def close(self):
+                pass
+
+        return Connection()
+
+
+MIGRATIONS = "/api/v2/data-migrations"
+
+
+def _wired(tmp_path, rigged, monkeypatch, script):
+    """The engine over the real HTTPS client and live start/status, answering from `script`."""
+    import hashlib
+
+    from logs_migrate.adapters.rest import HTTPS
+
+    live_env = trusted(rigged)[0]
     env, engine = _live_rig(tmp_path)
-    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
-    run, start = _ready_run(engine, window)
-    real_start = env.start
+    monkeypatch.setattr("http.client.HTTPSConnection", Wire(script))
+    live_env.destination_client.transport = HTTPS(
+        "https://dst.lab:9543", certificate_sha256=hashlib.sha256(b"cert").hexdigest()
+    )
+    env.start, env.transfer = live_env.start, live_env.transfer
+    return env, engine
 
-    def refused(*args):
-        raise Rejection(Code.CONNECTION)
 
-    env.start = refused
+MARCH = Window(1772323200000, 1775001600000)
+SESSION = ("POST", "/api/v1/sessions", (200, {"sessionId": "s"}))
+IDLE = ("GET", MIGRATIONS, (200, {}))
+
+
+def test_a_start_the_appliance_answered_with_500_is_not_held_and_the_plan_can_be_retried(
+    tmp_path, rigged, monkeypatch
+):
+    from logs_migrate.models import Policy
+
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (500, None)), IDLE],
+    )
+    run, start = _ready_run(engine, MARCH)
     with pytest.raises(MigrationError) as raised:
         start()
     assert raised.value.code == Code.CONNECTION
     assert engine.journal.transfers(run["plan"]["destination"]["id"]) == []
-    env.start = real_start
-    engine.plan(window, Policy(poll_seconds=0))
+    engine.plan(MARCH, Policy(poll_seconds=0))
 
 
-def test_a_start_with_no_answer_is_released_once_the_appliance_shows_no_task(tmp_path):
-    from logs_migrate.models import Policy, parse_time
-    from logs_migrate.ports import Transfer
+def test_a_start_with_no_answer_is_released_once_the_appliance_shows_no_task(
+    tmp_path, rigged, monkeypatch
+):
+    from logs_migrate.models import Policy
 
-    env, engine = _live_rig(tmp_path)
-    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
-    run, start = _ready_run(engine, window)
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, TimeoutError()), IDLE],
+    )
+    run, start = _ready_run(engine, MARCH)
     destination = run["plan"]["destination"]["id"]
-
-    def lost(*args):
-        raise TimeoutError
-
-    env.start = lost
     with pytest.raises(MigrationError) as raised:
         start()
     assert raised.value.code == Code.UNCERTAIN
     (row,) = engine.journal.transfers(destination)
     assert not row["closed"]
-    env.transfer = lambda: Transfer("", "idle", destination=destination)
-    engine.plan(window, Policy(poll_seconds=0))
+    engine.plan(MARCH, Policy(poll_seconds=0))
     assert engine.journal.transfers(destination) == []
+
+
+@pytest.mark.parametrize("status_read", [(503, None), (200, {})])
+def test_an_accepted_start_stays_held_while_the_status_shows_no_task(
+    tmp_path, rigged, monkeypatch, status_read
+):
+    from logs_migrate.models import Policy
+
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [
+            SESSION,
+            IDLE,
+            IDLE,
+            IDLE,
+            ("POST", MIGRATIONS, (200, {"accepted": True})),
+            ("GET", MIGRATIONS, status_read),
+            IDLE,
+        ],
+    )
+    run, start = _ready_run(engine, MARCH)
+    destination = run["plan"]["destination"]["id"]
+    started = start()
+    assert started["task"]["status"] == "running"
+    with pytest.raises(MigrationError, match=Code.OVERLAP):
+        engine.plan(MARCH, Policy(poll_seconds=0))
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"]
 
 
 def test_a_same_window_rerun_is_not_blocked_by_this_tools_own_finished_task(tmp_path):

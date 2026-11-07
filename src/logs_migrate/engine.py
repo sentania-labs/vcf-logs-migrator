@@ -124,10 +124,10 @@ class Engine:
         if self.journal is None or task.status not in TERMINAL:
             return
         if task.status == "idle" and not self.attribution:
-            # A live API that shows no task moved nothing: a selection whose start never
-            # produced a task id is released; one that was acknowledged stays recorded.
+            # A live API that shows no task moved nothing: a selection whose start was never
+            # acknowledged is released; one the API accepted stays recorded.
             for row in self.journal.transfers(destination):
-                if not row["closed"] and not row.get("task_id"):
+                if not row["closed"] and not row.get("acknowledged"):
                     self.journal.release_transfer(row["run"])
             return
         received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
@@ -156,9 +156,9 @@ class Engine:
             if not matched:
                 if self.attribution:
                     self.journal.settle_transfer(row["run"], [])
-                elif not row.get("task_id"):
+                elif not row.get("acknowledged"):
                     # Live: a finished task that is not this selection's, and the start was
-                    # never acknowledged with an id: the appliance holds no task for it.
+                    # never acknowledged: the appliance holds no task for it.
                     self.journal.release_transfer(row["run"])
             elif received or self.attribution:
                 self.journal.settle_transfer(
@@ -345,8 +345,7 @@ class Engine:
                 self._audit(run, "api_start_response_unavailable")
                 raise MigrationError(Code.UNCERTAIN) from None
             self._audit(run, "api_start_response", asdict(task))
-            if task.id:
-                self.journal.note_transfer_task(run_id, task.id)
+            self.journal.note_transfer_task(run_id, task.id or "")
             return {
                 "run_id": run_id,
                 "task": self._progress(task),

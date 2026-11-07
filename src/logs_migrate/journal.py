@@ -126,9 +126,9 @@ class Journal:
         )
 
     def note_transfer_task(self, run_id: str, task_id: str):
-        """Remember the API task id the start response carried, for matching later polls."""
+        """Mark the start as acknowledged and remember its task id (possibly empty)."""
         try:
-            body = {**self._transfer_body(run_id), "task_id": task_id}
+            body = {**self._transfer_body(run_id), "task_id": task_id, "acknowledged": True}
             self.db.execute("UPDATE transfers SET body=? WHERE run=?", (canonical(body), run_id))
         except sqlite3.Error:
             raise MigrationError(Code.STORAGE) from None

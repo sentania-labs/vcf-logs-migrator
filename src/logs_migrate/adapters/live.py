@@ -918,11 +918,14 @@ class LiveEnvironment:
         decoded = decode_task(response, destination=destination, now_ms=self._now_ms())
         if decoded.status not in {"idle", "unknown"}:
             return decoded
-        task = self.transfer()
-        if task.status != "idle" and (task.id, task.status, task.window) != (
-            before.id,
-            before.status,
-            before.window,
+        try:
+            task = self.transfer()
+        except MigrationError:
+            task = None
+        if (
+            task is not None
+            and task.status != "idle"
+            and (task.id, task.status, task.window) != (before.id, before.status, before.window)
         ):
             return task
         # The status route shows nothing yet, or still the previous task. Report the new

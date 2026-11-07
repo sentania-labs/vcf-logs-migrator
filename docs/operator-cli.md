@@ -187,6 +187,8 @@ A start the appliance answered with an HTTP error was never accepted, so nothing
 held and you can plan and copy again. A start with no answer (timeout, lost
 connection) exits 8 and keeps its selection blocked; the next `plan` releases it when
 the appliance shows no task for it, and settles it as usual when a task matches.
+A start the appliance accepted (2xx) stays held until a matching task is observed,
+even while its status still shows nothing.
 
 ## Data protection and verification
 
