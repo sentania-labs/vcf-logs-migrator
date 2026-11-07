@@ -71,7 +71,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: '3.12'
+          # Exact patch: this interpreter is frozen into every download. 3.12.10 is the
+          # latest 3.12 that actions/setup-python offers on all four runner images
+          # (3.12.11+ are Linux-only in the python-versions manifest).
+          python-version: '3.12.10'
 
       - name: Install Qt runtime and X server for the Linux smoke
         if: runner.os == 'Linux'
