@@ -1,8 +1,9 @@
 # Migration workflow
 
-The current delivery is a tight, fixture-tested wrapper around Broadcom's
-`/api/v2/data-migrations` API. Real appliance execution is disabled pending live
-adapter qualification. See the [operator guide](operator-cli.md) for commands and
+The current delivery is a tight wrapper around Broadcom's
+`/api/v2/data-migrations` API. It runs against real appliances and a built-in
+simulator; [Testing against a lab](testing-against-a-lab.md) is the procedure for
+real hosts. See the [operator guide](operator-cli.md) for commands and
 [official API validation](validation-2026-11-06-official-api.md) for historical
 appliance evidence, which is separate from this engine's test results.
 
