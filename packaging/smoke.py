@@ -201,7 +201,14 @@ def main() -> None:
             print("PASS CLI through a PATH symlink", flush=True)
             report = work / "gui-finder.png"
             subprocess.run(
-                ["open", "-n", "-W", "--env", f"LOGS_MIGRATE_GUI_SMOKE={report}", str(top / APP)],
+                [
+                    "/usr/bin/open",
+                    "-n",
+                    "-W",
+                    "--env",
+                    f"LOGS_MIGRATE_GUI_SMOKE={report}",
+                    str(top / APP),
+                ],
                 cwd=work,
                 timeout=TIMEOUT,
                 check=True,
