@@ -12,7 +12,9 @@ dependencies = ["tzdata>=2025.1"]
 
 [project.optional-dependencies]
 ssh = ["paramiko>=3.5"]
-gui = ["PySide6>=6.8"]
+# 6.12.0 drops one reference to True per signal delivery; on Python 3.11 (bools are not
+# immortal) the interpreter aborts at exit after enough slot calls.
+gui = ["PySide6>=6.8,<6.12"]
 dev = ["pytest>=8", "ruff>=0.11"]
 
 [project.scripts]
