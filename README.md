@@ -39,14 +39,15 @@ needs none of them.
 ### How the downloads are built and signed
 
 `packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
-`packaging/requirements.txt`): a one-file console executable on Windows and Linux, a
+`packaging/requirements.txt`) on Python 3.12.10, also the interpreter `release.yml`
+tests with: a one-file console executable on Windows and Linux, a
 one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
 (`packaging/gui_entry.py`) so opening the window never shows a console.
 `.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
-Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each final archive into an empty directory and runs it
-with no Python on its path: `--version`, `--help`, argument refusal, both simulator
-migrations end to end, the configuration workflow, and the `gui` path rendered once
-offscreen and once natively (the windowed program with no console on Windows,
+Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each
+final archive into an empty directory and runs it with no Python on its path:
+`--version`, `--help`, argument refusal, both simulator migrations end to end, the
+configuration workflow, and the `gui` path rendered once offscreen and once natively (the windowed program with no console on Windows,
 `open` and a PATH symlink on macOS, X11 under Xvfb on Linux). Launch screenshots are
 kept as workflow artifacts.
 
@@ -60,9 +61,9 @@ this repository):
   submits it to Apple's notary service, staples the ticket and requires Gatekeeper
   to accept it (`NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8`).
 - **Windows**: `windows-sign` Authenticode-signs `logs-migrate.exe` and
-  `VCF Logs Migrator.exe` through Azure Artifact Signing with an RFC 3161 timestamp (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
-  `AZURE_CLIENT_SECRET`, `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
-  `ARTIFACT_SIGNING_PROFILE`).
+  `VCF Logs Migrator.exe` through Azure Artifact Signing with an RFC 3161 timestamp
+  (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
+  `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`).
 
 Only validated refs of this repository sign: a push to `main`, or a `vX.Y.Z` tag
 reachable from `main` that `release.yml` has validated. The signing job re-checks the
