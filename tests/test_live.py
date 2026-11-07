@@ -204,6 +204,9 @@ def test_task_decoder_handles_empty_nested_list_and_node_shapes():
         {"status": "COMPLETED", "notMigratedBuckets": [B]}, destination="d", now_ms=0
     )
     assert only_negative.completed == () and only_negative.skipped == (B,)
+    for key in ("bucketsNotMigrated", "bucketsNotCopied", "bucketsNotTransferred"):
+        camel = decode_task({"status": "COMPLETED", key: [B]}, destination="d", now_ms=0)
+        assert camel.completed == () and camel.skipped == (B,)
     assert observed_keys(body)[:2] == ["dataMigration", "dataMigration.taskId"]
 
 

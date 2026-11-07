@@ -330,17 +330,15 @@ def _first(mapping: dict, pattern: str, kind=str, exclude: str | None = None):
 
 
 POSITIVE_BUCKETS = r"(copied|completed|migrated|transferred|succeeded|done)"
-NEGATIVE_BUCKETS = r"(^not|^un|skipped|failed|errored|not_|missing|pending|remaining)"
+NEGATIVE_BUCKETS = r"(not|^un|skipped|failed|errored|missing|pending|remaining)"
+SKIPPED_BUCKETS = r"(skipped|failed|errored|not[_-]?(copied|migrated|transferred)|missing)"
 
 
 def _bucket_lists(entry: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """(completed, skipped) bucket ids; a key naming the negative wins over the positive."""
     completed = _uuids(_first(entry, POSITIVE_BUCKETS, list, exclude=NEGATIVE_BUCKETS) or [])
-    skipped = _uuids(
-        _first(entry, r"(skipped|failed|errored|notCopied|not_copied|notMigrated|missing)", list)
-        or []
-    )
-    return completed, skipped
+    skipped = _uuids(_first(entry, SKIPPED_BUCKETS, list) or [])
+    return tuple(b for b in completed if b not in skipped), skipped
 
 
 def _aggregate(statuses: list[str]) -> str | None:
