@@ -344,8 +344,8 @@ class Engine:
             except Exception:
                 self._audit(run, "api_start_response_unavailable")
                 raise MigrationError(Code.UNCERTAIN) from None
-            self.journal.note_transfer_task(run_id, task.id or "")
             try:
+                self.journal.note_transfer_task(run_id, task.id or "")
                 self._audit(run, "api_start_response", asdict(task))
             except MigrationError:
                 raise MigrationError(Code.UNCERTAIN) from None

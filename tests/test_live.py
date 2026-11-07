@@ -864,6 +864,35 @@ def test_an_accepted_start_stays_held_when_the_journal_fails_after_it(
     assert not row["closed"]
 
 
+def test_a_failed_acknowledgment_write_still_reports_the_start_as_uncertain(
+    tmp_path, rigged, monkeypatch
+):
+    import sqlite3
+
+    env, engine = _wired(
+        tmp_path,
+        rigged,
+        monkeypatch,
+        [SESSION, IDLE, IDLE, IDLE, ("POST", MIGRATIONS, (200, {"accepted": True})), IDLE],
+    )
+    run, start = _ready_run(engine, MARCH)
+    database = engine.journal.db
+
+    class Failing:
+        def execute(self, sql, *args):
+            if sql.startswith("UPDATE transfers"):
+                raise sqlite3.OperationalError("disk I/O error")
+            return database.execute(sql, *args)
+
+    engine.journal.db = Failing()
+    with pytest.raises(MigrationError) as raised:
+        start()
+    assert raised.value.code == Code.UNCERTAIN
+    engine.journal.db = database
+    (row,) = engine.journal.transfers(run["plan"]["destination"]["id"])
+    assert not row["closed"]
+
+
 def test_a_same_window_rerun_is_not_blocked_by_this_tools_own_finished_task(tmp_path):
     from logs_migrate.models import Policy, parse_time
     from logs_migrate.ports import History, Transfer
