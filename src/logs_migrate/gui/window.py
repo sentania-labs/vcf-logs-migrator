@@ -304,6 +304,7 @@ class MainWindow(QMainWindow):
                 ],
             )
         else:
+            self.pending_credentials = {}
             self.state.connected = False
             self.state.discovered = None
             self.state.connect_error = (
@@ -313,6 +314,7 @@ class MainWindow(QMainWindow):
             self.refresh_all()
 
     def disconnect_environments(self) -> None:
+        self.pending_credentials = {}
         self.timer.stop()
         self.generation += 1
         self.state.reset_connection()
@@ -362,6 +364,7 @@ class MainWindow(QMainWindow):
             )
             return
         if job == "connect":
+            self.pending_credentials = {}
             state.connected = True
             state.discovered = result
             state.connect_error = None
@@ -453,6 +456,8 @@ class MainWindow(QMainWindow):
         state = self.state
         if not self._settle(job):
             return
+        if job in {"connect", "trust"}:
+            self.pending_credentials = {}
         if job == "connect":
             state.connected = False
             state.discovered = None

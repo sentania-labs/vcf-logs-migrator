@@ -104,6 +104,7 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     assert len(asked) == 1 and all("SHA256" in text for text in asked[0])
     assert store.enrolled == ["aria-logs.lab.example:9543", "aria-logs.lab.example:22"]
     assert len(attempts) == 2 and state.connected and state.live
+    assert driver.window.pending_credentials == {}
     page = driver.pages["connections"]
     driver.show("connections")
     assert page.source_badge.text() == "8.18.7 · live"
@@ -145,6 +146,7 @@ def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
     driver.connect()
     assert len(attempts) == 1 and store.enrolled == [] and not driver.state.connected
     assert "not trusted" in driver.pages["connections"].error.text()
+    assert driver.window.pending_credentials == {}
 
 
 def _stub_config(monkeypatch, applied):
