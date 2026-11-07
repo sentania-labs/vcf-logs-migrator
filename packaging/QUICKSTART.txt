@@ -5,9 +5,10 @@ The desktop window and the automation CLI share one engine. No Python install is
 needed. It migrates historical logs from Aria Operations for Logs 8.18.x to VCF
 Operations for Logs 9.0.x and 9.1.1 preview through the destination's migration API.
 
-This build drives the deterministic appliance simulator. The examples/ folder holds
-the simulator fixtures used below. Real appliance mutation stays disabled until it
-passes lab qualification; nothing here contacts an appliance.
+The CLI and the window run against real appliances (--source, --destination) and
+against a built-in simulator. The examples/ folder holds the simulator fixtures used
+below, which contact no appliance. For real hosts start with the lab guide:
+https://github.com/sentania-labs/vcf-logs-migrator/blob/main/docs/testing-against-a-lab.md
 
 Open the window
 ---------------

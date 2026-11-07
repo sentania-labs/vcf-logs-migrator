@@ -145,8 +145,8 @@ jobs:
           | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64.tar.gz | SHA256SUMS |
 
           Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\`. SmartScreen
-          can still warn while the publisher builds reputation. Real appliance mutation stays disabled pending
-          lab qualification; this build drives the deterministic simulator.
+          can still warn while the publisher builds reputation. This build runs against real appliances and a
+          built-in simulator; docs/testing-against-a-lab.md is the procedure for real hosts.
           EOF
           # A published release is never modified, so a rerun cannot swap verified bytes.
           # A draft left by an interrupted run is refilled from this run, then published.
