@@ -443,11 +443,12 @@ class PlanPage(Page):
             self.error.show()
         elif state.plan_error:
             window = vm.window_from_days(*self.current_dates())
+            kind = vm.plan_error_kind(state.plan_error, discovered, window)
             set_banner(
                 self.error,
-                "Preview unavailable",
+                "Nothing to migrate in these dates" if kind == "info" else "Preview unavailable",
                 vm.plan_error_text(state.plan_error, discovered, window),
-                "bad",
+                kind,
             )
             self.error.show()
         else:

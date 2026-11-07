@@ -47,6 +47,7 @@ ERROR_TEXT = {
     Code.INTEGRITY: "The simulator state does not match the fixture.",
     Code.STATE: "That action is not valid for this run's current state.",
     Code.STORAGE: "The private journal is unavailable.",
+    Code.NOT_RECEIVED: "A selected group was not received by the destination.",
 }
 
 
@@ -654,13 +655,29 @@ def outcome_label(verification: dict | None) -> str:
         return "verification pending"
     outcome = verification.get("outcome")
     missing = verification.get("buckets", {}).get("not_received", [])
-    if outcome == "verified_success" and missing:
-        return f"verified · {len(missing)} group{'s' if len(missing) != 1 else ''} not received"
+    if missing:
+        return f"incomplete · {len(missing)} group{'s' if len(missing) != 1 else ''} not received"
     return {
         "verified_success": "verified",
         "verified_discrepancy": "counts differ",
         "incomplete_verification": "incomplete",
     }.get(outcome, "verification pending")
+
+
+def group_names(run: dict | None) -> dict[str, str]:
+    """Bucket key to the group name the plan page shows, with its dates."""
+    if not run:
+        return {}
+    names = {}
+    for index, b in enumerate(run["plan"]["selected"], start=1):
+        dates = format_day_range(b["start"], b["end"], inclusive_end=True, suffix="")
+        names[b["node"] + "/" + b["id"]] = f"Group {index} · {b['node']} ({dates})"
+    return names
+
+
+def missing_groups(result: dict, run: dict | None) -> list[str]:
+    names = group_names(run)
+    return [names.get(key, key) for key in result.get("buckets", {}).get("not_received", [])]
 
 
 def missing_days(result: dict, run: dict | None) -> list[tuple[str, int]]:
@@ -774,7 +791,7 @@ def verification_view(
     outcome = result["outcome"]
     missing = result.get("buckets", {}).get("not_received", [])
     missing_labels = [format_day_label(day) for day, _ in missing_days(result, run)]
-    if outcome == "verified_success" and missing:
+    if missing:
         outcome = "partial"
         banner = (
             "bad",
@@ -832,9 +849,17 @@ def verification_view(
         (
             "Expected in included dates",
             format_count(result.get("expected_count")) if complete else "Pending",
-            f"Selected history {format_count(result.get('source_count'))} + pre-existing "
-            f"{format_count(result.get('preexisting_count'))} + new ingest "
-            f"{format_count(result.get('new_ingest_count'))}"
+            (
+                f"Received groups {format_count(result.get('source_count'))} + pre-existing "
+                f"{format_count(result.get('preexisting_count'))} + new ingest "
+                f"{format_count(result.get('new_ingest_count'))}"
+                + (
+                    f"; the {len(missing)} group{'s' if len(missing) != 1 else ''} not received "
+                    "is listed below, not counted here"
+                    if missing
+                    else ""
+                )
+            )
             if complete
             else "Not yet comparable",
         ),
@@ -869,7 +894,17 @@ def verification_view(
         ("Partitions", "9.1 routing check pending" if preview else "9.0 API imports into Default")
     )
     checks.append(("Evidence", result.get("method", "Pending") if complete else "Incomplete"))
-    return {"outcome": outcome, "banner": banner, "tiles": tiles, "rows": rows, "checks": checks}
+    checks.append(
+        ("Scope", "Cumulative: every group this destination has received so far, across runs")
+    )
+    return {
+        "outcome": outcome,
+        "banner": banner,
+        "tiles": tiles,
+        "rows": rows,
+        "checks": checks,
+        "missing_groups": missing_groups(result, run),
+    }
 
 
 # Configuration ----------------------------------------------------------------------------
@@ -1058,17 +1093,18 @@ def report_view(
     authorized = next((e["at"] for e in events if e["kind"] == "transfer_authorized"), None)
     task_state = status["status"].upper() if status else "Not observed"
     name = f"Run {index}" if index is not None else f"Run {run['id'][:8]}"
+    not_started = "source_by_bucket" not in run
     return {
-        "subtitle": f"{name} · {outcome_label(verification)}",
-        "banner": {
+        "subtitle": f"{name} · {'not started' if not_started else outcome_label(verification)}",
+        "banner": (
+            "bad",
+            f"{len(missing)} selected group{'s' if len(missing) != 1 else ''} not received",
+            "The API skipped part of the selection; received groups match their counts. "
+            "This is not a complete migration of the requested dates.",
+        )
+        if missing
+        else {
             "verified_success": (
-                "bad",
-                f"{len(missing)} selected group{'s' if len(missing) != 1 else ''} not received",
-                "The API skipped part of the selection; received groups match their counts. "
-                "This is not a complete migration of the requested dates.",
-            )
-            if missing
-            else (
                 "warn" if plan["active_skipped"] else "ok",
                 "Included history verified",
                 "Complete repeated daily counts matched. "
@@ -1090,7 +1126,9 @@ def report_view(
             ),
         }.get(
             outcome,
-            ("info", "Verification pending", "Run verification after the API task finishes."),
+            ("info", "Not started", "This window was previewed but never submitted.")
+            if not_started
+            else ("info", "Verification pending", "Run verification after the API task finishes."),
         ),
         "rows": [
             (
@@ -1140,11 +1178,81 @@ def report_view(
 def run_label(run: dict, index: int | None = None) -> str:
     plan = run["plan"]
     name = f"Run {index}" if index is not None else f"Run {run['id'][:8]}"
-    return (
-        f"{name} · "
-        f"{format_day_range(plan['window']['start'], plan['window']['end'])} · "
-        f"{outcome_label(run['verification'])}"
+    state = "not started" if "source_by_bucket" not in run else outcome_label(run["verification"])
+    return f"{name} · {format_day_range(plan['window']['start'], plan['window']['end'])} · {state}"
+
+
+def plan_error_kind(code: str, discovered: dict | None, window: Window | None) -> str:
+    """An empty window is an answer, not a failure."""
+    text = plan_error_text(code, discovered, window)
+    return "info" if text.startswith("No sealed history") else "bad"
+
+
+def report_markdown(
+    run: dict,
+    events: list[dict],
+    status: dict | None,
+    zone: str,
+    hosts: tuple[str, str] | None = None,
+    index: int | None = None,
+    config_result: dict | None = None,
+) -> str:
+    """The plain report: the same words the Reports and Verification pages show."""
+    report = report_view(run, events, status, zone, hosts, index)
+    verification = run["verification"]
+    started = "source_by_bucket" in run
+    view = (
+        verification_view(
+            verification if verification.get("outcome") != "verification_pending" else None,
+            status,
+            len(run["plan"]["active_skipped"]),
+            run["plan"]["destination"]["version"].startswith("9.1.1"),
+            run,
+        )
+        if started
+        else None
     )
+    status_kind, title, text = report["banner"]
+    lines = [
+        f"# Migration report · {report['subtitle']}",
+        "",
+        f"**{title}.** {text}",
+        "",
+        "## Migration",
+        "",
+    ]
+    lines += [f"- {key}: {value}" for key, value in report["rows"]]
+    if view is not None:
+        lines += ["", "## Daily reconciliation (UTC)", ""]
+        if view["rows"]:
+            lines += [
+                "| Day / period | Expected | Destination | Result |",
+                "|---|---:|---:|---|",
+            ]
+            lines += [f"| {d} | {e} | {a} | {r} |" for d, e, a, r in view["rows"]]
+        else:
+            lines.append("No complete counts yet.")
+        if view["missing_groups"]:
+            lines += ["", "## Not received", ""]
+            lines += [f"- {name}" for name in view["missing_groups"]]
+        lines += ["", "## Checks", ""]
+        lines += [f"- {key}: {value}" for key, value in view["checks"]]
+    if config_result is not None:
+        lines += ["", "## Configuration", ""]
+        lines += [f"- {rule}: {result}" for rule, result, _ in config_result_rows(config_result)]
+    lines += [
+        "",
+        "## Latest-data acknowledgment",
+        "",
+        report["ack_text"],
+        "",
+        report["ack_recorded"],
+        "",
+        "Counts are evidence, not proof of identical event content. The source was never "
+        "changed and no destination data was deleted. "
+        f"Audit events recorded: {report['events']}. Exported {format_time(now_iso(), zone)}.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 # Input validation (pure) -----------------------------------------------------------------

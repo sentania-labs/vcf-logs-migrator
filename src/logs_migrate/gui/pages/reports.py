@@ -126,12 +126,17 @@ class ReportsPage(Page):
         if not state.run_id or not formats:
             return
         self.export_button.setEnabled(False)
+        ids = [run["id"] for run in state.runs]
         self.app.submit(
             "export",
             "export",
             run_id=state.run_id,
             folder=state.settings.export_folder,
             formats=formats,
+            zone=state.settings.timezone,
+            hosts=self.app.hosts(),
+            index=ids.index(state.run_id) + 1 if state.run_id in ids else None,
+            config_result=state.config_result,
         )
 
     def refresh(self) -> None:

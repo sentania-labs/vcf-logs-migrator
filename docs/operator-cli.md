@@ -199,7 +199,10 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   beyond it are ingest, so nothing is counted twice when coverage intersects.
   Re-running after a later transfer recomputes the result and never invalidates an
   earlier success. The result lists covered buckets and days and buckets selected
-  but not received (for example API-skipped); those are reported, not verified.
+  but not received (for example API-skipped). A selection with any bucket not
+  received is reported as `incomplete_verification` with reason
+  `selected_buckets_not_received` (exit 6), even when every received bucket
+  reconciles: the counts are evidence, not a success for the requested dates.
   The fixture adapter supplies attribution; unverifiable attribution must remain
   incomplete on a future live adapter.
 - Daily count equality is count evidence, not proof of identical message content,

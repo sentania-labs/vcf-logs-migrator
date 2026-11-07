@@ -84,6 +84,7 @@ def apply_theme(app: QApplication, theme: str) -> None:
             .replace("ARROW_UP", up.as_posix())
             .replace("ARROW_DOWN", down.as_posix())
             .replace("BOX_BORDER", TOKENS[theme]["ink-subtle"])
+            .replace("BAD_INK", TOKENS[theme]["bad"])
             .replace("ACCENT", TOKENS[theme]["accent"])
         )
     app.setStyleSheet(_asset("lattice.qss" if theme == "light" else "lattice-dark.qss") + extra)
@@ -112,5 +113,6 @@ QLabel[lattice="value"] { font-weight: 400; }
 QSpinBox::up-button, QSpinBox::down-button { width: 18px; border: none; background: transparent; }
 QSpinBox::up-arrow { image: url(ARROW_UP); width: 10px; height: 6px; }
 QSpinBox::down-arrow { image: url(ARROW_DOWN); width: 10px; height: 6px; }
-QLabel[lattice="hint"][status="bad"] { color: palette(text); }
+QLabel[lattice="hint"][status="bad"] { color: BAD_INK; font-weight: 600; }
+QLineEdit[status="bad"], QComboBox[status="bad"] { border: 1px solid BAD_INK; }
 """

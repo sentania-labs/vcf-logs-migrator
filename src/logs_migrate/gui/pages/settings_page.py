@@ -145,9 +145,14 @@ class SettingsPage(Page):
         self.show_problems({})
 
     def show_problems(self, problems: dict[str, str]) -> None:
+        inputs = {"fixture": self.fixture, "journal": self.journal, "timezone": self.timezone}
         for name, widget in self.hints.items():
             widget.setText(problems.get(name, ""))
             widget.setVisible(name in problems)
+            field_widget = inputs[name]
+            field_widget.setProperty("status", "bad" if name in problems else "")
+            field_widget.style().unpolish(field_widget)
+            field_widget.style().polish(field_widget)
         self.note.setText(
             "Fix the highlighted fields, then save."
             if problems

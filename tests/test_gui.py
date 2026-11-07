@@ -205,6 +205,12 @@ def test_skipped_selected_group_is_never_reported_as_success():
         assert "not received" in combo_text and "success" not in combo_text
         driver.show("reports")
         assert driver.pages["reports"].banner.property("status") == "bad"
+        driver.export()
+        exported = next(path for path in driver.state.exported if path.endswith(".md"))
+        text = open(exported, encoding="utf-8").read()
+        assert "verified_success" not in text and "success" not in text.lower()
+        assert "not received" in text and "Mar 2" in text and SKIPPED not in text
+        assert "Verification: Incomplete" in text
     finally:
         driver.close()
 

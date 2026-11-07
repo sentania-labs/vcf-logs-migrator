@@ -60,10 +60,10 @@ class VerificationPage(Page):
         elif view["outcome"] == "partial":
             title += " · group not received"
         if run:
-            coverage = run["plan"]["coverage"]
+            ids = [r["id"] for r in state.runs]
+            number = f"Run {ids.index(run['id']) + 1}" if run["id"] in ids else "this run"
             subtitle = (
-                vm.format_day_range(coverage["start"], coverage["end"])
-                + " · "
+                f"Destination total through {number} (all received groups) · "
                 + vm.outcome_label(state.verification)
             )
         else:

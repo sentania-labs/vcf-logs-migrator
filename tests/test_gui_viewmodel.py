@@ -379,7 +379,8 @@ def test_outcome_labels_and_missing_days(rig):
     result = engine.verify(run["id"])
     stored = engine.journal.load(run["id"])
     assert result["buckets"]["not_received"] == [key]
-    assert vm.outcome_label(result) == "verified · 1 group not received"
+    assert result["outcome"] == "incomplete_verification"
+    assert vm.outcome_label(result) == "incomplete · 1 group not received"
     assert vm.outcome_label(None) == "verification pending"
     assert vm.outcome_label({"outcome": "verified_discrepancy"}) == "counts differ"
     days = vm.missing_days(result, stored)
@@ -443,4 +444,33 @@ def test_rule_summaries_show_substance():
         "Jun 1",
         "Jun 2",
         "Jun 2",
+    )
+
+
+def test_exported_markdown_uses_the_pages_words(rig):
+    engine, env, journal = rig
+    key = env.data["source_events"][0]["bucket"]
+    env.data["skip_buckets"] = [key]
+    run = planned(engine)
+    unstarted = planned(engine)  # A preview that is never submitted, before history lands.
+    execute(engine, run)
+    status = engine.status()
+    engine.verify(run["id"])
+    stored, events = journal.load(run["id"]), journal.events(run["id"])
+    text = vm.report_markdown(stored, events, status, "UTC", ("src.example", "dst.example"), 1)
+    assert "verified_success" not in text and "incomplete_verification" not in text
+    assert "Unix ms" not in text and "{" not in text and "Query `status`" not in text
+    assert "## Not received" in text and "Group " in text and key not in text
+    assert "Not received" in text and "Run 1 · incomplete · 1 group not received" in text
+    assert "src.example → dst.example" in text
+    text = vm.report_markdown(unstarted, journal.events(unstarted["id"]), status, "UTC")
+    assert "not started" in text and "## Daily reconciliation" not in text
+    assert vm.run_label(unstarted, 2).endswith("not started")
+    assert (
+        vm.plan_error_kind(
+            "incomplete_evidence",
+            engine.discover(),
+            vm.window_from_days(date(2025, 1, 1), date(2025, 1, 2)),
+        )
+        == "info"
     )

@@ -11,8 +11,9 @@ from ..errors import Code, MigrationError, require
 from ..journal import Journal
 from ..models import ACTIVE_ACK, Policy, Window
 from ..planning import compatible
-from ..reporting import markdown, report_data
+from ..reporting import report_data
 from ..security import Credentials
+from . import viewmodel as vm
 
 
 class Session:
@@ -100,7 +101,18 @@ class Session:
         run, events = self.journal.load(run_id), self.journal.events(run_id)
         return {"run": run, "events": events}
 
-    def export(self, *, run_id: str, folder: str, formats: list[str]) -> list[str]:
+    def export(
+        self,
+        *,
+        run_id: str,
+        folder: str,
+        formats: list[str],
+        zone: str = "UTC",
+        hosts: tuple[str, str] | None = None,
+        index: int | None = None,
+        config_result: dict | None = None,
+    ) -> list[str]:
+        """Markdown in the pages' own words; JSON stays the engine's machine record."""
         require(self.journal is not None, Code.STATE)
         require(bool(formats), Code.INVALID_INPUT)
         run, events = self.journal.load(run_id), self.journal.events(run_id)
@@ -109,8 +121,16 @@ class Session:
         written = []
         stem = f"migration-{run_id[:8]}"
         if "markdown" in formats:
+            status = None
+            try:
+                status = self._engine().status()
+            except Exception:
+                status = None  # The report still renders; the task row says Not observed.
             path = target / (stem + ".md")
-            path.write_text(markdown(run, events), encoding="utf-8")
+            path.write_text(
+                vm.report_markdown(run, events, status, zone, hosts, index, config_result),
+                encoding="utf-8",
+            )
             written.append(str(path))
         if "json" in formats:
             path = target / (stem + ".json")
