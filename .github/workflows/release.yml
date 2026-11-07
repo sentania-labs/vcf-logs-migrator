@@ -98,6 +98,8 @@ jobs:
   binaries:
     needs: validate
     uses: ./.github/workflows/binaries.yml
+    with:
+      sign: true
     secrets: inherit
 
   publish:

@@ -64,11 +64,13 @@ this repository):
   `AZURE_CLIENT_SECRET`, `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`,
   `ARTIFACT_SIGNING_PROFILE`).
 
-Pushes to `main`, manual runs and release tags sign, and the smoke then verifies the
-signatures on the extracted archive (`codesign --verify --deep --strict`,
-`stapler validate` and `spctl --assess` on macOS, `Get-AuthenticodeSignature` on
-Windows). Pull requests build and smoke unsigned, because pull requests from forks
-cannot read secrets. Linux archives are not signed; they are covered by
+Only validated refs of this repository sign: a push to `main`, or a `vX.Y.Z` tag
+reachable from `main` that `release.yml` has validated. The signing job re-checks the
+ref before it touches a signing secret, and the smoke then verifies the signatures on
+the extracted archive (`codesign --verify --deep --strict`, `stapler validate` and
+`spctl --assess` on macOS, `Get-AuthenticodeSignature` on Windows). Pull requests and
+manual runs on any branch build and smoke unsigned and never reference the signing
+secrets. Linux archives are not signed; they are covered by
 `SHA256SUMS`.
 
 `.github/workflows/release.yml` runs on a `vX.Y.Z` tag. It refuses a malformed tag, a

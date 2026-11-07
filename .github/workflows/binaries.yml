@@ -7,9 +7,12 @@
 # Developer ID signed with the hardened runtime, notarized and stapled; Windows
 # executables are Authenticode signed through Azure Artifact Signing. The
 # credentials are sentania-labs org secrets; nothing is configured in this repo.
-# Pushes to main, tags (through release.yml) and manual runs sign; a signing or
-# notarization failure fails the leg. Pull requests build and smoke unsigned,
-# because pull requests from forks cannot read secrets.
+# Only validated refs of this repository sign: a push to main, or a vX.Y.Z tag that
+# release.yml has validated and calls this workflow for with `sign: true`. Every
+# other run (pull requests, manual dispatch on any branch, other repositories) builds
+# and smokes unsigned and never references a signing secret. A signing run re-checks
+# its ref in "Refuse to sign an unvalidated ref" before any signing step. A signing or
+# notarization failure fails the leg.
 #
 # Placement (github-ci skill): GitHub-hosted. The repository is public, the matrix
 # needs Windows and macOS, and no step reaches the lab.
@@ -22,6 +25,11 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      sign:
+        description: Sign and notarize; release.yml passes true for a validated tag
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -63,10 +71,31 @@ jobs:
     timeout-minutes: ${{ matrix.minutes }}
     env:
       PLATFORM: ${{ matrix.platform }}
-      SIGN: ${{ github.event_name != 'pull_request' && !startsWith(matrix.platform, 'linux') }}
+      # Signing secrets are referenced only by steps gated on SIGN.
+      SIGN: >-
+        ${{ github.repository == 'sentania-labs/vcf-logs-migrator'
+        && !startsWith(matrix.platform, 'linux')
+        && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+        || (inputs.sign == true && startsWith(github.ref, 'refs/tags/v'))) }}
     steps:
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Refuse to sign an unvalidated ref
+        if: env.SIGN == 'true'
+        run: |
+          git fetch -q origin main
+          case "$GITHUB_REF" in
+            refs/heads/main) ;;
+            refs/tags/*)
+              [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                echo "::error::$GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH; refusing to sign"; exit 1; } ;;
+            *) echo "::error::$GITHUB_REF is not main or a release tag; refusing to sign"; exit 1 ;;
+          esac
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::$GITHUB_SHA is not reachable from main; refusing to sign"; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
