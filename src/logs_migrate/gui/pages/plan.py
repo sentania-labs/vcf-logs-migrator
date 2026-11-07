@@ -166,6 +166,7 @@ class PlanPage(Page):
         )
         retention_card, retention_layout = card("Retention and warnings")
         self.warnings = label("", "hint", wrap=True)
+        self.warnings.setTextFormat(Qt.TextFormat.PlainText)
         retention_layout.addWidget(self.warnings)
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -535,7 +536,7 @@ class PlanPage(Page):
         self.groups.set_rows(view["groups"], tips=view["group_tips"])
         self.checks.set_rows(view["checks"])
         self.storage.set_rows(view["storage"])
-        self.warnings.setText("<br>".join(view["warnings"]))
+        self.warnings.setText("\n".join(view["warnings"]))
         self.ack.setVisible(view["needs_ack"] and self._preview_is_current())
         self._update_actions()
 

@@ -50,6 +50,26 @@ def test_presets_anchor_on_the_end_of_source_history():
     assert isinstance(window, Window) and window.end - window.start == DAY
 
 
+def test_dates_before_the_epoch_are_refused_not_raised():
+    assert vm.window_error(date(1969, 12, 31), date(1970, 1, 2)) is not None
+    assert vm.window_from_days(date(1969, 12, 31), date(1970, 1, 2)) is None
+    assert vm.window_error(date(1970, 1, 1), date(1970, 1, 2)) is None
+    assert vm.window_from_days(date(1970, 1, 1), date(1970, 1, 2)) is not None
+
+
+def test_session_expands_home_in_typed_paths(tmp_path, monkeypatch):
+    from logs_migrate.gui.session import Session
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path.parent)
+    (tmp_path / "fx.fixture").write_bytes((FIXTURES / "sealed-populated.fixture").read_bytes())
+    session = Session()
+    session.connect(fixture="~/fx.fixture", journal="~/journal.sqlite", credentials={})
+    assert (tmp_path / "journal.sqlite").exists()
+    assert not (tmp_path.parent / "~").exists()
+    session.disconnect()
+
+
 def test_plan_view_reports_groups_checks_and_start_gate(rig):
     engine, env, _ = rig
     run = planned(engine)

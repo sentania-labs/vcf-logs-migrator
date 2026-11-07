@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from html import escape
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics, QPainter, QPen
@@ -84,7 +85,8 @@ def banner(title: str, text: str, status: str = "info") -> QLabel:
 
 def set_banner(widget: QLabel, title: str, text: str, status: str) -> None:
     widget.setTextFormat(Qt.TextFormat.RichText)
-    widget.setText(f"<b>{title}</b><br>{text}")
+    body = escape(text).replace("\n", "<br>")
+    widget.setText(f"<b>{escape(title)}</b><br>{body}")
     set_status(widget, status)
 
 
@@ -124,6 +126,7 @@ class KeyValues(QWidget):
         for row, (key, value) in enumerate(rows):
             key_label = label(key, "muted")
             value_label = label(value, "value", wrap=True)
+            value_label.setTextFormat(Qt.TextFormat.PlainText)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(value_label, row, 1)

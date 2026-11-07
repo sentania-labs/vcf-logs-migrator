@@ -196,7 +196,7 @@ class ReportsPage(Page):
             self.exported.show()
         elif state.exported:
             metrics = self.exported.fontMetrics()
-            shown = "<br>".join(
+            shown = "\n".join(
                 metrics.elidedText(path, Qt.TextElideMode.ElideMiddle, 720)
                 for path in state.exported
             )

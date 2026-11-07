@@ -28,7 +28,7 @@ class Session:
         """Open the environment and read both inventories. Live appliances are not qualified."""
         self.disconnect()
         require(bool(fixture), Code.UNSUPPORTED)
-        fixture_path, journal_path = Path(fixture), Path(journal)
+        fixture_path, journal_path = Path(fixture).expanduser(), Path(journal).expanduser()
         try:
             env = SimulatedEnvironment.from_file(
                 fixture_path, journal_path.with_suffix(".simulated-state")
@@ -104,7 +104,7 @@ class Session:
         require(self.journal is not None, Code.STATE)
         require(bool(formats), Code.INVALID_INPUT)
         run, events = self.journal.load(run_id), self.journal.events(run_id)
-        target = Path(folder)
+        target = Path(folder).expanduser()
         target.mkdir(parents=True, exist_ok=True)
         written = []
         stem = f"migration-{run_id[:8]}"

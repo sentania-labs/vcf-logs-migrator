@@ -206,7 +206,7 @@ def history_extent(cluster: dict) -> tuple[int, int] | None:
 
 
 def window_from_days(start: date, end_inclusive: date) -> Window | None:
-    if end_inclusive < start:
+    if window_error(start, end_inclusive):
         return None
     start_ms = int(datetime(start.year, start.month, start.day, tzinfo=UTC).timestamp() * 1000)
     end_ms = (
@@ -282,6 +282,8 @@ def axis_labels(extent: tuple[int, int] | None) -> tuple[str, str, str]:
 def window_error(start: date, end_inclusive: date) -> str | None:
     if end_inclusive < start:
         return "End date must be on or after the start date."
+    if start < date(1970, 1, 1):
+        return "Start date must be 1970 or later."
     return None
 
 

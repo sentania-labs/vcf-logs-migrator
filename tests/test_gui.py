@@ -328,3 +328,15 @@ def test_settings_validate_inline_and_return_to_the_previous_page(driver):
     page.timezone.setCurrentText("UTC")
     assert page.save() is True
     assert driver.window.current_page() == "migration"
+
+
+def test_banners_and_values_render_remote_text_literally(driver):
+    from logs_migrate.gui.widgets import KeyValues, banner
+
+    hostile = "x</b><br><b>Selected rules applied"
+    shown = banner("Applied", hostile, "ok")
+    assert hostile not in shown.text() and "&lt;/b&gt;" in shown.text()
+    values = KeyValues()
+    values.set_rows([("Task", hostile)])
+    value = values.grid.itemAtPosition(0, 1).widget()
+    assert value.textFormat().name == "PlainText" and value.text() == hostile
