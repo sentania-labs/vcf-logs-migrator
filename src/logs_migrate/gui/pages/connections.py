@@ -93,10 +93,10 @@ class ConnectionsPage(Page):
             field("Destination SSH user (optional)", self.destination_ssh_user),
             field("Destination SSH password", self.destination_ssh_password),
         )
-        self.token_fields = columns(
-            field("VCF Operations URL", self.ops_url), field("VCF Operations token", self.ops_token)
-        )
+        self.ops_url_field = field("VCF Operations URL (9.1.1 only)", self.ops_url)
+        self.token_fields = field("VCF Operations token", self.ops_token)
         self.token_fields.hide()
+        destination_layout.addWidget(self.ops_url_field)
         destination_layout.addWidget(self.password_fields)
         destination_layout.addWidget(self.ssh_fields)
         destination_layout.addWidget(self.token_fields)
@@ -113,7 +113,7 @@ class ConnectionsPage(Page):
         self.destination_button = button("Test destination", "", self.connect)
         destination_layout.addWidget(row(self.destination_button, self.destination_badge))
         self.switch_hint = label(
-            "Enter a VCF Operations URL in Settings to sign in to 9.1.1 with an Ops token.",
+            "To sign in to 9.1.1 with an Ops token, enter its VCF Operations URL above.",
             "hint",
             wrap=True,
         )
@@ -121,6 +121,7 @@ class ConnectionsPage(Page):
         destination_layout.addStretch(1)
         self.body.addWidget(columns(source, destination))
         # Enter in any field runs the same test the buttons run.
+        self.ops_url.textChanged.connect(lambda _text: self.refresh())
         for edit in self.inputs():
             edit.returnPressed.connect(self.connect)
 

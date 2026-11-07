@@ -69,18 +69,12 @@ def partial_days(source, plan: dict) -> list[str]:
             if bucket.start < start + DAY and bucket.end >= start:
                 partial.add(start)
     if unproven_active:
-        last_sealed = plan.get("last_fully_sealed_day")
-        if last_sealed is not None:
-            partial.update(start for start in days if _day(start) > last_sealed)
+        sealed_ends = [b.end for b in source.buckets if b.status != "active" and b.end is not None]
+        if not sealed_ends:
+            partial.update(days)
         else:
-            sealed_ends = [
-                b.end for b in source.buckets if b.status != "active" and b.end is not None
-            ]
-            if not sealed_ends:
-                partial.update(days)
-            else:
-                frontier = max(sealed_ends) // DAY * DAY
-                partial.update(start for start in days if start >= frontier)
+            frontier = max(sealed_ends) // DAY * DAY
+            partial.update(start for start in days if start >= frontier)
     return sorted(_day(start) for start in partial)
 
 

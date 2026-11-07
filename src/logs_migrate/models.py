@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -271,7 +271,7 @@ def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") 
         sealed_ends = [b.end for b in buckets if b.status != "active" and b.end is not None]
         if not sealed_ends:
             return None
-        day = datetime.fromtimestamp(max(sealed_ends) / 1000, UTC).date()
+        day = datetime.fromtimestamp(max(sealed_ends) / 1000, ZoneInfo(zone)).date()
     else:
         first_active = min(b.start for b in active)
         day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()

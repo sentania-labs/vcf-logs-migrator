@@ -949,6 +949,8 @@ def test_the_sealed_frontier_names_the_last_fully_sealed_day_when_active_bounds_
     sealed = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + DAY // 2, None, True, True)
     active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
     assert last_sealed_day((sealed, active)) == "1970-01-01"
+    early = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + 3 * 3600 * 1000, None, True, True)
+    assert last_sealed_day((early, active)) == "1969-12-31"
     assert last_sealed_day((active,)) is None
     assert last_sealed_day((sealed,)) is None
 

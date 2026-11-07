@@ -29,7 +29,7 @@ preview includes both the requested interval and actual bucket coverage. Active
 buckets are always excluded. The last fully sealed day is the day
 before the first active bucket's proven start (America/Chicago). A live 8.18 listing
 shows no dates for active buckets, so there it is the day before the newest sealed
-bucket's end (UTC); it is unknown only when there is no sealed bucket to go by.
+bucket's end (America/Chicago); it is unknown only when there is no sealed bucket to go by.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to

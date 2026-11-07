@@ -206,8 +206,9 @@ Discovery & Plan, Start, Migration, Verification, Reports.
 
 ## 9.1.1 preview
 
-Set `--ops-url https://ops.lab.example` (or the VCF Operations URL in the window) and
-supply `LOGS_OPS_TOKEN`. The tool exchanges the Ops token for a Logs JWT at
+Set `--ops-url https://ops.lab.example` (or fill the VCF Operations URL field on the
+destination card of the Connections page, which reveals the token field) and supply
+`LOGS_OPS_TOKEN`. The tool exchanges the Ops token for a Logs JWT at
 `POST /suite-api/api/auth/token/exchange` and sends `X-JWT-Token` to the Logs FQDN on
 9543. What is not qualified: the 9.1 query route for counts (a transfer can start, but
 no destination baseline is recorded and verification reports `unsupported_capability`),
