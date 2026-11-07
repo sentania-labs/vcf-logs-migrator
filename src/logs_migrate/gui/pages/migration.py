@@ -24,11 +24,20 @@ class MigrationPage(Page):
         self.progress.setRange(0, 100)
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(8)
+        self.progress.setAccessibleName("Transferred bytes")
         frames[0].layout().insertWidget(2, self.progress)
         self.body.addWidget(columns(*frames))
         nodes_card, nodes_layout = card("Per-node API progress")
         self.nodes = Table(["Destination node", "API state", "Transferred", "Buckets", "Error"])
         nodes_layout.addWidget(self.nodes)
+        nodes_layout.addWidget(
+            label(
+                "The API reports each node's state, bytes and buckets so far; it publishes no "
+                "per-node total, so no per-node bar is drawn.",
+                "hint",
+                wrap=True,
+            )
+        )
         self.body.addWidget(nodes_card)
         details_card, details_layout = card("Transfer details")
         self.details = KeyValues()
@@ -43,7 +52,8 @@ class MigrationPage(Page):
         )
         self.body.addWidget(details_card)
         self.finish_body()
-        self.cancel_button = self.add_action("Cancel API task", "", self.cancel)
+        # `clicked` carries a `checked` flag; the lambda keeps it out of cancel().
+        self.cancel_button = self.add_action("Cancel API task", "", lambda: self.cancel())
         self.refresh_button = self.add_action("Refresh status", "", self.poll)
         self.verify_button = self.add_action("Verify imported history", "primary", self.verify)
 
@@ -53,10 +63,11 @@ class MigrationPage(Page):
         else:
             self.app.poll_status()
 
-    def cancel(self, confirmed: bool | None = None) -> None:
+    def cancel(self, confirmed: bool | None = None) -> bool:
+        """Confirm, then ask the destination to cancel the observed task. Returns whether sent."""
         status = self.app.state.status
         if not status or status["status"] != "running":
-            return
+            return False
         if confirmed is None:
             answer = QMessageBox.question(
                 self,
@@ -67,8 +78,12 @@ class MigrationPage(Page):
                 QMessageBox.StandardButton.No,
             )
             confirmed = answer == QMessageBox.StandardButton.Yes
-        if confirmed:
-            self.app.submit("stop", "stop", task_id=status["id"])
+        if not confirmed:
+            return False
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancelling…")
+        self.app.submit("stop", "stop", task_id=status["id"])
+        return True
 
     def verify(self) -> None:
         self.app.show_page("verification")
@@ -77,8 +92,16 @@ class MigrationPage(Page):
     def refresh(self) -> None:
         state = self.app.state
         settings = state.settings
+        uncertain = bool(state.start_error) and state.start_error not in {
+            c.value for c in vm.PRE_POST_CODES
+        }
         view = vm.progress_view(
-            state.status, stale=state.stale, last_ok=state.status_at, zone=settings.timezone
+            state.status,
+            stale=state.stale,
+            last_ok=state.status_at,
+            zone=settings.timezone,
+            hosts=self.app.hosts(),
+            start_uncertain=uncertain,
         )
         if state.stale:
             subtitle = "Connection to status API lost; last observed progress retained"
@@ -106,7 +129,9 @@ class MigrationPage(Page):
         running = view["state"] == "running" and not state.stale
         finished = view["state"] in {"completed", "failed", "cancelled"}
         self.cancel_button.setVisible(running)
-        self.cancel_button.setEnabled("stop" not in self.app.worker.pending)
+        if "stop" not in self.app.worker.pending:
+            self.cancel_button.setEnabled(True)
+            self.cancel_button.setText("Cancel API task")
         self.refresh_button.setText("Reconnect and refresh" if state.stale else "Refresh status")
         self.refresh_button.setProperty("variant", "primary" if state.stale else "")
         self.refresh_button.style().unpolish(self.refresh_button)
@@ -121,7 +146,7 @@ class MigrationPage(Page):
             self.note.setText("No automatic resubmission. Overlapping new windows remain blocked.")
         elif running:
             self.note.setText(
-                "Cancel requests server cancellation and keeps imported data. "
+                "Cancel asks the server to stop and keeps imported data. "
                 "COMPLETED alone is not verified success."
             )
         else:

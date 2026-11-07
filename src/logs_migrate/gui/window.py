@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -84,6 +87,10 @@ class MainWindow(QMainWindow):
         }
         for page in self.pages.values():
             self.stack.addWidget(page)
+        self.return_page = "overview"
+        for number, (key, _title) in enumerate([*NAV, ("settings", "Settings")], start=1):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{number}"), self)
+            shortcut.activated.connect(lambda name=key: self.show_page(name))
         self.resize(1440, 900)
         self.setMinimumSize(900, 600)
         self.refresh_all()
@@ -103,6 +110,7 @@ class MainWindow(QMainWindow):
         self.display_label = label("", "muted")
         layout.addWidget(self.display_label)
         self.theme_combo = QComboBox()
+        self.theme_combo.setAccessibleName("Theme")
         self.theme_combo.addItems([f"Theme: {t.title()}" for t in THEMES])
         self.theme_combo.currentIndexChanged.connect(self._theme_changed)
         layout.addWidget(self.theme_combo)
@@ -119,7 +127,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(section("Migration workspace"))
         self.nav = QListWidget()
         self.nav.setProperty("lattice", "steps")
-        self.nav.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.nav.setAccessibleName("Migration workspace")
+        self.nav.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.nav.setToolTip("Ctrl+1 to Ctrl+7 switch pages; Ctrl+8 opens Settings")
         for key, title in NAV:
             item = QListWidgetItem(title)
             item.setData(Qt.ItemDataRole.UserRole, key)
@@ -138,11 +148,28 @@ class MainWindow(QMainWindow):
     def show_page(self, name: str) -> None:
         page = self.pages[name]
         keys = [key for key, _ in NAV]
+        current = self.current_page()
+        if name == "settings" and current != "settings":
+            self.return_page = current
         self.nav.blockSignals(True)
         self.nav.setCurrentRow(keys.index(name) if name in keys else -1)
         self.nav.blockSignals(False)
         page.refresh()
         self.stack.setCurrentWidget(page)
+        if self.isVisible() and not self.nav.hasFocus():
+            page.focus_primary()
+
+    def leave_settings(self) -> None:
+        self.show_page(self.return_page if self.return_page != "settings" else "overview")
+
+    def hosts(self) -> tuple[str, str] | None:
+        """Typed appliance addresses for display; cluster ids when none were typed."""
+        settings = self.state.settings
+        if not self.state.discovered:
+            return None
+        source = settings.source_host or self.state.discovered["source"]["id"]
+        destination = settings.destination_host or self.state.discovered["destination"]["id"]
+        return (source, destination)
 
     def current_page(self) -> str:
         for name, page in self.pages.items():
@@ -179,6 +206,7 @@ class MainWindow(QMainWindow):
         ):
             # A new fixture or journal only takes effect through a fresh connection.
             self.disconnect_environments()
+            self.return_page = "connections"
         self.refresh_all()
 
     def save_settings(self) -> None:
@@ -199,6 +227,14 @@ class MainWindow(QMainWindow):
         settings = self.state.settings
         self.generation += 1
         self.state.reset_connection()
+        fixture = settings.fixture_path
+        if fixture and not Path(fixture).expanduser().is_file():
+            self.state.connect_error = (
+                f"gui:The simulator fixture file was not found: {fixture}. "
+                "Choose an existing fixture in Settings."
+            )
+            self.refresh_all()
+            return
         self.submit(
             "connect",
             "connect",
@@ -224,6 +260,11 @@ class MainWindow(QMainWindow):
     def poll_status(self) -> None:
         if self.state.connected:
             self.submit("status", "status")
+
+    def verify_run(self, run_id: str) -> None:
+        self.state.verify_run_id = run_id
+        self.state.verify_error = None
+        self.submit("verify:" + run_id, "verify", run_id=run_id)
 
     def select_run(self, run_id: str) -> None:
         self.state.run_id = run_id
@@ -262,6 +303,10 @@ class MainWindow(QMainWindow):
         elif job == "config_apply":
             state.config_result = result
             state.comparison_error = None
+            state.restart_pending = sorted(
+                set(state.restart_pending)
+                | {r["name"] for r in result["rules"] if r.get("restart_required")}
+            )
         elif job == "plan":
             state.plan_run = result
             state.plan_error = None
@@ -287,14 +332,21 @@ class MainWindow(QMainWindow):
             state.status = result
             state.status_at = vm.now_iso()
             state.status_error = None
-            if previous == "running" and result["status"] != "running" and state.run_id:
-                self.load_report(state.run_id)
-        elif job == "verify":
+            if previous == "running" and result["status"] != "running":
+                if state.run_id:
+                    self.load_report(state.run_id)
+                self.submit("discover", "discover")  # Inventory moved; the Overview must too.
+        elif job == "discover":
+            state.discovered = result
+        elif job.startswith("verify:"):
+            run_id = job[len("verify:") :]
+            state.verify_run_id = None
+            if run_id != state.run_id:
+                return  # The operator moved to another run; this result is not its evidence.
             state.verification = result
             state.verify_error = None
-            if state.run_id:
-                self.load_report(state.run_id)
-                self.submit("runs", "runs")
+            self.load_report(run_id)
+            self.submit("runs", "runs")
         elif job == "runs":
             state.runs = result
             if state.run_id is None and result:
@@ -304,9 +356,10 @@ class MainWindow(QMainWindow):
             if result["run"]["id"] == state.run_id:
                 state.report = result
                 if state.plan_run is None or state.plan_run["id"] != state.run_id:
-                    # The selected run is the plan every page describes.
-                    state.plan_run = result["run"]
                     state.plan_error = None
+                # The journal's copy is the plan every page describes: it carries what the
+                # engine recorded at start (per-group counts) and the latest verification.
+                state.plan_run = result["run"]
                 verification = result["run"]["verification"]
                 if state.verification is None and verification["outcome"] != "verification_pending":
                     state.verification = verification
@@ -346,8 +399,12 @@ class MainWindow(QMainWindow):
             self.poll_status()
         elif job in {"status", "stop"}:
             state.status_error = code
-        elif job == "verify":
-            state.verify_error = code
+        elif job == "discover":
+            return
+        elif job.startswith("verify:"):
+            state.verify_run_id = None
+            if job[len("verify:") :] == state.run_id:
+                state.verify_error = code
         elif job == "export":
             state.export_error = code
         elif job.startswith("report:"):

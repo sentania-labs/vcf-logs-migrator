@@ -51,6 +51,8 @@ ERROR_TEXT = {
 
 
 def describe_error(code: str) -> str:
+    if code.startswith("gui:"):
+        return code[4:]
     try:
         return ERROR_TEXT[Code(code)]
     except ValueError:
@@ -268,8 +270,40 @@ def connection_checks(discovered: dict | None, compatible: str | None) -> list[t
 # Plan -------------------------------------------------------------------------------------
 
 
-def _bucket_label(bucket: dict) -> str:
-    return f"{bucket['node']} · {bucket['id'][:8]}"
+def axis_labels(extent: tuple[int, int] | None) -> tuple[str, str, str]:
+    """Start, middle and end day labels for the timeline axis."""
+    if extent is None:
+        return ("", "", "")
+    start, end = extent
+    middle = start + (end - start) // 2
+    return (format_day(day_of(start)), format_day(day_of(middle)), format_day(day_of(end - 1)))
+
+
+def window_error(start: date, end_inclusive: date) -> str | None:
+    if end_inclusive < start:
+        return "End date must be on or after the start date."
+    return None
+
+
+def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
+    """Say what is actually wrong with a refused preview."""
+    if code == Code.INCOMPLETE.value and discovered and window:
+        sealed = [
+            b
+            for b in discovered["source"]["buckets"]
+            if b["status"] != "active" and b.get("start") is not None and b.get("end") is not None
+        ]
+        overlapping = [b for b in sealed if b["start"] < window.end and b["end"] >= window.start]
+        extent = history_extent(discovered["source"])
+        if not overlapping:
+            span = f" Source history spans {format_day_range(*extent)}." if extent else ""
+            return "No sealed history in these dates." + span
+        if not discovered["destination"].get("history_complete", True):
+            return (
+                "The destination's transfer history is incomplete, so overlap cannot be ruled out."
+            )
+        return "Some selected groups have unproven date bounds, so the preview cannot be trusted."
+    return describe_error(code)
 
 
 def plan_view(run: dict, discovered: dict | None) -> dict:
@@ -283,16 +317,25 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
     size = sum(b["size"] for b in selected)
     groups = [
         (
-            _bucket_label(b),
+            f"Group {index} · {b['node']}",
             format_day_range(b["start"], b["end"], inclusive_end=True, suffix=""),
             f"{format_bytes(b['size'])} / {format_count(b['messages'])}",
             "Import",
         )
-        for b in selected
+        for index, b in enumerate(selected, start=1)
     ]
-    for key in active:
+    tips = [f"Bucket {b['id']} on {b['node']}" for b in selected]
+    for index, key in enumerate(active, start=len(selected) + 1):
         node, _, ident = key.rpartition("/")
-        groups.append((f"{node} · {ident[:8]}", "Open; may advance", "Unknown", "Open · exclude"))
+        groups.append((f"Group {index} · {node}", "Open; may advance", "Unknown", "Open · exclude"))
+        tips.append(f"Open bucket {ident} on {node}")
+    if plan["last_fully_sealed_day"]:
+        sealed_text = f"Last fully sealed day: {format_day_label(plan['last_fully_sealed_day'])}."
+    else:
+        sealed_text = (
+            "Last fully sealed day: not proven (open group bounds unknown); "
+            f"sealed groups end {format_day(day_of(coverage['end'] - 1))}."
+        )
     checks = [
         ("Destination overlap", "None in selected whole groups"),
         (
@@ -355,8 +398,11 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         "window": (plan["window"]["start"], plan["window"]["end"]),
         "extent": history_extent(discovered["source"]) if discovered else None,
         "last_sealed_day": plan["last_fully_sealed_day"],
+        "sealed_text": sealed_text,
+        "axis": axis_labels(history_extent(discovered["source"]) if discovered else None),
         "active_count": len(active),
         "groups": groups,
+        "group_tips": tips,
         "checks": checks,
         "storage": storage,
         "warnings": plan["warnings"],
@@ -444,11 +490,27 @@ STATE_LABEL = {
 }
 
 
-def progress_view(status: dict | None, *, stale: bool, last_ok: str | None, zone: str) -> dict:
-    if status is None:
+def progress_view(
+    status: dict | None,
+    *,
+    stale: bool,
+    last_ok: str | None,
+    zone: str,
+    hosts: tuple[str, str] | None = None,
+    start_uncertain: bool = False,
+) -> dict:
+    if status is None or (status["status"] == "idle" and start_uncertain):
         return {
             "state": "idle",
             "banner": (
+                "warn",
+                "Start outcome uncertain · no task observed",
+                "The last Start may not have reached the API and the destination reports no "
+                "task. Refresh status; if none appears, refresh the preview on Discovery & Plan "
+                "and start again.",
+            )
+            if start_uncertain
+            else (
                 "info",
                 "No API task observed",
                 "Start a migration from Discovery & Plan, "
@@ -539,11 +601,14 @@ def progress_view(status: dict | None, *, stale: bool, last_ok: str | None, zone
         buckets = f"{len(node['completed'])} received"
         if node["skipped"]:
             buckets += f" · {len(node['skipped'])} skipped"
-        error = (
-            "Last response stale"
-            if stale and node["status"] == "running"
-            else (f"{len(node['skipped'])} skipped by the API" if node["skipped"] else "—")
-        )
+        if stale and node["status"] == "running":
+            error = "Last response stale"
+        elif node["status"] == "failed":
+            error = "Node reported failure"
+        elif node["skipped"]:
+            error = f"{len(node['skipped'])} skipped by the API"
+        else:
+            error = "—"
         nodes.append(
             (node["node"], node_state, format_bytes(node["bytes_transferred"]), buckets, error)
         )
@@ -553,7 +618,9 @@ def progress_view(status: dict | None, *, stale: bool, last_ok: str | None, zone
         ("Window", format_day_range(window["start"], window["end"]) if window else UNAVAILABLE),
         (
             "Source → destination",
-            f"{status.get('source') or '?'} → {status.get('destination') or '?'}",
+            f"{hosts[0]} → {hosts[1]}"
+            if hosts
+            else f"{status.get('source') or '?'} → {status.get('destination') or '?'}",
         ),
         ("Last successful poll", format_time(last_ok, zone)),
         (
@@ -624,8 +691,93 @@ def compress_daily(daily: list[dict]) -> list[tuple[str, str, str, str]]:
     return rows
 
 
+def outcome_label(verification: dict | None) -> str:
+    """Plain words for a run's verification state; never 'success' with groups missing."""
+    if not verification:
+        return "verification pending"
+    outcome = verification.get("outcome")
+    missing = verification.get("buckets", {}).get("not_received", [])
+    if outcome == "verified_success" and missing:
+        return f"verified · {len(missing)} group{'s' if len(missing) != 1 else ''} not received"
+    return {
+        "verified_success": "verified",
+        "verified_discrepancy": "counts differ",
+        "incomplete_verification": "incomplete",
+    }.get(outcome, "verification pending")
+
+
+def missing_days(result: dict, run: dict | None) -> list[tuple[str, int]]:
+    """Per-day source counts of selected groups the API never delivered."""
+    if not run or "source_by_bucket" not in run:
+        return []
+    days: dict[str, int] = {}
+    for key in result.get("buckets", {}).get("not_received", []):
+        for day, count in run["source_by_bucket"].get(key, {}).get("daily", []):
+            days[day] = days.get(day, 0) + count
+    return sorted(days.items())
+
+
+def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]]:
+    """Reconciliation rows in date order, including days the API never delivered."""
+    keyed: list[tuple[str, tuple[str, str, str, str]]] = []
+    current: list[dict] = []
+
+    def flush():
+        if not current:
+            return
+        first, last = current[0]["day"], current[-1]["day"]
+        label = (
+            format_day_label(first)
+            if first == last
+            else f"{format_day_label(first)}–{format_day_label(last)}"
+        )
+        keyed.append(
+            (
+                first,
+                (
+                    label,
+                    format_count(sum(r["expected"] for r in current)),
+                    format_count(sum(r["actual"] for r in current)),
+                    "Match",
+                ),
+            )
+        )
+        current.clear()
+
+    for row in result.get("daily", []):
+        if row["difference"] == 0:
+            if current and date.fromisoformat(row["day"]) - date.fromisoformat(
+                current[-1]["day"]
+            ) != timedelta(days=1):
+                flush()
+            current.append(row)
+            continue
+        flush()
+        keyed.append(
+            (
+                row["day"],
+                (
+                    format_day_label(row["day"]),
+                    format_count(row["expected"]),
+                    format_count(row["actual"]),
+                    f"{row['difference']:+,}".replace("-", "−"),
+                ),
+            )
+        )
+    flush()
+    for day, count in missing_days(result, run):
+        keyed.append(
+            (day, (format_day_label(day), format_count(count), "Not received", "Not received"))
+        )
+    return [row for _, row in sorted(keyed, key=lambda item: item[0])]
+
+
 def verification_view(
-    result: dict | None, status: dict | None, active_count: int, preview: bool
+    result: dict | None,
+    status: dict | None,
+    active_count: int,
+    preview: bool,
+    run: dict | None = None,
 ) -> dict:
     api = status["status"].upper() if status else "Not observed"
     checks = [
@@ -663,9 +815,25 @@ def verification_view(
             ],
         }
     outcome = result["outcome"]
-    if outcome == "verified_success":
+    missing = result.get("buckets", {}).get("not_received", [])
+    missing_labels = [format_day_label(day) for day, _ in missing_days(result, run)]
+    if outcome == "verified_success" and missing:
+        outcome = "partial"
         banner = (
-            "ok",
+            "bad",
+            f"{len(missing)} selected group{'s' if len(missing) != 1 else ''} not received",
+            (
+                f"{', '.join(missing_labels)} {'is' if len(missing_labels) == 1 else 'are'} not on "
+                "the destination; the API skipped the group. "
+                if missing_labels
+                else "The API skipped a selected group. "
+            )
+            + "Received groups match their counts. Plan a window that covers the missing "
+            "history again, or export the evidence for the appliance administrator.",
+        )
+    elif outcome == "verified_success":
+        banner = (
+            "warn" if active_count else "ok",
             "Included history verified",
             "Complete repeated daily counts match. "
             "Open groups were excluded; requested coverage is not complete."
@@ -684,15 +852,23 @@ def verification_view(
         )
     else:
         reason = result.get("reason")
+        task = status["status"] if status else None
+        why = {
+            "incomplete_evidence": "No selected group has been received yet, or the count queries "
+            "did not complete and repeat consistently.",
+            "destination_busy": "The destination task is still running.",
+            "topology_changed": "The destination identity changed since the plan.",
+        }.get(reason or "", describe_error(reason) if reason else "")
+        if task in {"cancelled", "failed"}:
+            why += (
+                f" The API task {task}; plan the remainder with a window that excludes "
+                "received groups."
+            )
         banner = (
             "warn",
             "Verification incomplete",
-            (
-                describe_error(reason)
-                if reason
-                else "Count queries did not complete or repeat consistently."
-            )
-            + " Received partial counts are not a destination total.",
+            (why + " " if why else "")
+            + "Received partial counts are not a destination total; no success is claimed.",
         )
     complete = result.get("complete", False)
     tiles = [
@@ -716,16 +892,20 @@ def verification_view(
             "Not imported",
         ),
     ]
-    rows = compress_daily(result["daily"]) if complete else []
+    rows = daily_rows(result, run) if complete else []
     buckets = result.get("buckets", {})
     if buckets:
         received = buckets.get("covered", [])
-        missing = buckets.get("not_received", [])
         checks.append(
             (
-                "Buckets",
+                "Groups",
                 f"{len(received)} received"
-                + (f"; not received: {', '.join(missing)}" if missing else ""),
+                + (
+                    f" · {len(missing)} not received"
+                    + (f" ({', '.join(missing_labels)})" if missing_labels else "")
+                    if missing
+                    else ""
+                ),
             )
         )
     checks.append(
@@ -745,27 +925,84 @@ KIND_LABEL = {
 }
 
 
+def _value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "unset"
+    return str(value)
+
+
+def rule_summary(kind: str, rule: dict | None) -> str:
+    """The substance of a rule in one line: target, criteria, mask or filter."""
+    if not rule:
+        return "Not readable"
+    if kind == "forwarding":
+        target = f"{rule.get('host', '?')}:{rule.get('port', '?')}"
+        protocol = str(rule.get("protocol", "")).lower() or "?"
+        transport = str(rule.get("transportProtocol", "")).lower()
+        tls = "TLS" if rule.get("sslEnabled") else "plain"
+        parts = [target, protocol + (f"/{transport}" if transport else ""), tls]
+        if rule.get("filter"):
+            parts.append(f"filter {rule['filter']}")
+        return " · ".join(parts)
+    if kind == "partitions":
+        criteria = rule.get("criteria") or "all events"
+        seconds = rule.get("retention_seconds") or rule.get("retentionSeconds") or 0
+        retention = f"{int(seconds) // 86400} days" if seconds else "no retention limit"
+        return f"{criteria} · {retention}"
+    if kind == "masking":
+        selector = rule.get("selector", "?")
+        mask = rule.get("maskValue", "****")
+        field_name = rule.get("fieldName", "text")
+        state = "enabled" if rule.get("enabled", True) else "disabled"
+        return f"{selector} → {mask} ({field_name}) · {state}"
+    if kind == "filters":
+        state = "enabled" if rule.get("enabled") else "disabled"
+        return f"{rule.get('filter', '?')} · {state}"
+    return ", ".join(f"{k}={_value(v)}" for k, v in rule.items() if k not in {"id", "name"})
+
+
 def config_rows(comparison: dict | None) -> list[dict]:
     if comparison is None:
         return []
+    details = comparison.get("details", {})
     rows = []
     for rule in comparison["rules"]:
         kind, status = rule["type"], rule["status"]
         changed = rule.get("changed_fields", [])
         warnings = rule.get("warnings", [])
         tls = any("acceptCert" in w for w in warnings)
+        detail = details.get(rule["selector"], {})
+        source_rule, destination_rule = detail.get("source"), detail.get("destination")
+        if detail:
+            source = rule_summary(kind, source_rule)
+        elif status == "differs" and changed:
+            source = "Differs in " + ", ".join(changed)
+        else:
+            source = "Source rule"
         if status == "missing":
             destination = "Missing"
             action = "Create"
             if kind == "partitions":
                 action += " · one destination restart"
             elif kind == "forwarding" and tls:
-                action += " · TLS certificate accepted"
+                action += " · trust target certificate"
             else:
                 action += " unchanged"
         elif status == "differs":
-            destination = "Same name · differs"
-            action = "Update " + (", ".join(changed) if changed else "definition")
+            if destination_rule is not None and changed:
+                destination = "Same name · " + ", ".join(
+                    f"{field}: {_value(destination_rule.get(field))}" for field in changed[:3]
+                )
+                action = "Update " + ", ".join(
+                    f"{field}: {_value(destination_rule.get(field))} → "
+                    f"{_value((source_rule or {}).get(field))}"
+                    for field in changed[:3]
+                )
+            else:
+                destination = "Same name · differs"
+                action = "Update " + (", ".join(changed) if changed else "definition")
         else:
             destination = "Identical"
             action = "Skip"
@@ -773,9 +1010,7 @@ def config_rows(comparison: dict | None) -> list[dict]:
             {
                 "selector": rule["selector"],
                 "rule": f"{KIND_LABEL.get(kind, kind)} · {rule['name']}",
-                "source": "Source rule"
-                if status != "differs"
-                else "Differs in " + ", ".join(changed),
+                "source": source,
                 "destination": destination,
                 "action": action,
                 "selectable": status != "identical",
@@ -851,20 +1086,40 @@ def config_banner(result: dict | None) -> tuple[str, str, str] | None:
 # Reports ----------------------------------------------------------------------------------
 
 
-def report_view(run: dict, events: list[dict], status: dict | None, zone: str) -> dict:
+def report_view(
+    run: dict,
+    events: list[dict],
+    status: dict | None,
+    zone: str,
+    hosts: tuple[str, str] | None = None,
+    index: int | None = None,
+) -> dict:
     plan = run["plan"]
     verification = run["verification"]
     outcome = verification["outcome"]
+    missing = verification.get("buckets", {}).get("not_received", [])
     authorized = next((e["at"] for e in events if e["kind"] == "transfer_authorized"), None)
     task_state = status["status"].upper() if status else "Not observed"
+    name = f"Run {index}" if index is not None else f"Run {run['id'][:8]}"
     return {
-        "subtitle": f"{run['id'][:8]} · {outcome.replace('_', ' ')}",
+        "subtitle": f"{name} · {outcome_label(verification)}",
         "banner": {
             "verified_success": (
-                "ok",
+                "bad",
+                f"{len(missing)} selected group{'s' if len(missing) != 1 else ''} not received",
+                "The API skipped part of the selection; received groups match their counts. "
+                "This is not a complete migration of the requested dates.",
+            )
+            if missing
+            else (
+                "warn" if plan["active_skipped"] else "ok",
                 "Included history verified",
                 "Complete repeated daily counts matched. "
-                "Open groups were excluded as acknowledged.",
+                + (
+                    "Open groups were excluded as acknowledged."
+                    if plan["active_skipped"]
+                    else "Every selected group was received."
+                ),
             ),
             "verified_discrepancy": (
                 "bad",
@@ -883,7 +1138,8 @@ def report_view(run: dict, events: list[dict], status: dict | None, zone: str) -
         "rows": [
             (
                 "Source → destination",
-                f"{format_version(plan['source']['version'])} → "
+                (f"{hosts[0]} → {hosts[1]} · " if hosts else "")
+                + f"{format_version(plan['source']['version'])} → "
                 f"{format_version(plan['destination']['version'])}",
             ),
             (
@@ -912,7 +1168,7 @@ def report_view(run: dict, events: list[dict], status: dict | None, zone: str) -
                 if verification.get("complete")
                 else "Pending",
             ),
-            ("Verification", verification.get("method", outcome.replace("_", " "))),
+            ("Verification", outcome_label(verification).capitalize()),
         ],
         "ack_text": "“I understand you aren't going to copy the latest data.”",
         "ack_recorded": (
@@ -924,10 +1180,55 @@ def report_view(run: dict, events: list[dict], status: dict | None, zone: str) -
     }
 
 
-def run_label(run: dict) -> str:
+def run_label(run: dict, index: int | None = None) -> str:
     plan = run["plan"]
+    name = f"Run {index}" if index is not None else f"Run {run['id'][:8]}"
     return (
-        f"{run['id'][:8]} · "
+        f"{name} · "
         f"{format_day_range(plan['window']['start'], plan['window']['end'])} · "
-        f"{run['verification']['outcome'].replace('_', ' ')}"
+        f"{outcome_label(run['verification'])}"
     )
+
+
+# Input validation (pure) -----------------------------------------------------------------
+
+
+def missing_fields(values: dict[str, str], preview: bool) -> list[str]:
+    """Labels of the connection fields that must be filled before a test."""
+    required = [
+        ("source_host", "Cluster member"),
+        ("ssh_user", "SSH user"),
+        ("ssh_password", "SSH password"),
+        ("source_user", "Logs API user"),
+        ("source_password", "Logs API password"),
+        ("destination_host", "Logs host and port"),
+    ]
+    if preview:
+        required += [("ops_url", "VCF Operations URL"), ("ops_token", "VCF Operations token")]
+    else:
+        required += [
+            ("destination_user", "Destination Logs API user"),
+            ("destination_password", "Destination Logs API password"),
+        ]
+    return [label for key, label in required if not (values.get(key) or "").strip()]
+
+
+def validate_settings(fixture: str, journal: str, timezone: str) -> dict[str, str]:
+    """Field name to reason for every setting that cannot be saved as typed."""
+    from pathlib import Path
+    from zoneinfo import available_timezones
+
+    problems: dict[str, str] = {}
+    if fixture and not Path(fixture).expanduser().is_file():
+        problems["fixture"] = f"File not found: {fixture}"
+    if not journal:
+        problems["journal"] = "A journal file path is required."
+    else:
+        parent = Path(journal).expanduser().parent
+        if parent.exists() and not parent.is_dir():
+            problems["journal"] = f"Not a folder: {parent}"
+        elif Path(journal).expanduser().is_dir():
+            problems["journal"] = "The journal path must name a file, not a folder."
+    if timezone not in available_timezones() and timezone != "UTC":
+        problems["timezone"] = f"Unknown time zone: {timezone}"
+    return problems

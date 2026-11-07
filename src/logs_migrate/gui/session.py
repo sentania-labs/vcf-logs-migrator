@@ -121,7 +121,29 @@ class Session:
         return written
 
     def config_compare(self) -> dict:
-        return self._engine().config_compare()
+        """The engine's comparison plus the rule bodies it compared, for display only."""
+        comparison = self._engine().config_compare()
+        details: dict[str, dict] = {}
+        reader = getattr(self.env, "config_rules", None)
+        if reader is not None:
+            kinds = {row["type"] for row in comparison["rules"]}
+            inventory = {}
+            for kind in kinds:
+                try:
+                    inventory[kind] = (
+                        {r["name"]: r for r in reader("source", kind)},
+                        {r["name"]: r for r in reader("destination", kind)},
+                    )
+                except Exception:
+                    inventory[kind] = ({}, {})
+            for row in comparison["rules"]:
+                source, destination = inventory.get(row["type"], ({}, {}))
+                details[row["selector"]] = {
+                    "source": source.get(row["name"]),
+                    "destination": destination.get(row["name"]),
+                }
+        comparison["details"] = details
+        return comparison
 
     def config_apply(self, *, selection: list[str]) -> dict:
         return self._engine().config_apply(list(selection))

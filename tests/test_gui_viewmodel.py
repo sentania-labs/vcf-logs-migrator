@@ -143,7 +143,8 @@ def test_verification_view_states(rig):
     status = engine.status()
     result = engine.verify(run["id"])
     view = vm.verification_view(result, status, 1, False)
-    assert view["banner"][0] == "ok" and view["tiles"][0][1] == "8"
+    assert view["banner"][0] == "warn" and view["tiles"][0][1] == "8"  # open group excluded
+    assert vm.verification_view(result, status, 0, False)["banner"][0] == "ok"
     assert view["rows"] and all(r[3] == "Match" for r in view["rows"])
     assert (
         dict(view["checks"])["Destination API task now"]
@@ -208,7 +209,7 @@ def test_config_rows_and_results_from_engine_shapes():
     assert [r["action"] for r in rows] == [
         "Create · one destination restart",
         "Update enabled",
-        "Create · TLS certificate accepted",
+        "Create · trust target certificate",
         "Skip",
     ]
     assert [r["selected"] for r in rows] == [True, True, True, False]
@@ -245,7 +246,8 @@ def test_report_view_records_the_acknowledgment(rig):
     view = vm.report_view(stored, events, engine.status(), "America/Chicago")
     assert view["ack_recorded"].startswith("Recorded before start · ")
     assert dict(view["rows"])["Selected groups"] == "3 sealed · 1 open excluded"
-    assert vm.run_label(stored).startswith(run["id"][:8])
+    assert vm.run_label(stored).startswith(f"Run {run['id'][:8]}")
+    assert vm.run_label(stored, 1).startswith("Run 1 ·")
 
 
 def test_settings_round_trip_and_bounds(tmp_path):
@@ -313,3 +315,112 @@ def test_format_time_renders_zone_local_time_without_platform_flags():
     assert vm.format_time("2026-11-06T15:04:05+00:00", "America/Chicago") == "Nov 6, 09:04:05 CST"
     assert vm.format_time("2026-03-02T01:02:03+00:00", "UTC") == "Mar 2, 01:02:03 UTC"
     assert vm.format_time(None, "UTC") == vm.UNAVAILABLE
+
+
+def test_validation_helpers_say_what_is_wrong(tmp_path):
+    problems = vm.validate_settings(
+        "/nowhere/x.fixture", str(tmp_path / "j.sqlite"), "Mars/Olympus"
+    )
+    assert problems["fixture"].startswith("File not found")
+    assert "Mars/Olympus" in problems["timezone"] and "journal" not in problems
+    assert vm.validate_settings("", str(tmp_path), "UTC") == {
+        "journal": "The journal path must name a file, not a folder."
+    }
+    assert vm.validate_settings("", str(tmp_path / "j.sqlite"), "UTC") == {}
+    assert vm.window_error(date(2026, 3, 2), date(2026, 3, 1)).startswith("End date")
+    assert vm.window_error(date(2026, 3, 1), date(2026, 3, 1)) is None
+    values = {"source_host": "a", "ssh_user": "root"}
+    assert "SSH password" in vm.missing_fields(values, False)
+    assert "VCF Operations token" in vm.missing_fields(values, True)
+    assert "Destination Logs API password" not in vm.missing_fields(values, True)
+
+
+def test_plan_error_text_distinguishes_an_empty_window(rig):
+    engine, _, _ = rig
+    discovered = engine.discover()
+    empty = vm.window_from_days(date(2025, 1, 1), date(2025, 1, 31))
+    text = vm.plan_error_text("incomplete_evidence", discovered, empty)
+    assert text.startswith("No sealed history in these dates.") and "spans" in text
+    inside = vm.window_from_days(date(2026, 3, 1), date(2026, 3, 1))
+    assert "unproven" in vm.plan_error_text("incomplete_evidence", discovered, inside)
+    assert vm.plan_error_text("destination_busy", discovered, inside) == vm.describe_error(
+        "destination_busy"
+    )
+    assert vm.describe_error("gui:custom text") == "custom text"
+
+
+def test_outcome_labels_and_missing_days(rig):
+    engine, env, _ = rig
+    key = env.data["source_events"][0]["bucket"]
+    env.data["skip_buckets"] = [key]
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    result = engine.verify(run["id"])
+    stored = engine.journal.load(run["id"])
+    assert result["buckets"]["not_received"] == [key]
+    assert vm.outcome_label(result) == "verified · 1 group not received"
+    assert vm.outcome_label(None) == "verification pending"
+    assert vm.outcome_label({"outcome": "verified_discrepancy"}) == "counts differ"
+    days = vm.missing_days(result, stored)
+    assert days and all(count > 0 for _, count in days)
+    rows = vm.daily_rows(result, stored)
+    assert any(row[3] == "Not received" for row in rows)
+    view = vm.verification_view(result, engine.status(), 1, False, stored)
+    assert view["outcome"] == "partial" and view["banner"][0] == "bad"
+    assert "not received" in view["banner"][1]
+    assert vm.run_label(stored, 2).startswith("Run 2 · ")
+
+
+def test_rule_summaries_show_substance():
+    forwarder = {"host": "siem.lab.example", "port": 6514, "protocol": "syslog", "sslEnabled": True}
+    assert vm.rule_summary("forwarding", forwarder) == "siem.lab.example:6514 · syslog · TLS"
+    assert vm.rule_summary(
+        "partitions", {"criteria": 'appname="demo"', "retention_seconds": 86400}
+    ) == ('appname="demo" · 1 days')
+    assert vm.rule_summary(
+        "masking", {"selector": "secret=(\\S+)", "maskValue": "****", "fieldName": "text"}
+    ).startswith("secret=(\\S+) → **** (text)")
+    assert vm.rule_summary("filters", {"filter": 'appname="debug"', "enabled": False}).endswith(
+        "disabled"
+    )
+    assert vm.rule_summary("filters", None) == "Not readable"
+    comparison = {
+        "rules": [
+            {
+                "selector": "filters:drop",
+                "type": "filters",
+                "name": "drop",
+                "status": "differs",
+                "changed_fields": ["enabled"],
+                "warnings": [],
+            },
+            {
+                "selector": "forwarding:fw",
+                "type": "forwarding",
+                "name": "fw",
+                "status": "missing",
+                "changed_fields": [],
+                "warnings": ["acceptCert"],
+            },
+        ],
+        "destination_only": [],
+        "details": {
+            "filters:drop": {
+                "source": {"filter": "a", "enabled": True},
+                "destination": {"filter": "a", "enabled": False},
+            },
+            "forwarding:fw": {"source": forwarder, "destination": None},
+        },
+    }
+    rows = vm.config_rows(comparison)
+    assert rows[0]["source"] == "a · enabled"
+    assert rows[0]["destination"] == "Same name · enabled: false"
+    assert rows[0]["action"] == "Update enabled: false → true"
+    assert rows[1]["source"].startswith("siem.lab.example:6514")
+    assert rows[1]["action"] == "Create · trust target certificate"
+    assert vm.axis_labels((1_780_272_000_000, 1_780_272_000_000 + 2 * DAY)) == (
+        "Jun 1",
+        "Jun 2",
+        "Jun 2",
+    )

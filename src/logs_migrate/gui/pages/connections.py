@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLineEdit, QWidget
+from PySide6.QtWidgets import QLineEdit
 
 from .. import viewmodel as vm
 from ..widgets import (
@@ -15,6 +15,7 @@ from ..widgets import (
     label,
     row,
     set_banner,
+    set_status,
 )
 
 
@@ -30,6 +31,7 @@ class ConnectionsPage(Page):
         super().__init__("Connections")
         self.app = app
         settings = app.state.settings
+        self.validation = ""
         self.error = banner("", "", "bad")
         self.error.hide()
         self.preview = banner(
@@ -81,29 +83,29 @@ class ConnectionsPage(Page):
         self.ops_token = _secret()
         destination_layout.addWidget(field("Logs host and port", self.destination_host))
         self.password_fields = columns(
-            field("Logs API user", self.destination_user),
-            field("Logs API password", self.destination_password),
+            field("Destination Logs API user", self.destination_user),
+            field("Destination Logs API password", self.destination_password),
         )
-        self.token_fields = QWidget()
-        token_layout = columns(
+        self.token_fields = columns(
             field("VCF Operations URL", self.ops_url), field("VCF Operations token", self.ops_token)
         )
-        self.token_fields = token_layout
         self.token_fields.hide()
         destination_layout.addWidget(self.password_fields)
         destination_layout.addWidget(self.token_fields)
         self.destination_badge = badge("Not tested")
         self.destination_button = button("Test destination", "", self.connect)
         destination_layout.addWidget(row(self.destination_button, self.destination_badge))
-        destination_layout.addWidget(
-            label(
-                "Test detects 9.1.1 and switches this card to VCF Operations token sign-in.",
-                "hint",
-                wrap=True,
-            )
+        self.switch_hint = label(
+            "Test detects 9.1.1 and switches this card to VCF Operations token sign-in.",
+            "hint",
+            wrap=True,
         )
+        destination_layout.addWidget(self.switch_hint)
         destination_layout.addStretch(1)
         self.body.addWidget(columns(source, destination))
+        # Enter in any field runs the same test the buttons run.
+        for edit in self.inputs():
+            edit.returnPressed.connect(self.connect)
 
         checks, checks_layout = card("Connection checks")
         self.checks = Table(["Check", "Result"])
@@ -128,6 +130,34 @@ class ConnectionsPage(Page):
         )
         self.refresh()
 
+    def inputs(self) -> list[QLineEdit]:
+        return [
+            self.source_host,
+            self.ssh_user,
+            self.ssh_password,
+            self.source_user,
+            self.source_password,
+            self.destination_host,
+            self.destination_user,
+            self.destination_password,
+            self.ops_url,
+            self.ops_token,
+        ]
+
+    def values(self) -> dict[str, str]:
+        return {
+            "source_host": self.source_host.text(),
+            "ssh_user": self.ssh_user.text(),
+            "ssh_password": self.ssh_password.text(),
+            "source_user": self.source_user.text(),
+            "source_password": self.source_password.text(),
+            "destination_host": self.destination_host.text(),
+            "destination_user": self.destination_user.text(),
+            "destination_password": self.destination_password.text(),
+            "ops_url": self.ops_url.text(),
+            "ops_token": self.ops_token.text(),
+        }
+
     def credentials(self) -> dict[str, str]:
         return {
             "source_ssh": self.ssh_password.text(),
@@ -148,6 +178,12 @@ class ConnectionsPage(Page):
 
     def connect(self) -> None:
         self.remember_addresses()
+        missing = vm.missing_fields(self.values(), self.app.state.preview)
+        if missing:
+            self.validation = "Enter " + ", ".join(missing) + " before testing."
+            self.refresh()
+            return
+        self.validation = ""
         self.source_badge.setText("Testing…")
         self.destination_badge.setText("Testing…")
         self.app.connect_environments(self.credentials())
@@ -160,12 +196,16 @@ class ConnectionsPage(Page):
             self.ops_token,
         ):
             widget.clear()
+        self.validation = ""
         self.app.disconnect_environments()
 
     def refresh(self) -> None:
         state = self.app.state
         discovered = state.discovered
-        if state.connect_error:
+        if self.validation:
+            set_banner(self.error, "Required fields are empty", self.validation, "bad")
+            self.error.show()
+        elif state.connect_error:
             set_banner(
                 self.error,
                 "Connection failed",
@@ -176,12 +216,10 @@ class ConnectionsPage(Page):
         else:
             self.error.hide()
         if discovered is None:
-            self.source_badge.setText("Not tested" if not state.connect_error else "Failed")
-            self.destination_badge.setText("Not tested" if not state.connect_error else "Failed")
+            failed = bool(state.connect_error) and not self.validation
             for widget in (self.source_badge, self.destination_badge):
-                widget.setProperty("status", "bad" if state.connect_error else "")
-                widget.style().unpolish(widget)
-                widget.style().polish(widget)
+                widget.setText("Failed" if failed else "Not tested")
+                set_status(widget, "bad" if failed else "")
             self.set_heading("Connections", "Use a member address for each cluster")
         else:
             source, destination = discovered["source"], discovered["destination"]
@@ -190,9 +228,7 @@ class ConnectionsPage(Page):
                 f"{vm.format_version(destination['version'])} · simulator"
             )
             for widget in (self.source_badge, self.destination_badge):
-                widget.setProperty("status", "ok")
-                widget.style().unpolish(widget)
-                widget.style().polish(widget)
+                set_status(widget, "ok")
             self.set_heading(
                 "Connections" + (" · 9.1.1 Preview" if state.preview else ""),
                 f"{vm.format_version(source['version'])} → "
@@ -205,6 +241,7 @@ class ConnectionsPage(Page):
         self.before_import.setVisible(state.preview)
         self.token_fields.setVisible(state.preview)
         self.password_fields.setVisible(not state.preview)
+        self.switch_hint.setVisible(not state.preview)
         self.destination_button.setText(
             "Exchange token and test" if state.preview else "Test destination"
         )

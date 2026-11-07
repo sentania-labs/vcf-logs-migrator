@@ -160,3 +160,171 @@ def test_results_from_a_previous_connection_are_dropped(driver):
     driver.idle()
     assert driver.state.status is None and not driver.state.connected
     assert not driver.window.worker.pending
+
+
+SKIPPED = "src-2/00000000-0000-0000-0000-000000000002"
+
+
+def test_cancel_button_confirms_then_cancels_the_task():
+    driver = Driver(FIXTURES / "sealed-populated.fixture", running_polls=20)
+    try:
+        driver.connect()
+        driver.plan()
+        driver.acknowledge()
+        driver.start()
+        assert driver.state.status["status"] == "running"
+        assert driver.cancel(), "the real Cancel button must send the stop request"
+        assert driver.state.status["status"] == "cancelled"
+        assert "CANCELLED" in driver.pages["migration"].banner.text()
+    finally:
+        driver.close()
+
+
+def test_skipped_selected_group_is_never_reported_as_success():
+    driver = Driver(
+        FIXTURES / "sealed-populated.fixture", running_polls=1, knobs={"skip_buckets": [SKIPPED]}
+    )
+    try:
+        driver.connect()
+        driver.plan()
+        driver.acknowledge()
+        driver.start()
+        driver.poll_until_finished()
+        assert SKIPPED in driver.state.status["skipped"]
+        driver.verify()
+        page = driver.pages["verification"]
+        assert driver.state.verification["buckets"]["not_received"] == [SKIPPED]
+        assert "not received" in page.banner.text()
+        assert page.banner.property("status") == "bad"
+        assert "group not received" in page.title.text()
+        assert "not received" in page.subtitle.text()
+        rows = [page.daily.item(r, 3).text() for r in range(page.daily.rowCount())]
+        assert "Not received" in rows
+        assert "Mar 2" in [page.daily.item(r, 0).text() for r in range(page.daily.rowCount())]
+        combo_text = driver.pages["reports"].runs.combo.currentText()
+        assert "not received" in combo_text and "success" not in combo_text
+        driver.show("reports")
+        assert driver.pages["reports"].banner.property("status") == "bad"
+    finally:
+        driver.close()
+
+
+def test_verification_results_bind_to_the_run_that_requested_them(driver):
+    driver.connect()
+    driver.plan()
+    run_a = driver.state.run_id
+    driver.plan()
+    run_b = driver.state.run_id
+    assert run_a != run_b and driver.state.run_id == run_b
+    stray = {"outcome": "verified_success", "complete": True, "daily": [], "buckets": {}}
+    driver.window.worker.pending.add("verify:" + run_a)
+    driver.window.job_generation["verify:" + run_a] = driver.window.generation
+    driver.window._done("verify:" + run_a, stray)
+    assert driver.state.verification is None, "run A's result must not land on run B"
+    driver.window.worker.pending.add("verify:" + run_b)
+    driver.window.job_generation["verify:" + run_b] = driver.window.generation
+    driver.window._done("verify:" + run_b, stray)
+    assert driver.state.verification is stray
+
+
+def test_editing_a_date_retires_the_preview_and_acknowledgment(driver):
+    from PySide6.QtCore import QDate
+
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    page = driver.pages["plan"]
+    assert page.start_button.isEnabled()
+    page.end_date.setDate(QDate(2026, 3, 2))
+    driver.wait(30)
+    assert not page.start_button.isEnabled()
+    assert not driver.state.acknowledged and not page.ack.isVisible()
+    assert "changed since the preview" in page.note.text()
+    page.start()  # Must be a no-op while the preview is stale.
+    driver.idle()
+    assert driver.state.started_run_id is None
+    assert driver.state.status is None or driver.state.status["status"] == "idle"
+    page.preview()
+    driver.until(lambda: "plan" not in driver.window.worker.pending)
+    driver.idle()
+    assert page.ack.isVisible() and not page.start_button.isEnabled()
+    driver.acknowledge()
+    assert page.start_button.isEnabled()
+
+
+def test_blocked_preview_keeps_the_date_editors_reachable(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.plan()
+    page = driver.pages["plan"]
+    assert page.stack.currentIndex() == 1 and page.change_button.isVisible()
+    page.change_dates()
+    driver.wait(30)
+    assert page.stack.currentIndex() == 0
+    assert page.start_date.isEnabled() and page.refresh_button.isEnabled()
+    assert "blocked" in page.error.text().lower() and page.error.isVisible()
+
+
+def test_validation_names_what_is_wrong(driver):
+    page = driver.pages["connections"]
+    page.destination_host.clear()
+    page.connect()
+    assert "Logs host and port" in page.error.text()
+    assert driver.state.connect_error is None and not driver.window.worker.pending
+    page.destination_host.setText("vcf-logs.lab.example:9543")
+    driver.state.settings.fixture_path = "/nowhere/missing.fixture"
+    driver.connect()
+    assert driver.state.connect_error.startswith("gui:")
+    assert "not found" in page.error.text() and "/nowhere/missing.fixture" in page.error.text()
+    driver.state.settings.fixture_path = str(driver.fixture)
+    driver.connect()
+    driver.show("plan")
+    plan = driver.pages["plan"]
+    from PySide6.QtCore import QDate
+
+    plan.start_date.setDate(QDate(2025, 1, 1))
+    plan.end_date.setDate(QDate(2025, 1, 31))
+    plan.preview()
+    driver.until(lambda: driver.state.plan_error is not None)
+    driver.idle()
+    assert "No sealed history in these dates" in plan.error.text()
+    plan.end_date.setDate(QDate(2024, 12, 1))
+    driver.wait(20)
+    assert plan.date_hint.isVisible() and "on or after" in plan.date_hint.text()
+    plan.preview()
+    assert "plan" not in driver.window.worker.pending
+
+
+def test_keyboard_reaches_the_sidebar_and_every_input_is_named(driver):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox, QDateEdit, QLineEdit, QSpinBox
+
+    assert driver.window.nav.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    unnamed = [
+        type(widget).__name__
+        for cls in (QLineEdit, QComboBox, QSpinBox, QDateEdit)
+        for widget in driver.window.findChildren(cls)
+        if not widget.accessibleName()
+        and widget.parent() is not None
+        and not isinstance(widget.parent(), (QComboBox, QSpinBox, QDateEdit))
+    ]
+    assert unnamed == []
+
+
+def test_settings_validate_inline_and_return_to_the_previous_page(driver):
+    driver.show("migration")
+    driver.window.show_page("settings")
+    page = driver.pages["settings"]
+    page.fixture.setText("/nowhere/missing.fixture")
+    page.timezone.setCurrentText("Mars/Olympus")
+    assert page.save() is False
+    assert page.hints["fixture"].isVisible() and "not found" in page.hints["fixture"].text()
+    assert page.hints["timezone"].isVisible()
+    assert driver.state.settings.timezone != "Mars/Olympus"
+    page.fixture.setText(str(driver.fixture))
+    page.timezone.setCurrentText("UTC")
+    assert page.save() is True
+    assert driver.window.current_page() == "migration"

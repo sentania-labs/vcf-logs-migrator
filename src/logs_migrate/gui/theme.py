@@ -72,10 +72,17 @@ def apply_theme(app: QApplication, theme: str) -> None:
             if role is not None:  # Accent arrived in Qt 6.6.
                 palette.setColor(getattr(QPalette.ColorGroup, group), role, QColor(color))
     app.setPalette(palette)
-    check = resources.files("logs_migrate.gui.lattice").joinpath("check.svg")
-    with resources.as_file(check) as path:
+    assets = resources.files("logs_migrate.gui.lattice")
+    suffix = "light" if theme == "light" else "dark"
+    with (
+        resources.as_file(assets.joinpath("check.svg")) as check,
+        resources.as_file(assets.joinpath(f"arrow-up-{suffix}.svg")) as up,
+        resources.as_file(assets.joinpath(f"arrow-down-{suffix}.svg")) as down,
+    ):
         extra = (
-            EXTRA.replace("CHECK_SVG", path.as_posix())
+            EXTRA.replace("CHECK_SVG", check.as_posix())
+            .replace("ARROW_UP", up.as_posix())
+            .replace("ARROW_DOWN", down.as_posix())
             .replace("BOX_BORDER", TOKENS[theme]["ink-subtle"])
             .replace("ACCENT", TOKENS[theme]["accent"])
         )
@@ -93,7 +100,7 @@ QListWidget[lattice="steps"]::item { padding: 8px 12px; border-left: 3px solid t
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: transparent; }
 QTableWidget { border: none; gridline-color: palette(midlight); }
-QTableWidget::item { padding: 4px 8px; }
+QTableWidget::item { padding: 3px 8px; }
 QHeaderView::section { font-size: 10.5px; font-weight: 650; padding: 5px 6px; border: none;
   border-bottom: 1px solid palette(mid); }
 QLabel[lattice="metric"] { font-family: monospace; font-size: 17px; font-weight: 650; }
@@ -102,4 +109,8 @@ QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid BOX_BORDER;
 QCheckBox::indicator:checked { background: ACCENT; border-color: ACCENT; image: url(CHECK_SVG); }
 QCheckBox::indicator:disabled { background: palette(alternate-base); border-color: palette(mid); }
 QLabel[lattice="value"] { font-weight: 400; }
+QSpinBox::up-button, QSpinBox::down-button { width: 18px; border: none; background: transparent; }
+QSpinBox::up-arrow { image: url(ARROW_UP); width: 10px; height: 6px; }
+QSpinBox::down-arrow { image: url(ARROW_DOWN); width: 10px; height: 6px; }
+QLabel[lattice="hint"][status="bad"] { color: palette(text); }
 """

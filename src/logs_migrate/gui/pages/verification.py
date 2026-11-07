@@ -42,25 +42,29 @@ class VerificationPage(Page):
         run_id = self.app.state.run_id
         if run_id:
             self.verify_button.setEnabled(False)
-            self.app.submit("verify", "verify", run_id=run_id)
+            self.app.verify_run(run_id)
 
     def refresh(self) -> None:
         state = self.app.state
         self.runs.refresh()
         preview = state.preview
-        view = vm.verification_view(state.verification, state.status, state.active_count, preview)
+        run = state.plan_run or (state.report["run"] if state.report else None)
+        view = vm.verification_view(
+            state.verification, state.status, state.active_count, preview, run
+        )
         title = "Verification" + (" · 9.1.1 Preview" if preview else "")
         if view["outcome"] == "verified_discrepancy":
             title += " · daily mismatch"
         elif view["outcome"] == "incomplete_verification":
             title += " · incomplete"
-        run = state.plan_run or (state.report["run"] if state.report else None)
+        elif view["outcome"] == "partial":
+            title += " · group not received"
         if run:
             coverage = run["plan"]["coverage"]
             subtitle = (
                 vm.format_day_range(coverage["start"], coverage["end"])
                 + " · "
-                + view["outcome"].replace("_", " ")
+                + vm.outcome_label(state.verification)
             )
         else:
             subtitle = (
@@ -76,6 +80,8 @@ class VerificationPage(Page):
                 "Verification request failed",
                 vm.describe_error(state.verify_error),
             )
+        elif state.verify_run_id and state.verify_run_id == state.run_id:
+            status, heading, text = ("info", "Verifying…", "Counting on both appliances.")
         set_banner(self.banner, heading, text, status)
         for (value, caption), (_title, text_value, text_caption) in zip(
             self.tiles, view["tiles"], strict=True
@@ -86,10 +92,15 @@ class VerificationPage(Page):
         self.checks.set_rows(view["checks"])
         self.verify_button.setText("Retry counts" if state.verification else "Verify counts")
         self.verify_button.setEnabled(
-            bool(state.run_id) and state.connected and "verify" not in self.app.worker.pending
+            bool(state.run_id) and state.connected and state.verify_run_id is None
         )
         self.report_button.setEnabled(bool(state.run_id))
-        if view["outcome"] == "verified_success":
+        if view["outcome"] == "partial":
+            self.note.setText(
+                "A selected group never arrived. This is not a complete migration of the "
+                "requested dates; plan the missing history again."
+            )
+        elif view["outcome"] == "verified_success":
             self.note.setText(
                 "Counts cover included history only; API completion can hide skipped groups."
             )

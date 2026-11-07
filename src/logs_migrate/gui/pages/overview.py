@@ -106,9 +106,13 @@ class OverviewPage(Page):
         )
         extent = vm.history_extent(source)
         sealed = [b for b in source["buckets"] if b["status"] != "active"]
+        hosts = self.app.hosts() or (source["id"], destination["id"])
         self.source_rows.set_rows(
             [
-                ("Cluster", source["id"]),
+                (
+                    "Cluster",
+                    f"{hosts[0]} ({source['id']})" if hosts[0] != source["id"] else source["id"],
+                ),
                 ("Version", vm.cluster_summary(source)),
                 (
                     "Available history",
@@ -119,7 +123,12 @@ class OverviewPage(Page):
         )
         self.destination_rows.set_rows(
             [
-                ("Cluster", destination["id"]),
+                (
+                    "Cluster",
+                    f"{hosts[1]} ({destination['id']})"
+                    if hosts[1] != destination["id"]
+                    else destination["id"],
+                ),
                 ("Version", vm.cluster_summary(destination)),
                 (
                     "Existing history",
@@ -148,18 +157,24 @@ class OverviewPage(Page):
             self.config_line.setText("Not compared yet.")
         if state.plan_run:
             view = vm.plan_view(state.plan_run, state.discovered)
+            started = "source_by_bucket" in state.plan_run
+            verification = state.plan_run.get("verification")
             self.plan_rows.set_rows(
                 [
                     ("Requested", view["requested"]),
                     ("Sealed coverage", view["included"]),
                     (
-                        "To import",
+                        "Imported" if started else "To import",
                         f"{vm.format_count(view['events'])} events · "
                         f"{vm.format_bytes(view['size'])}",
                     ),
                     (
                         "Latest data",
                         "Open; excluded" if view["active_count"] else "No open groups",
+                    ),
+                    (
+                        "Verification",
+                        vm.outcome_label(verification).capitalize() if started else "Not started",
                     ),
                 ]
             )

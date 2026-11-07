@@ -15,7 +15,14 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 class Driver:
     """Runs the Qt event loop in short waits so each step observes the worker's result."""
 
-    def __init__(self, fixture: Path, *, running_polls: int = 1, config: Path | None = None):
+    def __init__(
+        self,
+        fixture: Path,
+        *,
+        running_polls: int = 1,
+        config: Path | None = None,
+        knobs: dict | None = None,
+    ):
         from PySide6.QtWidgets import QApplication
 
         from logs_migrate.gui.app import create
@@ -31,6 +38,7 @@ class Driver:
                 data[scope]["partitions"] = extra[scope]["partitions"]
         data["complete_after_polls"] = running_polls
         data["api_poll_seconds"] = 12
+        data.update(knobs or {})  # Simulator knobs: skip_buckets, cancel_after, faults, ...
         self.fixture = base / "fixture.fixture"
         self.fixture.write_text(json.dumps(data))
         self.journal = base / "journal.sqlite"
@@ -116,6 +124,19 @@ class Driver:
         self.pages["verification"].verify()
         self.until(lambda: self.state.verification is not None or self.state.verify_error)
         self.idle()
+
+    def cancel(self) -> bool:
+        """Press the real Cancel button with the confirmation answered Yes."""
+        from PySide6.QtWidgets import QMessageBox
+
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+        try:
+            self.pages["migration"].cancel_button.click()
+        finally:
+            QMessageBox.question = original
+        self.idle()
+        return self.state.status is not None and self.state.status["status"] == "cancelled"
 
     def compare(self) -> None:
         self.show("configuration")

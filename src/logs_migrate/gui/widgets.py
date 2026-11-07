@@ -155,7 +155,10 @@ class Table(QTableWidget):
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     def set_rows(
-        self, rows: Iterable[Sequence[str]], widgets: dict[int, QWidget] | None = None
+        self,
+        rows: Iterable[Sequence[str]],
+        widgets: dict[int, QWidget] | None = None,
+        tips: Sequence[str] | None = None,
     ) -> None:
         rows = list(rows)
         self.setRowCount(len(rows))
@@ -163,6 +166,8 @@ class Table(QTableWidget):
             for c, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                # Narrow windows truncate cells; the full text stays one hover away.
+                item.setToolTip(tips[r] if tips and tips[r] else str(value))
                 self.setItem(r, c, item)
         for (r, c), widget in (widgets or {}).items():
             self.setCellWidget(r, c, widget)
@@ -186,7 +191,7 @@ class TimelineBar(QWidget):
         self.span: tuple[int, int] | None = None
         self.text = ""
         self.style_name = "solid"  # solid, dashed, soft, marker
-        self.setFixedHeight(22)
+        self.setFixedHeight(20)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_span(self, extent, span, text: str, style_name: str = "solid") -> None:
@@ -275,14 +280,27 @@ class Page(QWidget):
         footer_layout.addLayout(self.actions)
         outer.addWidget(self.footer)
 
+        self.primary_button: QPushButton | None = None
+
     def set_heading(self, title: str, subtitle: str) -> None:
         self.title.setText(title)
         self.subtitle.setText(subtitle)
 
     def add_action(self, text: str, variant: str = "", slot=None) -> QPushButton:
         widget = button(text, variant, slot)
+        widget.setAccessibleName(text)
         self.actions.addWidget(widget)
+        if variant == "primary":
+            self.primary_button = widget
         return widget
+
+    def focus_primary(self) -> None:
+        """Keyboard users land on the page's main action, or its first input."""
+        target = self.primary_button
+        if target is None or not target.isEnabled() or not target.isVisible():
+            target = self.scroll.widget().nextInFocusChain()
+        if target is not None:
+            target.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def finish_body(self) -> None:
         self.body.addStretch(1)
@@ -309,11 +327,24 @@ def row(*widgets: QWidget, spacing: int = 8) -> QWidget:
     return holder
 
 
-def field(caption: str, widget: QWidget) -> QWidget:
+def field(caption: str, widget: QWidget, hint: QLabel | None = None) -> QWidget:
+    """A labelled input: the label is the widget's buddy and its accessible name."""
     holder = QWidget()
     layout = QVBoxLayout(holder)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
-    layout.addWidget(label(caption, "label"))
+    caption_label = label(caption, "label")
+    caption_label.setBuddy(widget)
+    widget.setAccessibleName(caption)
+    layout.addWidget(caption_label)
     layout.addWidget(widget)
+    if hint is not None:
+        layout.addWidget(hint)
     return holder
+
+
+def elide(widget: QLabel, text: str, width: int = 640) -> None:
+    """Show a long path in the middle-elided form, keeping the full text as a tooltip."""
+    metrics = QFontMetrics(widget.font())
+    widget.setText(metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, width))
+    widget.setToolTip(text)

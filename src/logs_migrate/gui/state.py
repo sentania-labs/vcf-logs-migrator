@@ -27,6 +27,8 @@ class AppState:
     started_run_id: str | None = None
     verification: dict | None = None
     verify_error: str | None = None
+    verify_run_id: str | None = None
+    restart_pending: list[str] = field(default_factory=list)
     report: dict | None = None
     runs: list[dict] = field(default_factory=list)
     exported: list[str] = field(default_factory=list)
@@ -67,6 +69,8 @@ class AppState:
         self.started_run_id = None
         self.verification = None
         self.verify_error = None
+        self.verify_run_id = None
+        self.restart_pending = []
         self.report = None
         self.runs = []
         self.exported = []

@@ -40,6 +40,9 @@ class ConfigurationPage(Page):
         self.notice = banner("", "", "info")
         self.notice.hide()
         layout.addWidget(self.notice)
+        self.restart_notice = banner("", "", "warn")
+        self.restart_notice.hide()
+        layout.addWidget(self.restart_notice)
         compare, compare_layout = card("Compare and select rules")
         self.table = Table(["Select", "Rule", "Source", "Destination", "Apply action"], fit=(0,))
         compare_layout.addWidget(self.table)
@@ -56,8 +59,10 @@ class ConfigurationPage(Page):
         forwarding, forwarding_layout = card("Forwarding")
         forwarding_layout.addWidget(
             label(
-                "<b>TLS targets:</b> Apply sends <code>acceptCert: true</code>, which can add the "
-                "target certificate to destination trust. Review each target before applying.",
+                "<b>TLS targets:</b> Apply tells the destination to trust each TLS target's "
+                "certificate, which can add that certificate to the destination's trust store. "
+                "Review every target in the table before applying; untick a forwarder to leave "
+                "it out.",
                 "body",
                 wrap=True,
             )
@@ -232,6 +237,19 @@ class ConfigurationPage(Page):
             self.notice.show()
         else:
             self.notice.hide()
+        if state.restart_pending:
+            names = ", ".join(state.restart_pending)
+            set_banner(
+                self.restart_notice,
+                "Partition restart pending",
+                f"{names}: saved on the destination this session; it routes only after one "
+                "destination cluster restart through normal maintenance. Compare shows it as "
+                "Identical because the definition matches, not because it is active.",
+                "warn",
+            )
+            self.restart_notice.show()
+        else:
+            self.restart_notice.hide()
         if state.comparison is self._rendered and self.boxes:
             # Same comparison: keep whatever the operator ticked or unticked.
             self._update_actions()
@@ -242,6 +260,7 @@ class ConfigurationPage(Page):
         widgets = {}
         for index, entry in enumerate(self.rows):
             box = QCheckBox()
+            box.setAccessibleName(f"Select {entry['rule']}")
             box.setChecked(entry["selected"])
             box.setEnabled(entry["selectable"])
             box.stateChanged.connect(lambda _state: self._update_actions())
@@ -257,6 +276,7 @@ class ConfigurationPage(Page):
                 for entry in self.rows
             ],
             widgets,
+            tips=[f"{entry['rule']}\nSource: {entry['source']}" for entry in self.rows],
         )
         extra = state.comparison["destination_only"] if state.comparison else []
         self.destination_only.setText(
