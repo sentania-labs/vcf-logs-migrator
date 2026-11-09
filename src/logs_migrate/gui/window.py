@@ -209,7 +209,10 @@ class MainWindow(QMainWindow):
         if previous.debug_logging != settings.debug_logging:
             from ..diagnostics import configure
 
-            configure(enabled=settings.debug_logging)
+            try:
+                configure(enabled=settings.debug_logging)
+            except OSError:
+                pass
         theme.apply_theme(QApplication.instance(), settings.theme)
         self.timer.setInterval(settings.refresh_seconds * 1000)
         self.save_settings()

@@ -98,7 +98,13 @@ def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
             pass
 
     monkeypatch.setattr("http.client.HTTPSConnection", BrokenHTTPS)
-    monkeypatch.setitem(sys.modules, "paramiko", SimpleNamespace(SSHClient=BrokenSSH))
+    paramiko = SimpleNamespace(
+        SSHClient=BrokenSSH,
+        BadHostKeyException=type("BadHostKeyException", (Exception,), {}),
+        AuthenticationException=type("AuthenticationException", (Exception,), {}),
+        ssh_exception=SimpleNamespace(IncompatiblePeer=type("IncompatiblePeer", (Exception,), {})),
+    )
+    monkeypatch.setitem(sys.modules, "paramiko", paramiko)
     with pytest.raises(MigrationError):
         HTTPS("https://example.invalid", certificate_sha256="a" * 64).request("GET", "/api")
     with pytest.raises(MigrationError):
@@ -220,3 +226,21 @@ def test_default_logs_pruned_to_ten_newest_but_custom_path_untouched(tmp_path, m
     assert not list(logs.glob("debug-20260101-000003-000000.log.*"))
     assert len(list(logs.glob("debug-20260101-000012-000000.log.*"))) == 2
     assert unrelated.read_text() == "keep"
+
+
+def test_prune_failure_does_not_break_logging(tmp_path, monkeypatch):
+    monkeypatch.setattr("logs_migrate.gui.settings.config_dir", lambda: tmp_path / "config")
+    logs = tmp_path / "config" / "logs"
+    logs.mkdir(parents=True)
+    for day in range(1, 13):
+        (logs / f"debug-20260101-0000{day:02d}-000000.log").write_text("old")
+
+    def locked(self, missing_ok=False):
+        raise PermissionError("held open by another instance")
+
+    monkeypatch.setattr("pathlib.Path.unlink", locked)
+    path = diagnostics.configure()
+    logging.getLogger("logs_migrate").info("still logging")
+    diagnostics.configure(enabled=False)
+    assert path is not None
+    assert "still logging" in path.read_text()

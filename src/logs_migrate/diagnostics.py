@@ -75,7 +75,10 @@ class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
 def _prune_default_logs(directory: Path, keep: int = MAX_DEFAULT_LOGS) -> None:
     for old in sorted(directory.glob("debug-*.log"))[:-keep]:
         for stale in (old, *(old.with_name(f"{old.name}.{n}") for n in (1, 2))):
-            stale.unlink(missing_ok=True)
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def configure(
@@ -104,9 +107,9 @@ def configure(
     handler = PrivateRotatingFileHandler(
         path, maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
     )
+    _handlers.append(handler)
     if default_location:
         _prune_default_logs(path.parent)
-    _handlers.append(handler)
     if verbose:
         _handlers.append(logging.StreamHandler(sys.stderr))
     for item in _handlers:

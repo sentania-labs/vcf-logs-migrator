@@ -25,7 +25,10 @@ def create(
         from ..diagnostics import configure, log_path
 
         if log_path() is None:
-            configure()
+            try:
+                configure()
+            except OSError:
+                pass
     apply_theme(app, settings.theme)
     window = MainWindow(settings)
     return app, window
