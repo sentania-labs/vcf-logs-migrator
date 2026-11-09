@@ -294,3 +294,18 @@ host keys open a trust dialog with their fingerprints, and Run self-test lists t
 same read-only checks as `logs-migrate selftest`.
 
 Standalone downloads of this same CLI and window are described in the README.
+
+## Troubleshooting logs
+
+Detailed logging is disabled by default. Add `--debug-log` to any command to create a
+timestamped log under the client configuration directory, or use
+`--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
+stderr and enables a log when used alone. Each file rotates at 5 MiB with two backups.
+The desktop Settings page can enable logging for subsequent operations. After an error,
+use **Show details** to inspect it, open the folder, or save the current log.
+
+The log includes request paths and status, timing, SSH transport negotiation, commands,
+and exception traces. JSON error response bodies retain field names and numeric values; untrusted text values
+are redacted because they can contain secrets. Passwords, tokens, and other known credentials are
+filtered, but logs still contain appliance addresses and operational details; review them
+before sharing.

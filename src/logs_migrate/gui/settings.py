@@ -58,6 +58,7 @@ def _etc_localtime() -> str | None:
 class Settings:
     """Everything the operator can change from the Settings page."""
 
+    debug_logging: bool = False
     theme: str = "light"
     timezone: str = "UTC"
     refresh_seconds: int = 5
@@ -108,7 +109,9 @@ class Settings:
             if field.name not in section:
                 continue
             raw = section[field.name]
-            if field.type == "int":
+            if field.type == "bool":
+                values[field.name] = raw.lower() in {"1", "true", "yes", "on"}
+            elif field.type == "int":
                 try:
                     values[field.name] = int(raw)
                 except ValueError:

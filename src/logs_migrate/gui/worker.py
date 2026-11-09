@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..adapters.ssh_errors import SSHFailure
@@ -70,10 +72,13 @@ class EngineWorker(QObject):
         except SSHFailure as error:
             self.failed.emit(job, f"{error.code.value}: {error.message}")
         except MigrationError as error:
+            logging.getLogger(__name__).exception("Job %s failed", job)
             self.failed.emit(job, error.code.value)
         except LocalError as error:
+            logging.getLogger(__name__).exception("Job %s failed", job)
             self.failed.emit(job, f"gui:{error}")
         except Exception:
+            logging.getLogger(__name__).exception("Job %s failed", job)
             self.failed.emit(job, "operation_failed")
         else:
             self.done.emit(job, result)

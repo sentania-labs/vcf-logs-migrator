@@ -29,6 +29,9 @@ class Secret:
 
     def __init__(self, value: str):
         require(isinstance(value, str) and bool(value), Code.AUTH)
+        from .diagnostics import register_secret
+
+        register_secret(value)
         self._value = value
 
     def reveal(self) -> str:

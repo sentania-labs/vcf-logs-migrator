@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from zoneinfo import available_timezones
 
-from PySide6.QtWidgets import QComboBox, QFileDialog, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFileDialog, QLineEdit, QSpinBox
 
 from .. import viewmodel as vm
 from ..settings import THEMES, Settings
@@ -63,6 +63,8 @@ class SettingsPage(Page):
         )
         self.body.addWidget(columns(display, api))
         reports, reports_layout = card("Local reports")
+        self.debug_logging = QCheckBox("Enable detailed troubleshooting log")
+        reports_layout.addWidget(self.debug_logging)
         self.export_folder = QLineEdit()
         reports_layout.addWidget(field("Export folder", self.export_folder))
         reports_layout.addWidget(row(button("Choose folder…", "", self.choose_folder)))
@@ -134,6 +136,7 @@ class SettingsPage(Page):
 
     def load(self) -> None:
         settings = self.app.state.settings
+        self.debug_logging.setChecked(settings.debug_logging)
         self.theme.setCurrentIndex(THEMES.index(settings.theme))
         self.timezone.setCurrentText(settings.timezone)
         self.refresh_seconds.setValue(settings.refresh_seconds)
@@ -174,6 +177,7 @@ class SettingsPage(Page):
         if problems:
             return False
         updated = Settings(
+            debug_logging=self.debug_logging.isChecked(),
             theme=THEMES[self.theme.currentIndex()],
             timezone=timezone,
             refresh_seconds=self.refresh_seconds.value(),

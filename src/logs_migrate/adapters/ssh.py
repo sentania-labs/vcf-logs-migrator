@@ -8,11 +8,14 @@ supplies destination SSH credentials, a 9.0 destination.
 from __future__ import annotations
 
 import hashlib
+import logging
 from enum import StrEnum
 
 from ..errors import Code, MigrationError, require
 from ..security import Secret
 from .ssh_errors import SSHFailure, ssh_failure
+
+log = logging.getLogger(__name__)
 
 STORE = "/storage/core/loginsight/cidata/store"
 CONFIG_DIR = "/storage/core/loginsight/config"
@@ -84,6 +87,12 @@ class NodeSSH:
             if hashlib.sha256(key.asbytes()).hexdigest() != self.host_key_sha256:
                 raise SSHFailure("host")
             stage = "connect"
+            log.debug(
+                "SSH connect host=%s port=%s host key SHA256=%s; password authentication",
+                self.host,
+                self.port,
+                self.host_key_sha256,
+            )
             client.connect(
                 self.host,
                 port=self.port,
@@ -96,17 +105,21 @@ class NodeSSH:
                 banner_timeout=self.timeout,
             )
             stage = "command"
+            log.debug("SSH authentication succeeded; command=%s", _READS[operation])
             _, stdout, stderr = client.exec_command(_READS[operation], timeout=self.timeout)
             # Never print stderr; remote error text is untrusted and may contain credentials.
             output = stdout.read(16 * 1024 * 1024 + 1)
             require(len(output) <= 16 * 1024 * 1024, Code.SCHEMA)
             status = stdout.channel.recv_exit_status()
+            log.debug("SSH command exit status=%s", status)
             if status != 0:
                 raise SSHFailure("command", status=status)
             return output.decode("utf-8", errors="strict")
         except MigrationError:
+            log.exception("SSH operation rejected")
             raise
         except Exception as error:
+            log.exception("SSH operation failed")
             raise ssh_failure(error, stage) from None
         finally:
             if client is not None:

@@ -207,3 +207,13 @@ them, including the destructive stock bucket migration command.
 MIT licensed. No production-readiness claim is made from fixture tests or the
 recorded lab results alone; a lab run of this tool against real appliances is the
 evidence that counts.
+
+### Troubleshooting logs
+
+Detailed logging is off by default. Use `logs-migrate --debug-log status` to write a
+bounded troubleshooting log in the client configuration directory, or pass
+`--debug-log=/path/to/log` to select a file. Add `-v` to echo the same details to
+stderr. In the desktop app, enable **Detailed troubleshooting log** in Settings and
+retry the operation; **Show details** provides the log and actions to open its folder
+or save a copy. Logs include appliance addresses and operational details, so review
+before sharing. Credentials are redacted. See [operator troubleshooting](docs/operator-cli.md#troubleshooting-logs).

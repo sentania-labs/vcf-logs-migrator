@@ -1,5 +1,6 @@
 """Only safe diagnostics cross the adapter boundary; never arbitrary remote error text."""
 
+import logging
 from enum import StrEnum
 from functools import wraps
 
@@ -63,7 +64,7 @@ def safe_boundary(function):
             error.__cause__ = None
             raise
         except Exception:
-            pass
+            logging.getLogger(__name__).exception("Adapter boundary failed")
         raise MigrationError(Code.CONNECTION)
 
     return wrapped

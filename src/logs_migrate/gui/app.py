@@ -21,6 +21,11 @@ def create(
         settings.fixture_path = str(fixture)
     if journal:
         settings.journal_path = str(journal)
+    if settings.debug_logging:
+        from ..diagnostics import configure, log_path
+
+        if log_path() is None:
+            configure()
     apply_theme(app, settings.theme)
     window = MainWindow(settings)
     return app, window

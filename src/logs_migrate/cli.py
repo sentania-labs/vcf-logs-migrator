@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -53,6 +54,16 @@ def _env(name: str, default: str = "") -> str:
 
 def parser():
     p = Parser(prog="logs-migrate", description="Migration API wrapper for 8.18 to 9.x")
+    p.add_argument(
+        "--debug-log",
+        nargs="?",
+        const="",
+        metavar="PATH",
+        help="Write detailed troubleshooting log",
+    )
+    p.add_argument(
+        "-v", "--verbose", action="store_true", help="Echo troubleshooting log to stderr"
+    )
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument(
         "--journal", type=Path, help="Private plans, sent-bucket ledger and count evidence"
@@ -257,11 +268,54 @@ def open_live(args):
     raise MigrationError(Code.AUTH)
 
 
+def _diagnostic_args(argv):
+    """Accept diagnostic switches on either side of a command."""
+    commands = {
+        "config",
+        "gui",
+        "discover",
+        "partitions",
+        "status",
+        "selftest",
+        "trust",
+        "plan",
+        "copy",
+        "stop",
+        "verify",
+        "report",
+    }
+    args = list(sys.argv[1:] if argv is None else argv)
+    options, remaining = [], []
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value in {"-v", "--verbose"} or value.startswith("--debug-log="):
+            options.append(value)
+        elif value == "--debug-log":
+            if (
+                index + 1 < len(args)
+                and not args[index + 1].startswith("-")
+                and args[index + 1] not in commands
+            ):
+                index += 1
+                options.append("--debug-log=" + args[index])
+            else:
+                options.append("--debug-log=")
+        else:
+            remaining.append(value)
+        index += 1
+    return options + remaining
+
+
 def main(argv=None):
-    args = parser().parse_args(argv)
+    args = parser().parse_args(_diagnostic_args(argv))
     journal = None
     try:
         harden_process()
+        if args.debug_log is not None or args.verbose:
+            from .diagnostics import configure
+
+            configure(Path(args.debug_log) if args.debug_log else None, verbose=args.verbose)
         if args.command == "gui":
             from .gui import run
 
@@ -365,6 +419,7 @@ def main(argv=None):
             return 8
         return 0
     except MigrationError as error:
+        logging.getLogger("logs_migrate.cli").exception("Command failed")
         print(
             json.dumps(
                 {
@@ -380,6 +435,7 @@ def main(argv=None):
         print('{"error":"observation_interrupted; query API status"}', file=sys.stderr)
         return 8
     except Exception:
+        logging.getLogger("logs_migrate.cli").exception("Command failed")
         print('{"error":"operation_failed; query API status"}', file=sys.stderr)
         return 7
     finally:
