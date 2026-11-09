@@ -41,7 +41,8 @@ needs none of them.
 
 `packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
 `packaging/requirements.txt`) on Python 3.12.10, also the interpreter `release.yml`
-tests with: a one-file console executable on Windows and Linux, a
+tests with on its pinned ubuntu-24.04 runner (ubuntu-latest is 26.04, which has no
+3.12.10 for actions/setup-python): a one-file console executable on Windows and Linux, a
 one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
 (`packaging/gui_entry.py`) so opening the window never shows a console.
 `.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
