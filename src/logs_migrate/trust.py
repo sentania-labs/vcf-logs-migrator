@@ -125,18 +125,22 @@ def probe_ssh(host: str, port: int = 22, timeout: float = 15) -> tuple[Identity,
     import base64
     import hashlib
 
+    from .adapters.ssh_errors import ssh_failure
+
+    stage = "connect"
     try:
         import paramiko
 
         transport = paramiko.Transport((host, port))
         try:
+            stage = "handshake"
             transport.banner_timeout = timeout
             transport.start_client(timeout=timeout)
             key = transport.get_remote_server_key()
         finally:
             transport.close()
-    except Exception:
-        raise MigrationError(Code.CONNECTION) from None
+    except Exception as error:
+        raise ssh_failure(error, stage) from None
     key_type = key.get_name()
     digest = hashlib.sha256(key.asbytes()).hexdigest()
     entry = host if port == 22 else f"[{host}]:{port}"

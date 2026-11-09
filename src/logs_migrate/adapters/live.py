@@ -582,6 +582,10 @@ class LiveEnvironment:
             return
         if state == "changed":
             self.notes["identity_changed"] = identity.name
+            if identity.kind == "ssh":
+                from .ssh_errors import SSHFailure
+
+                raise SSHFailure("host")
             raise MigrationError(Code.AUTH)
         unknown.append(identity)
         if key_line:

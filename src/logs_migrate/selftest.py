@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
+from .adapters.ssh_errors import SSHFailure
 from .errors import Code, MigrationError
 from .models import DAY, Cluster, Window
 from .planning import build_plan, compatible, partition_diff
@@ -63,6 +64,8 @@ class SelfTest:
 
 
 def _code(error: Exception) -> str:
+    if isinstance(error, SSHFailure):
+        return f"{error.code.value}: {error.message}"
     return error.code.value if isinstance(error, MigrationError) else "operation_failed"
 
 
@@ -81,7 +84,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             return None
         try:
             value, detail = action()
-        except Exception as error:  # Only the static code crosses; remote text never does.
+        except Exception as error:  # Only codes and safe diagnostics cross.
             report.steps.append(Step(name, "fail", _code(error)))
             return None
         report.steps.append(Step(name, "pass", detail))

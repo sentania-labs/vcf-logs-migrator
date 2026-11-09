@@ -1,4 +1,4 @@
-"""Only static reason codes cross the adapter boundary; never remote error text."""
+"""Only safe diagnostics cross the adapter boundary; never arbitrary remote error text."""
 
 from enum import StrEnum
 from functools import wraps

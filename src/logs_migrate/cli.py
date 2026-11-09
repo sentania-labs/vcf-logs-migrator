@@ -9,6 +9,7 @@ from uuid import UUID
 
 from . import __version__
 from .adapters.simulated import SimulatedClock, SimulatedEnvironment
+from .adapters.ssh_errors import SSHFailure
 from .engine import Engine
 from .errors import Code, MigrationError, require
 from .journal import Journal
@@ -365,7 +366,13 @@ def main(argv=None):
         return 0
     except MigrationError as error:
         print(
-            json.dumps({"error": error.code.value, "run_id": getattr(args, "run_id", None)}),
+            json.dumps(
+                {
+                    "error": error.code.value,
+                    "run_id": getattr(args, "run_id", None),
+                    **({"message": error.message} if isinstance(error, SSHFailure) else {}),
+                }
+            ),
             file=sys.stderr,
         )
         return EXIT_CODES.get(error.code, 3)
