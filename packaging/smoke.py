@@ -162,6 +162,7 @@ def main() -> None:
             if mac:
                 subprocess.run(["xcrun", "stapler", "validate", str(archive)], check=True)
                 subprocess.run(["codesign", "--verify", str(archive)], check=True)
+                subprocess.run(["xcrun", "stapler", "validate", str(top / APP)], check=True)
             verify_signatures(top)
         # The smoke_installed helpers inherit this process's environment.
         clean = clean_environment(scratch / "home")

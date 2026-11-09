@@ -18,22 +18,22 @@ spec.loader.exec_module(launcher)
 
 
 @pytest.mark.parametrize(
-    "count,visible,tty,expected",
+    "count,window,tty,expected",
     [
-        (2, True, True, True),
-        (3, True, True, False),
-        (0, True, True, False),
-        (2, False, True, False),
-        (2, True, False, False),
+        (2, 0x123456789, True, True),
+        (3, 0x123456789, True, False),
+        (0, 0x123456789, True, False),
+        (2, 0x123456789, False, False),
+        (2, 0, True, False),
     ],
 )
-def test_console_ownership(monkeypatch, count, visible, tty, expected):
+def test_console_ownership(monkeypatch, count, window, tty, expected):
     kernel = SimpleNamespace(
-        GetConsoleWindow=Mock(return_value=0x123456789),
+        GetConsoleWindow=Mock(return_value=window),
         GetConsoleProcessList=Mock(return_value=count),
         FreeConsole=Mock(),
     )
-    user = SimpleNamespace(ShowWindow=Mock(), IsWindowVisible=Mock(return_value=visible))
+    user = SimpleNamespace(ShowWindow=Mock(), IsWindowVisible=Mock(return_value=False))
     monkeypatch.setattr(
         ctypes, "windll", SimpleNamespace(kernel32=kernel, user32=user), raising=False
     )

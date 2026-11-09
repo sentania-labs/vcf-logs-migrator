@@ -137,12 +137,6 @@ jobs:
           macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
           macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
 
-      - name: Package the signed app and sign its disk image (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          python packaging/build.py package "$PLATFORM" --label "$LABEL"
-          if [ "$SIGN" = true ]; then codesign --force --sign "$SIGN_ID" --timestamp "$ARCHIVE"; fi
-
       - name: Notarize and staple the app (macOS)
         if: env.SIGN == 'true' && runner.os == 'macOS'
         uses: sentania-labs/.github/.github/actions/macos-notarize@9c071867797b51073ddfdca6d9451083d536656b # sentania-labs/.github latest merged 2026-11-03: macos-notarize retries staple/validate on Apple-side transients
@@ -154,11 +148,21 @@ jobs:
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
 
-      # macos-sign and macos-notarize clean up their own failures; this covers a
-      # cancellation between them.
-      - name: Remove the signing keychain (macOS)
-        if: always() && env.SIGN == 'true' && runner.os == 'macOS'
-        run: security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
+      # The disk image is built from the stapled app so the app carries its own ticket
+      # once dragged out of the image.
+      - name: Package the stapled app (macOS)
+        if: runner.os == 'macOS'
+        run: python packaging/build.py package "$PLATFORM" --label "$LABEL"
+
+      # macos-notarize removes the signing keychain, so this imports it again.
+      - name: Sign the disk image (macOS)
+        if: env.SIGN == 'true' && runner.os == 'macOS'
+        uses: sentania-labs/.github/.github/actions/macos-sign@9c071867797b51073ddfdca6d9451083d536656b # sentania-labs/.github latest merged 2026-11-03: macos-notarize retries staple/validate on Apple-side transients
+        with:
+          binary: ${{ env.ARCHIVE }}
+          macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
+          macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
+          macos-team-id: ${{ secrets.MACOS_TEAM_ID }}
 
       - name: Sign the executables (Windows)
         if: env.SIGN == 'true' && runner.os == 'Windows'
@@ -191,6 +195,12 @@ jobs:
           xcrun stapler staple "$ARCHIVE"
           xcrun stapler validate "$ARCHIVE"
           codesign --verify --verbose "$ARCHIVE"
+
+      # macos-sign and macos-notarize clean up their own failures; this covers a
+      # cancellation or a failure after the disk image is signed.
+      - name: Remove the signing keychain (macOS)
+        if: always() && env.SIGN == 'true' && runner.os == 'macOS'
+        run: security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
 
       - name: Package the download
         if: runner.os != 'macOS'

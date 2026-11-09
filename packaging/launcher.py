@@ -30,7 +30,7 @@ def desktop_launch() -> bool:
 
 
 def detach_owned_console() -> bool:
-    """Hide and detach only a visible console belonging to this frozen program."""
+    """Hide and detach only a console belonging to this frozen program."""
     try:
         import ctypes
 
@@ -40,13 +40,12 @@ def detach_owned_console() -> bool:
         user = ctypes.windll.user32
         kernel.GetConsoleWindow.restype = ctypes.c_void_p
         user.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        user.IsWindowVisible.argtypes = [ctypes.c_void_p]
         processes = (ctypes.c_uint * 4)()
         count = kernel.GetConsoleProcessList(processes, len(processes))
         if not 0 < count <= (2 if getattr(sys, "frozen", False) else 1):
             return False
         window = kernel.GetConsoleWindow()
-        if not window or not user.IsWindowVisible(window):
+        if not window:
             return False
         user.ShowWindow(window, 0)
         kernel.FreeConsole()
