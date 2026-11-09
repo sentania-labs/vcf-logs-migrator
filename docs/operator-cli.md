@@ -253,14 +253,13 @@ Secrets have no argv flags. Adapter failures are reduced to fixed error codes;
 raw responses, credentials and exception strings must never enter reports or
 logs. Private journal files use restrictive permissions and writer locking.
 
-SSH failures also include a safe `message` in CLI error JSON and an SSH-specific
-diagnostic in the GUI. They distinguish TCP reachability, handshake/algorithm
-negotiation, host-key trust, authentication, and remote-command failures. Only
-recognized library diagnostics and numeric exit statuses are retained; arbitrary
-exception text and remote stderr are suppressed. Authentication rejection now
-uses `authentication_failed` rather than `connection_failed`; both still exit 7.
-Host-key failures use `authentication_failed`; other SSH failures retain
-`connection_failed` (exit 7). No SSH algorithm policy was weakened.
+The one addition is SSH failures, which carry a `message` from a closed
+vocabulary (CLI error JSON and the GUI). It names the stage that failed: TCP
+reachability, handshake, algorithm negotiation, host-key trust, authentication
+or remote command. Only recognized library diagnostics and numeric exit statuses
+are retained; other exception text and remote stderr are suppressed. Host-key
+and authentication failures use `authentication_failed`; the other stages use
+`connection_failed`. All exit 7. No SSH algorithm policy was weakened.
 
 `selftest` exits 0 when every read-only check passed and 1 otherwise.
 
