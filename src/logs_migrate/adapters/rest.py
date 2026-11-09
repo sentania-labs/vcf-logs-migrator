@@ -308,7 +308,13 @@ class Logs90:
         require(
             isinstance(response, dict) and isinstance(response.get("sessionId"), str), Code.SCHEMA
         )
+        self.clear_token()
         self.token = Secret(response["sessionId"])
+
+    def clear_token(self):
+        if self.token is not None:
+            self.token.release()
+            self.token = None
 
     def headers(self):
         if self.token is None:
@@ -322,7 +328,7 @@ class Logs90:
             return self.transport.request(method, path, body, self.headers(), **extra)
         except MigrationError as error:
             if error.code == Code.AUTH and method == "GET":
-                self.token = None
+                self.clear_token()
                 return self.transport.request(method, path, body, self.headers(), **extra)
             # Never replay a POST, PUT or DELETE after an uncertain response.
             raise
@@ -432,7 +438,9 @@ class Logs911(Logs90):
                 {"serviceKeys": ["ops-li"]},
                 {"Authorization": "OpsToken " + self.ops_token.reveal()},
             )
-            self.token = Secret(self.decode_exchange(response))
+            token = self.decode_exchange(response)
+            self.clear_token()
+            self.token = Secret(token)
         except MigrationError:
             raise
         except Exception:

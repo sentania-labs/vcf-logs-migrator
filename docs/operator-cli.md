@@ -310,3 +310,7 @@ and exception traces. JSON error response bodies retain field names and numeric 
 untrusted text values are redacted because they can contain secrets. Passwords, tokens,
 and other known credentials are filtered, but logs still contain appliance addresses and
 operational details; review them before sharing.
+
+On POSIX systems the log file is restricted to mode 0600, including an existing
+file and files created after rotation. On Windows, log files inherit the folder's
+access control list; choose a folder whose permissions restrict access to your account.

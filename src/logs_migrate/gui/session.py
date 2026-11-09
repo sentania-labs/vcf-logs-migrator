@@ -182,6 +182,11 @@ class Session:
     def disconnect(self) -> None:
         if self.journal is not None:
             self.journal.close()
+        if self.env is not None:
+            for name in ("source_client", "destination_client"):
+                client = getattr(self.env, name, None)
+                if client is not None:
+                    client.clear_token()
         if self.credentials is not None:
             self.credentials.clear()
         self.env = self.engine = self.journal = self.credentials = None

@@ -8,12 +8,13 @@ def test_redaction_covers_file_stderr_and_tracebacks(tmp_path, capsys):
     path = tmp_path / "debug.log"
     diagnostics.configure(path, verbose=True)
     secret = "credential-known-to-session"
-    Secret(secret)
+    credential = Secret(secret)
     try:
         raise ValueError(f"password={secret} Authorization: Bearer {secret}")
     except ValueError:
         logging.getLogger("logs_migrate.adapters.rest").exception("REST failure %s", secret)
     logging.getLogger("paramiko.transport").debug("SSH password=%s", secret)
+    assert credential.reveal()
     diagnostics.configure(enabled=False)
     for output in (path.read_text(), capsys.readouterr().err):
         assert secret not in output
@@ -54,10 +55,11 @@ def test_diagnostic_flags_work_around_commands():
 
 
 def test_secret_with_whitespace_fully_redacted():
-    from logs_migrate.diagnostics import redact, register_secret
+    from logs_migrate.diagnostics import redact
 
-    register_secret("abc def-unique")
+    credential = Secret("abc def-unique")
     assert "def-unique" not in redact("password=abc def-unique trailing")
+    assert credential.reveal()
 
 
 def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
@@ -71,7 +73,7 @@ def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
     from logs_migrate.errors import MigrationError
 
     rest_secret, ssh_secret = "rest-secret-unique", "ssh-secret-unique"
-    Secret(rest_secret)
+    credential = Secret(rest_secret)
     path = tmp_path / "transports.log"
     diagnostics.configure(path, verbose=True)
 
@@ -100,9 +102,87 @@ def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
         NodeSSH("example.invalid", "root", Secret(ssh_secret), "a" * 64, "hosts").read(
             ReadOperation.INVENTORY
         )
+    assert credential.reveal()
     diagnostics.configure(enabled=False)
     for output in (path.read_text(), capsys.readouterr().err):
         assert rest_secret not in output
         assert ssh_secret not in output
         assert "REST request failed" in output
         assert "SSH operation failed" in output
+
+
+def test_credentials_clear_and_session_disconnect_release_secrets():
+    from types import SimpleNamespace
+
+    from logs_migrate.adapters.rest import Logs90, RecordedTransport
+    from logs_migrate.gui.session import Session
+    from logs_migrate.security import Credentials
+
+    credentials = Credentials({"source_api": "shared-password"})
+    password = credentials.get("source_api")
+    token = Secret("session-value")
+    client = Logs90(RecordedTransport([]), "admin", password)
+    client.token = token
+    session = Session()
+    session.credentials = credentials
+    session.env = SimpleNamespace(source_client=client, destination_client=None)
+    assert diagnostics.redact("shared-password session-value") == "<redacted> <redacted>"
+    session.disconnect()
+    assert diagnostics.redact("shared-password session-value") == "shared-password session-value"
+
+
+def test_token_refresh_releases_old_token():
+    from logs_migrate.adapters.rest import Logs90, RecordedTransport
+    from logs_migrate.errors import Code
+
+    transport = RecordedTransport(
+        [
+            {"method": "GET", "path": "/api/v1/version", "error": Code.AUTH.value},
+            {"method": "POST", "path": "/api/v1/sessions", "response": {"sessionId": "new-token"}},
+            {"method": "GET", "path": "/api/v1/version", "response": {}},
+        ]
+    )
+    client = Logs90(transport, "admin", Secret("password-value"))
+    old = Secret("old-token")
+    client.token = old
+    client.call("GET", "/api/v1/version")
+    assert diagnostics.redact("old-token new-token") == "old-token <redacted>"
+
+
+def test_existing_and_rotated_logs_are_private(tmp_path):
+    import os
+    import stat
+
+    import pytest
+
+    if os.name != "posix":
+        pytest.skip("POSIX mode bits are unavailable")
+    path = tmp_path / "debug.log"
+    path.write_text("previous")
+    path.chmod(0o644)
+    diagnostics.configure(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    handler = diagnostics._handlers[0]
+    handler.doRollover()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.with_name("debug.log.1").stat().st_mode) == 0o600
+    diagnostics.configure(enabled=False)
+
+
+def test_live_secrets_can_be_logged_after_enabling_and_are_not_retained(tmp_path):
+    import gc
+    import weakref
+
+    first = Secret("duplicate credential")
+    second = Secret("duplicate credential")
+    reference = weakref.ref(first)
+    diagnostics.configure(tmp_path / "enabled-later.log")
+    assert diagnostics.redact("duplicate credential") == "<redacted>"
+    first.release()
+    assert diagnostics.redact("duplicate credential") == "<redacted>"
+    del first
+    gc.collect()
+    assert reference() is None
+    second.release()
+    assert diagnostics.redact("duplicate credential") == "duplicate credential"
+    diagnostics.configure(enabled=False)
