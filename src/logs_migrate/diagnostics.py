@@ -25,16 +25,15 @@ def register_secret(value: str) -> None:
 
 
 def redact(text: str) -> str:
+    for value in sorted(_secrets, key=len, reverse=True):
+        text = text.replace(value, "<redacted>")
     text = re.sub(
         r"(?im)\b(authorization|cookie|set-cookie|x-jwt-token)\s*:\s*[^\r\n]*",
         r"\1: <redacted>",
         text,
     )
     text = _PEM.sub("<redacted private key>", text)
-    text = _SENSITIVE.sub(r"\1<redacted>", text)
-    for value in sorted(_secrets, key=len, reverse=True):
-        text = text.replace(value, "<redacted>")
-    return text
+    return _SENSITIVE.sub(r"\1<redacted>", text)
 
 
 class RedactingFilter(logging.Filter):
@@ -66,6 +65,7 @@ def configure(
     _handlers.clear()
     _log_path = None
     if not enabled:
+        logging.getLogger("logs_migrate").setLevel(logging.WARNING)
         logging.getLogger("paramiko").setLevel(logging.CRITICAL + 1)
         logging.getLogger("paramiko").disabled = True
         return None

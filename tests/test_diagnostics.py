@@ -41,10 +41,23 @@ def test_rest_error_body_redacts_text():
 def test_diagnostic_flags_work_around_commands():
     from logs_migrate.cli import _diagnostic_args, parser
 
-    for args in (["--debug-log", "status"], ["status", "--debug-log"], ["-v", "status"]):
+    cases = (
+        (["--debug-log", "status"], "status"),
+        (["status", "--debug-log"], "status"),
+        (["config", "--debug-log", "compare"], "config"),
+        (["-v", "status"], "status"),
+    )
+    for args, command in cases:
         parsed = parser().parse_args(_diagnostic_args(args))
-        assert parsed.command == "status"
+        assert parsed.command == command
         assert parsed.debug_log is not None or parsed.verbose
+
+
+def test_secret_with_whitespace_fully_redacted():
+    from logs_migrate.diagnostics import redact, register_secret
+
+    register_secret("abc def-unique")
+    assert "def-unique" not in redact("password=abc def-unique trailing")
 
 
 def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):

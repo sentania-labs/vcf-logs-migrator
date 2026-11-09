@@ -185,7 +185,7 @@ class HTTPS:
                 response.status,
                 time.monotonic() - started,
             )
-            if response.status >= 400:
+            if response.status >= 400 and log.isEnabledFor(logging.DEBUG):
                 try:
                     raw_error = response.read(MAX_BODY + 1)
                     log.debug(

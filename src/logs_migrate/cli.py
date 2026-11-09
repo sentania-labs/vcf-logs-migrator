@@ -270,20 +270,6 @@ def open_live(args):
 
 def _diagnostic_args(argv):
     """Accept diagnostic switches on either side of a command."""
-    commands = {
-        "config",
-        "gui",
-        "discover",
-        "partitions",
-        "status",
-        "selftest",
-        "trust",
-        "plan",
-        "copy",
-        "stop",
-        "verify",
-        "report",
-    }
     args = list(sys.argv[1:] if argv is None else argv)
     options, remaining = [], []
     index = 0
@@ -292,15 +278,7 @@ def _diagnostic_args(argv):
         if value in {"-v", "--verbose"} or value.startswith("--debug-log="):
             options.append(value)
         elif value == "--debug-log":
-            if (
-                index + 1 < len(args)
-                and not args[index + 1].startswith("-")
-                and args[index + 1] not in commands
-            ):
-                index += 1
-                options.append("--debug-log=" + args[index])
-            else:
-                options.append("--debug-log=")
+            options.append("--debug-log=")
         else:
             remaining.append(value)
         index += 1
