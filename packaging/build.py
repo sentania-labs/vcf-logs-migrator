@@ -25,7 +25,6 @@ BUILD = ROOT / "build"
 PLATFORMS = ("linux-x86_64", "windows-x64", "macos-arm64", "macos-x86_64")
 NAME = "logs-migrate"
 APP = "VCF Logs Migrator.app"
-GUI_EXE = "VCF Logs Migrator.exe"
 BUNDLE_ID = "net.sentania.vcf-logs-migrator"
 
 
@@ -112,7 +111,7 @@ def freeze(name: str, script: str, *layout: str) -> None:
 
 def build(platform: str) -> Path:
     mac = platform.startswith("macos-")
-    for stale in (DIST / APP, DIST / f"{NAME}.app", DIST / GUI_EXE, executable(platform)):
+    for stale in (DIST / APP, DIST / f"{NAME}.app", executable(platform)):
         if stale.is_dir():
             shutil.rmtree(stale)
         elif stale.exists():

@@ -50,6 +50,7 @@ def detach_owned_console() -> bool:
             return False
         user.ShowWindow(window, 0)
         kernel.FreeConsole()
+        sys.stdout = sys.stderr = open(os.devnull, "w")
         return True
     except (AttributeError, OSError):
         return False

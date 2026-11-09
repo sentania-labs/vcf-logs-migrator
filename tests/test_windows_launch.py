@@ -2,6 +2,8 @@
 
 import ctypes
 import importlib.util
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -36,13 +38,17 @@ def test_console_ownership(monkeypatch, count, visible, tty, expected):
         ctypes, "windll", SimpleNamespace(kernel32=kernel, user32=user), raising=False
     )
     monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(launcher.sys.stdout, "isatty", lambda: tty)
+    monkeypatch.setattr(launcher.sys, "stdout", SimpleNamespace(isatty=lambda: tty))
+    monkeypatch.setattr(launcher.sys, "stderr", sys.stderr)
     assert launcher.detach_owned_console() is expected
     assert user.ShowWindow.called is expected
     assert kernel.FreeConsole.called is expected
     if expected:
         assert kernel.GetConsoleWindow.restype == ctypes.c_void_p
         user.ShowWindow.assert_called_once_with(0x123456789, 0)
+        assert launcher.sys.stdout.name == os.devnull
+        assert launcher.sys.stderr is launcher.sys.stdout
+        launcher.sys.stdout.write("discarded")
 
 
 def test_arguments_never_trigger_desktop_detection(monkeypatch):

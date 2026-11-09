@@ -59,6 +59,7 @@ class LicensesAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         from .licenses import text
 
+        sys.stdout.reconfigure(encoding="utf-8")
         sys.stdout.write(text())
         parser.exit()
 
