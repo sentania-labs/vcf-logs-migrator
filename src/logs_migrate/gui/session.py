@@ -13,6 +13,7 @@ from ..models import ACTIVE_ACK, Policy, Window
 from ..planning import compatible
 from ..reporting import report_data
 from ..security import Credentials
+from ..trust import TrustRequired, TrustStore
 from . import viewmodel as vm
 
 
@@ -28,32 +29,152 @@ class Session:
         self.engine = None
         self.journal = None
         self.credentials = None
+        self.connection: dict[str, str] = {}
+        self.pending_trust: dict[str, tuple[object, str | None]] = {}
+        self.store = None
 
-    def connect(self, *, fixture: str, journal: str, credentials: dict[str, str]) -> dict:
-        """Open the environment and read both inventories. Live appliances are not qualified."""
+    @property
+    def mode(self) -> str:
+        return getattr(self.env, "mode", "simulation") if self.env is not None else "simulation"
+
+    def connect(
+        self,
+        *,
+        fixture: str,
+        journal: str,
+        credentials: dict[str, str],
+        connection: dict[str, str] | None = None,
+    ) -> dict:
+        """Open the simulator (fixture given) or the real appliances (addresses given).
+
+        Unknown appliance identities raise TrustRequired before anything is sent; the window
+        shows them and calls `trust`, then connects again.
+        """
         self.disconnect()
-        require(bool(fixture), Code.UNSUPPORTED)
-        fixture_path, journal_path = Path(fixture).expanduser(), Path(journal).expanduser()
-        try:
-            env = SimulatedEnvironment.from_file(
-                fixture_path, journal_path.with_suffix(".simulated-state")
-            )
-        except MigrationError:
-            raise
-        except Exception:
-            raise MigrationError(Code.SCHEMA) from None
-        self.journal = Journal(journal_path)
-        self.env = env
-        self.engine = Engine(env, self.journal, SimulatedClock())
+        journal_path = Path(journal).expanduser()
         self.credentials = Credentials(
             {key: value for key, value in credentials.items() if value}, interactive=False
         )
-        return self.discover()
+        self.connection = dict(connection or {})
+        if fixture:
+            fixture_path = Path(fixture).expanduser()
+            try:
+                env = SimulatedEnvironment.from_file(
+                    fixture_path, journal_path.with_suffix(".simulated-state")
+                )
+            except MigrationError:
+                raise
+            except Exception:
+                raise MigrationError(Code.SCHEMA) from None
+            clock = SimulatedClock()
+        else:
+            env = self._open_live()
+            clock = None
+        self.journal = Journal(journal_path)
+        self.env = env
+        self.engine = Engine(env, self.journal, clock)
+        result = self.discover()
+        result["mode"] = self.mode
+        result["checks"] = self._checks(result)
+        return result
+
+    def _open_live(self):
+        from ..adapters.live import Connection, LiveEnvironment
+
+        values = self.connection
+        require(
+            bool(values.get("source_host")) and bool(values.get("destination")), Code.INVALID_INPUT
+        )
+        connection = Connection(
+            source_host=values["source_host"].strip(),
+            destination=values["destination"].strip(),
+            source_api_user=values.get("source_api_user") or "admin",
+            source_ssh_user=values.get("source_ssh_user") or "root",
+            destination_api_user=values.get("destination_api_user") or "admin",
+            destination_ssh_user=values.get("destination_ssh_user") or "",
+            ops_url=values.get("ops_url") or "",
+        )
+        self.store = self.store or TrustStore()
+        env = LiveEnvironment(connection, self.credentials, self.store)
+        try:
+            return env.open()
+        except TrustRequired as pending:
+            self.pending_trust = {
+                identity.name: (identity, env.key_line(identity)) for identity in pending.identities
+            }
+            raise
+        except MigrationError as error:
+            stage = env.notes.get("stage")
+            if stage:
+                # Which host the failure concerns, with no remote text.
+                raise LocalError(
+                    f"{vm.describe_error(error.code.value)} While contacting {stage}."
+                ) from None
+            raise
+
+    def trust(self, *, identities: list[dict]) -> list[str]:
+        """Enroll the identities the operator accepted in the dialog, by the fingerprint
+        the dialog showed; a pending entry with another fingerprint is not enrolled."""
+        require(bool(self.pending_trust), Code.STATE)
+        self.store = self.store or TrustStore()
+        enrolled = []
+        for shown in identities:
+            pending = self.pending_trust.get(shown["name"])
+            if pending is None or pending[0].fingerprint != shown["fingerprint"]:
+                continue
+            identity, line = self.pending_trust.pop(shown["name"])
+            self.store.trust(identity, line)
+            enrolled.append(shown["name"])
+        return enrolled
+
+    def _checks(self, discovered: dict) -> list[tuple[str, str]]:
+        if self.mode != "live":
+            return []
+        env = self.env
+        notes = getattr(env, "notes", {})
+        source, destination = discovered["source"], discovered["destination"]
+        rows = [
+            ("Source Logs API", f"Passed · {vm.format_version(source['version'])}"),
+            (
+                "Source cluster members (SSH)",
+                f"Passed · {len(source['nodes'])} · " + ", ".join(n["id"] for n in source["nodes"]),
+            ),
+            (
+                "Destination Logs API",
+                f"Passed · {vm.format_version(destination['version'])}"
+                + (" (version assumed)" if notes.get("destination_version_assumed") else ""),
+            ),
+        ]
+        try:
+            task = env.transfer()
+            rows.append(("Destination data-migrations status", f"Passed · task {task.status}"))
+        except MigrationError as error:
+            rows.append(("Destination data-migrations status", "Failed · " + error.code.value))
+        budget = [
+            n["id"] for n in destination["nodes"] if n.get("repository_available") is not None
+        ]
+        rows.append(
+            (
+                "Destination repository budget",
+                f"Observed on {len(budget)} node(s)"
+                if budget
+                else "Not observed (no destination SSH)",
+            )
+        )
+        return rows
+
+    def selftest(self) -> dict:
+        from .. import selftest
+
+        require(self.env is not None and self.mode == "live", Code.STATE)
+        return selftest.run(self.env).data()
 
     def reconnect(self, *, fixture: str, journal: str) -> dict:
         """Re-open the same environment after a lost connection; credentials stay in memory."""
         credentials = self.credentials.snapshot() if self.credentials is not None else {}
-        return self.connect(fixture=fixture, journal=journal, credentials=credentials)
+        return self.connect(
+            fixture=fixture, journal=journal, credentials=credentials, connection=self.connection
+        )
 
     def disconnect(self) -> None:
         if self.journal is not None:

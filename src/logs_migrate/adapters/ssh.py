@@ -1,7 +1,8 @@
-"""Read-only source SSH boundary with strict enrolled host identities.
+"""Read-only appliance SSH boundary with enrolled host identities.
 
-No shell password, subprocess, source service controller, or arbitrary command method.
-Destination mutation remains release-gated pending remote-supervisor qualification.
+Fixed read commands only: no shell password, no subprocess, no service control and no
+arbitrary command method. The same reads serve the 8.18 source and, when the operator
+supplies destination SSH credentials, a 9.0 destination.
 """
 
 from __future__ import annotations
@@ -12,21 +13,37 @@ from enum import StrEnum
 from ..errors import Code, MigrationError, require
 from ..security import Secret
 
+STORE = "/storage/core/loginsight/cidata/store"
+CONFIG_DIR = "/storage/core/loginsight/config"
+
 
 class ReadOperation(StrEnum):
     INVENTORY = "inventory"
     SERVICE = "service"
     SPACE = "space"
+    MEMBERS = "members"
+    USAGE = "usage"
 
 
 _READS = {
     ReadOperation.INVENTORY: "/usr/lib/loginsight/application/sbin/bucket-index show",
-    ReadOperation.SERVICE: "systemctl is-active loginsight",
-    ReadOperation.SPACE: "df -B1 /storage/core",
+    # is-active exits 3 when the unit is inactive; the word on stdout is the observation.
+    ReadOperation.SERVICE: "systemctl is-active loginsight || true",
+    ReadOperation.SPACE: "df -B1 --output=size,used,avail /storage/core",
+    # The newest loginsight-config.xml#N names every cluster member; only the <distributed>
+    # host attributes are kept by the caller. The file also holds cluster secrets, so its
+    # text is never logged or persisted.
+    ReadOperation.MEMBERS: (
+        f'cat "$(ls -1 {CONFIG_DIR}/loginsight-config.xml* 2>/dev/null'
+        " | sort -t '#' -k2,2n | tail -n 1)\""
+    ),
+    ReadOperation.USAGE: f"du -sB1 {STORE}/*-*-*-*-* 2>/dev/null; true",
 }
 
 
-class SourceSSH:
+class NodeSSH:
+    """One appliance node. The known_hosts entry and the enrolled digest must both match."""
+
     def __init__(
         self,
         host: str,

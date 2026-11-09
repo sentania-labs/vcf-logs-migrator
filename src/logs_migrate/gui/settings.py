@@ -71,6 +71,7 @@ class Settings:
     source_api_user: str = "admin"
     destination_host: str = ""
     destination_api_user: str = "admin"
+    destination_ssh_user: str = ""
     ops_url: str = ""
 
     def __post_init__(self):

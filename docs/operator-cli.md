@@ -1,17 +1,19 @@
 # CLI operator guide
 
-This delivery runs deterministic fixtures only. It does not connect the CLI to
-real appliances. The REST/SSH transport seams are separately tested, but typed
-live discovery, version-specific count queries, ingest attribution and migration
-response decoders still need qualification. No fixture result proves a real
-appliance migration safe. Sources are 8.18.x; destinations are 9.0.x or 9.1.1 preview.
+The CLI drives real appliances (`--source`, `--destination`) or the built-in
+simulator (`--fixture`) through the same engine. Sources are 8.18.x; destinations
+are 9.0.x or 9.1.1 preview. [Testing against a lab](testing-against-a-lab.md) is the
+step-by-step for real hosts, including the `selftest` command, identity enrollment
+and where credentials come from. The examples below use the simulator so they run
+anywhere; replace `--fixture FILE` with `--source HOST --destination HOST[:PORT]`
+for appliances.
 
 ## Install and exercise
 
-Python 3.11 or later:
+Python 3.11 or later (`'.[ssh]'` adds Paramiko for appliance SSH):
 
 ```sh
-python -m pip install .
+python -m pip install '.[ssh]'
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture discover
 logs-migrate --journal /private/migration/run.sqlite \
@@ -24,16 +26,28 @@ logs-migrate --journal /private/migration/run.sqlite \
 Use the returned run UUID below. Dates must include a timezone. The end is
 exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so the
 preview includes both the requested interval and actual bucket coverage. Active
-buckets are always excluded. The last fully sealed day is reported in
-America/Chicago when bounds establish it; otherwise it is unknown.
+buckets are always excluded. The last fully sealed day is the day
+before the first active bucket's proven start (America/Chicago). A live 8.18 listing
+shows no dates for active buckets, so there it is the day before the oldest node's
+newest sealed bucket end (America/Chicago); it is unknown when a node with an active bucket
+has no sealed bucket to go by.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to
 nodes, so every node must be able to hold the whole selection. `copy` re-reads the
 destination and refuses (`insufficient_capacity`, exit 3) when any node falls short;
-an over-budget 9.0 destination retires and deletes its own existing history. The
+an over-budget 9.0 destination retires and deletes its own existing history. A node
+whose budget was not observed (no destination SSH, or 9.1.1) is listed as unknown
+and warned about rather than refused; the API's own 95% disk stop then applies and
+verification shows what landed. The
 preview warns that the source root password is sent to the destination for the
 transfer and that source retention can remove planned buckets before the run.
+
+The preview also reports `source_ingest`: how many events the source counted in the
+last 24 hours. A non-zero figure is a warning that cutover has not happened; open
+buckets keep growing and a later run of the same dates collects the tail once they
+seal. `partial_days` lists the covered days that share events with open or
+unselected buckets; verification marks them and does not judge the run on them.
 
 **No undo: migrated data stays on the destination. Snapshot the destination before
 continuing (snapshotting the source too is optional).** `--ack-backup` records the
@@ -126,14 +140,13 @@ consumers, `logs_migrate.config.ConfigMigration(environment).compare()` and
 protocol has `exclusive()`, `config_rules(scope, kind)`, `config_write(kind, rule,
 existing)` and `mode`. Reads return lists of API rule objects; `scope` is source
 or destination. Writes always target the destination, with `existing=None` for a
-create. Use the simulator for now; config apply accepts only simulation mode.
+create. Apply works against real hosts and writes only to the destination.
 
-`adapters.config.RestConfigEnvironment` uses the existing `Logs90` source/Bearer
-client and `Logs90` or `Logs911` destination auth client, including OpsToken
-exchange for 9.1.1 preview. REST config operations are also restricted to recorded
-transports. Fixtures exercise the codec, not a live appliance contract: GET
-wrappers and update routes still need captured-response qualification, especially
-on 9.1.1. No live appliance calls were added to the CLI or enabled by this feature.
+`adapters.config.RestConfigEnvironment` uses the `Logs90` source/Bearer client and
+`Logs90` or `Logs911` destination auth client, including OpsToken exchange for 9.1.1
+preview; `adapters.live.LiveEnvironment` wires it to real hosts. The routes and GET
+wrappers follow [config-migration.md](config-migration.md); recorded fixtures
+exercise the codec and the lab guide is where a real run is checked.
 
 ## Status belongs to the API
 
@@ -171,6 +184,14 @@ The wrapper checks that ID before cancelling, then returns the API's observation
 It never automatically cancels a transfer because local inventory changed. There
 is no resume/close/reconcile workflow and no local recovery state to clear.
 
+A start the appliance refused (any 4xx except 408, or 500 or 501) was never accepted,
+so nothing is held and you can plan and copy again. A start with no answer (timeout,
+lost connection) or a gateway-style answer (408, 502, 503, 504) may have been accepted:
+it exits 8 and keeps its selection blocked; the next `plan` releases it when
+the appliance shows no task for it, and settles it as usual when a task matches.
+A start the appliance accepted (2xx) stays held until a matching task is observed,
+even while its status still shows nothing.
+
 ## Data protection and verification
 
 - Source operations are read-only. No source stop, bucket delete, overwrite or
@@ -204,15 +225,17 @@ is no resume/close/reconcile workflow and no local recovery state to clear.
   received bucket reconciles the outcome is `incomplete_verification` (exit 6):
   the counts are evidence, not a success for the requested dates. A count
   difference stays `verified_discrepancy` (exit 5).
-  The fixture adapter supplies attribution; unverifiable attribution must remain
-  incomplete on a future live adapter.
+  The simulator supplies per-event attribution. Live counts cannot: against real
+  appliances verification is per run over the covered days (source per-day counts
+  against destination counts minus the baseline recorded at start), new ingest is
+  not attributed, and days shared with open or unselected buckets are reported as
+  partial without deciding the outcome.
 - Daily count equality is count evidence, not proof of identical message content,
   partition routing or field extraction. A report preserves active exclusions and
   does not authorize retiring source data that was not copied.
 
-No tail rerun bypass exists. Newly sealed data needs a non-overlapping window that
-selects no previously sent bucket. Some active data may never seal after ingest
-moves away; keep that source data available under the operator's retention plan.
+Some active data may never seal after ingest moves away; keep that source data
+available under the operator's retention plan.
 
 ## Exits and boundaries
 
@@ -224,11 +247,13 @@ moves away; keep that source data available under the operator's retention plan.
 | 5 | Complete count observations disagree |
 | 6 | Verification incomplete |
 | 7 | Operation failed: connection, authentication, unrecognized response, journal unavailable or destination busy |
-| 8 | API outcome uncertain or client interrupted; query status |
+| 8 | API outcome uncertain or client interrupted; query status. Also `uncertain_start_pending`: an earlier start of this window got no answer, so the window is held for 15 minutes and released once the API shows no task for it |
 
 Secrets have no argv flags. Adapter failures are reduced to fixed error codes;
 raw responses, credentials and exception strings must never enter reports or
 logs. Private journal files use restrictive permissions and writer locking.
+
+`selftest` exits 0 when every read-only check passed and 1 otherwise.
 
 The optional 9.0 fixup implementation is retained in `_set_aside_fixup.py`, marked
 set aside and not instantiable or exposed in CLI help/commands. Reintroduction
@@ -255,6 +280,9 @@ polls `status`, Cancel runs `stop` for the observed task ID, Verification runs `
 and Reports writes the `report` Markdown and JSON. Configuration runs `config compare`
 and `config apply` with the selected rules.
 
-Live appliance qualification and further live config qualification are separate
-deliveries. Standalone downloads of this same CLI and window are described in the
-README.
+With an empty fixture path in Settings the window connects to real appliances: the
+Connections page takes the addresses and passwords, unknown TLS certificates and SSH
+host keys open a trust dialog with their fingerprints, and Run self-test lists the
+same read-only checks as `logs-migrate selftest`.
+
+Standalone downloads of this same CLI and window are described in the README.

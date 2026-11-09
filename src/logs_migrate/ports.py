@@ -41,6 +41,10 @@ class History:
     destination_nodes: tuple[str, ...]
     bucket_ids: tuple[str, ...]
     complete: bool
+    task_id: str = ""
+    # Finished with skipped buckets but no exhaustive received list: part of its window
+    # may have landed, and nothing says which part.
+    partial: bool = False
 
 
 class Environment(Protocol):
@@ -51,12 +55,16 @@ class Environment(Protocol):
     Observations are fresh on every call. Counts use the immutable query scope.
     """
 
-    mode: str  # This delivery permits only "simulation" execution; appliance release is gated.
+    mode: str  # "simulation" (fixture) or "live" (real appliances).
+    # Whether count evidence carries per-event identities (the simulator) so new ingest can
+    # be attributed; live REST counts cannot, and the engine verifies by covered days instead.
+    attribution: bool
 
     def exclusive(self) -> AbstractContextManager[None]: ...
     def discover(self) -> tuple[Cluster, Cluster]: ...
     def history(self) -> tuple[History, ...]: ...
     def count(self, scope: str, window: Window, bucket_keys: tuple[str, ...]) -> Counts: ...
+    def recent_source_events(self, seconds: int) -> int | None: ...
     def test_mover(self) -> None: ...
     def test_source_credentials(self, node: str) -> None: ...
     def start(self, window: Window, bucket_keys: tuple[str, ...]) -> Transfer: ...

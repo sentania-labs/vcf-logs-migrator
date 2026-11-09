@@ -119,9 +119,25 @@ class Journal:
                 run["id"],
                 plan["source"]["id"],
                 plan["destination"]["id"],
-                canonical({"keys": keys, "closed": False, "received": []}),
+                canonical(
+                    {
+                        "keys": keys,
+                        "closed": False,
+                        "received": [],
+                        "window": plan["window"],
+                        "attempted_at": self.clock.now(),
+                    }
+                ),
             ),
         )
+
+    def note_transfer_task(self, run_id: str, task_id: str):
+        """Mark the start as acknowledged and remember its task id (possibly empty)."""
+        try:
+            body = {**self._transfer_body(run_id), "task_id": task_id, "acknowledged": True}
+            self.db.execute("UPDATE transfers SET body=? WHERE run=?", (canonical(body), run_id))
+        except sqlite3.Error:
+            raise MigrationError(Code.STORAGE) from None
 
     def settle_transfer(self, run_id: str, received: list[str]):
         """Replace the in-flight selection with the bucket keys the API reported as transferred."""
@@ -131,13 +147,23 @@ class Journal:
                 (
                     canonical(
                         {
-                            "keys": self._transfer_body(run_id)["keys"],
+                            **self._transfer_body(run_id),
                             "closed": True,
                             "received": sorted(received),
                         }
                     ),
                     run_id,
                 ),
+            )
+        except sqlite3.Error:
+            raise MigrationError(Code.STORAGE) from None
+
+    def release_transfer(self, run_id: str):
+        """Drop an open row for a start the appliance never accepted."""
+        try:
+            self.db.execute(
+                "DELETE FROM transfers WHERE run=? AND json_extract(body, '$.closed')=0",
+                (run_id,),
             )
         except sqlite3.Error:
             raise MigrationError(Code.STORAGE) from None

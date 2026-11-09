@@ -4,9 +4,9 @@ import json
 import pytest
 
 from logs_migrate.adapters.rest import HTTPS, Logs90, Logs911, RecordedTransport
-from logs_migrate.adapters.ssh import ReadOperation, RecordedSSH, SourceSSH
+from logs_migrate.adapters.ssh import NodeSSH, ReadOperation, RecordedSSH
 from logs_migrate.errors import Code, MigrationError
-from logs_migrate.models import Window
+from logs_migrate.models import DAY, Window
 from logs_migrate.security import Credentials, Secret
 
 
@@ -63,6 +63,53 @@ def test_911_ops_exchange_and_header_are_separate():
         client.daily_counts(Window(1, 2))
 
 
+def test_911_count_probe_returns_the_raw_response_shape_without_deriving_counts():
+    path = (
+        f"/api/v1/aggregated-events/timestamp/%3E%3D{DAY}/timestamp/%3C{2 * DAY}"
+        f"?bin-width={DAY}&timeout=580000"
+    )
+    ops = RecordedTransport(
+        [record("POST", "/suite-api/api/auth/token/exchange", {"fixtureJWT": "fixture-jwt"})]
+    )
+    logs = RecordedTransport([record("GET", path, {"hits": {"total": 7}, "took": 3})])
+    client = Logs911(logs, ops, Secret("fixture-ops"), lambda body: body["fixtureJWT"])
+    assert client.probe_counts(Window(DAY, 2 * DAY)) == {"hits": {"total": 7}, "took": 3}
+    assert logs.calls == [("GET", path)]
+
+
+def test_911_selftest_probe_records_key_names_never_values():
+    from logs_migrate import selftest
+
+    class Client:
+        def probe_counts(self, window):
+            return {"hits": {"total": 424242}, "took": 3}
+
+    class Env:
+        connection = type("Connection", (), {"preview": True})()
+        destination_client = Client()
+        notes: dict = {}
+
+    result = selftest.run(Env(), Window(0, 3 * DAY))
+    (probe,) = [s for s in result.steps if s.name == "Destination 9.1 count query probe"]
+    assert probe.status == "pass"
+    assert "hits" in probe.detail and "hits.total" in probe.detail and "took" in probe.detail
+    assert "424242" not in probe.detail
+    assert Env.notes["destination_count_probe_keys"] == ["hits", "hits.total", "took"]
+    skipped = [s for s in result.steps if s.name == "Destination daily counts"]
+    assert skipped and skipped[0].status == "skip"
+
+
+def test_911_default_exchange_decoder_accepts_token_field_or_single_jwt():
+    from logs_migrate.adapters.rest import decode_token_exchange
+
+    assert decode_token_exchange({"token": "abc"}) == "abc"
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig-part"
+    assert decode_token_exchange({"id": 1, "value": jwt, "note": "x"}) == jwt
+    for body in ({}, {"a": "x", "b": "y"}, [], {"value": "not a jwt"}):
+        with pytest.raises(MigrationError, match="schema"):
+            decode_token_exchange(body)
+
+
 def test_get_auth_expiry_refreshes_once_but_post_never_replays():
     transport = RecordedTransport(
         [
@@ -84,26 +131,35 @@ def test_get_auth_expiry_refreshes_once_but_post_never_replays():
     assert transport.calls.count(("POST", "/api/v2/data-migrations")) == 1
 
 
-def test_all_non_fixture_mutations_are_release_gated():
-    class Rejecting:
-        def request(self, *args, **kwargs):
-            pytest.fail("Release gate must run before any network request")
+def test_mutations_reach_only_the_documented_routes():
+    sent = []
 
-    client = Logs90(Rejecting(), "admin", Secret("canary"))
+    class Live:
+        identity = "x"
+
+        def request(self, method, path, body=None, headers=None, timeout=None):
+            sent.append((method, path))
+            return {"sessionId": "s"} if path.endswith("sessions") else {}
+
+    client = Logs90(Live(), "admin", Secret("canary"))
+    client.test_migration("source.invalid", "root", Secret("canary"))
+    client.cancel_migration()
     with pytest.raises(MigrationError, match="unsupported"):
-        client.start_migration("source.invalid", "root", Secret("canary"), Window(1, 2))
+        client.call("POST", "/api/v2/data-migrations/other", {})
     with pytest.raises(MigrationError, match="unsupported"):
-        client.test_migration("source.invalid", "root", Secret("canary"))
-    with pytest.raises(MigrationError, match="unsupported"):
-        client.cancel_migration()
-    with pytest.raises(MigrationError, match="unsupported"):
-        client.call("POST", "/api/v2/data-migrations", {})
+        client.call("DELETE", "/api/v1/partitioning/x")
+    assert sent == [
+        ("POST", "/api/v1/sessions"),
+        ("POST", "/api/v2/data-migrations/test"),
+        ("DELETE", "/api/v2/data-migrations"),
+    ]
 
 
 def test_forbidden_operations_are_structurally_absent():
-    source = SourceSSH("source.invalid", "root", Secret("pw"), "0" * 64, "/missing")
+    source = NodeSSH("source.invalid", "root", Secret("pw"), "0" * 64, "/missing")
     assert not hasattr(source, "stop_service")
     assert not hasattr(source, "write")
+    assert not hasattr(source, "exec")
     client = Logs90(RecordedTransport([]), "admin", Secret("pw"))
     for method, path in [
         ("DELETE", "/api/v1/partitioning"),
@@ -117,46 +173,81 @@ def test_forbidden_operations_are_structurally_absent():
     assert ssh.commands == ["/usr/lib/loginsight/application/sbin/bucket-index show"]
 
 
+COUNT_PATH = (
+    "/api/v1/aggregated-events/timestamp/%3E%3D1/timestamp/%3C2?bin-width=86400000&timeout=580000"
+)
+
+
 @pytest.mark.parametrize(
     "body",
     [
-        {},
-        {"complete": False, "bins": []},
-        {"complete": True},
+        [],
         {"complete": True, "bins": [{"value": -1}]},
+        {"complete": True, "bins": [{"minTimestamp": 1, "value": "1"}]},
+        {"complete": True, "bins": [{"minTimestamp": 5, "value": 1}]},
     ],
 )
-def test_query_completeness_and_schema_fail_closed(body):
-    path = (
-        "/api/v1/aggregated-events/timestamp/%3E%3D1/timestamp/%3C2"
-        "?bin-width=86400000&timeout=580000"
-    )
+def test_query_schema_failures_fail_closed(body):
     client = Logs90(
-        RecordedTransport([session(), record("GET", path, body)]), "admin", Secret("pw")
+        RecordedTransport([session(), record("GET", COUNT_PATH, body)]), "admin", Secret("pw")
     )
     with pytest.raises(MigrationError):
         client.daily_counts(Window(1, 2))
+
+
+@pytest.mark.parametrize("body", [{}, {"complete": False, "bins": []}, {"bins": []}])
+def test_query_partial_answers_are_reported_incomplete_not_as_counts(body):
+    client = Logs90(
+        RecordedTransport([session(), record("GET", COUNT_PATH, body)]), "admin", Secret("pw")
+    )
+    assert client.daily_counts(Window(1, 2)) == ({"1970-01-01": 0}, False)
 
 
 def test_query_empty_complete_is_zero_but_duplicate_bins_are_rejected():
-    path = (
-        "/api/v1/aggregated-events/timestamp/%3E%3D1/timestamp/%3C2"
-        "?bin-width=86400000&timeout=580000"
-    )
     client = Logs90(
-        RecordedTransport([session(), record("GET", path, {"complete": True, "bins": []})]),
+        RecordedTransport([session(), record("GET", COUNT_PATH, {"complete": True, "bins": []})]),
         "admin",
         Secret("pw"),
     )
-    assert client.daily_counts(Window(1, 2)) == {"1970-01-01": 0}
+    assert client.daily_counts(Window(1, 2)) == ({"1970-01-01": 0}, True)
     bins = [{"minTimestamp": 1, "value": 1}] * 2
     client = Logs90(
-        RecordedTransport([session(), record("GET", path, {"complete": True, "bins": bins})]),
+        RecordedTransport([session(), record("GET", COUNT_PATH, {"complete": True, "bins": bins})]),
         "admin",
         Secret("pw"),
     )
     with pytest.raises(MigrationError):
         client.daily_counts(Window(1, 2))
+
+
+def test_query_chunks_thirty_days_and_fills_missing_days_with_zero():
+    from logs_migrate.models import DAY
+
+    first = (
+        "/api/v1/aggregated-events/timestamp/%3E%3D0/timestamp/%3C"
+        + str(30 * DAY)
+        + "?bin-width=86400000&timeout=580000"
+    )
+    second = (
+        f"/api/v1/aggregated-events/timestamp/%3E%3D{30 * DAY}/timestamp/%3C{31 * DAY}"
+        "?bin-width=86400000&timeout=580000"
+    )
+    bins = [{"minTimestamp": 3 * DAY, "value": 7}, {"minTimestamp": 29 * DAY, "value": 2}]
+    client = Logs90(
+        RecordedTransport(
+            [
+                session(),
+                record("GET", first, {"complete": True, "bins": bins}),
+                record("GET", second, {"complete": True, "bins": []}),
+            ]
+        ),
+        "admin",
+        Secret("pw"),
+    )
+    daily, complete = client.daily_counts(Window(0, 31 * DAY))
+    assert complete and len(daily) == 31
+    assert daily["1970-01-04"] == 7 and daily["1970-01-30"] == 2 and daily["1970-01-31"] == 0
+    assert sum(daily.values()) == 9
 
 
 def test_certificate_pin_checked_before_any_credential_is_sent(monkeypatch):

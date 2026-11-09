@@ -138,21 +138,36 @@ class Partition:
 
 @dataclass(frozen=True)
 class Node:
+    """Storage figures are None when the appliance did not report them (no SSH, or 9.1.1)."""
+
     id: str
-    capacity: int
-    used: int
-    repository_available: int
+    capacity: int | None
+    used: int | None
+    repository_available: int | None
     service: str = "running"
 
     def __post_init__(self):
         require(_label(self.id), Code.SCHEMA)
-        require(
-            all(type(n) is int for n in (self.capacity, self.used, self.repository_available)),
-            Code.SCHEMA,
-        )
-        require(self.capacity > 0 and 0 <= self.used <= self.capacity, Code.SCHEMA)
-        require(0 <= self.repository_available <= self.capacity, Code.SCHEMA)
+        figures = (self.capacity, self.used, self.repository_available)
+        require(all(n is None or type(n) is int for n in figures), Code.SCHEMA)
+        if self.capacity is not None:
+            require(self.capacity > 0, Code.SCHEMA)
+            require(self.used is None or 0 <= self.used <= self.capacity, Code.SCHEMA)
+            require(
+                self.repository_available is None
+                or 0 <= self.repository_available <= self.capacity,
+                Code.SCHEMA,
+            )
+        else:
+            require(self.used is None or self.used >= 0, Code.SCHEMA)
+            require(
+                self.repository_available is None or self.repository_available >= 0, Code.SCHEMA
+            )
         require(self.service in {"running", "stopped", "unknown"}, Code.SCHEMA)
+
+    @property
+    def storage_known(self) -> bool:
+        return self.repository_available is not None
 
 
 @dataclass(frozen=True)
@@ -245,13 +260,33 @@ class Policy:
         require(2 <= self.attempts <= 10000 and self.poll_seconds >= 0, Code.INVALID_INPUT)
 
 
+def sealed_frontier(buckets: tuple[Bucket, ...]) -> int | None:
+    """Where unproven open buckets may begin: the oldest per-node newest sealed end, else None."""
+    newest: dict[str, int] = {}
+    for b in buckets:
+        if b.status != "active" and b.end is not None:
+            newest[b.node] = max(newest.get(b.node, 0), b.end)
+    ends = []
+    for node in {b.node for b in buckets if b.status == "active"}:
+        if node not in newest:
+            return None
+        ends.append(newest[node])
+    return min(ends) if ends else None
+
+
 def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") -> str | None:
-    """Conservative bound only when active minima are proven; stale active metadata is unknown."""
-    active = [b for b in buckets if b.status == "active"]
-    if not active or any(not b.bounds_proven or b.start is None for b in active):
-        return None
+    """The day before the first active data: its proven start, else the sealed frontier."""
     from datetime import timedelta
 
-    first_active = min(b.start for b in active)
-    day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
+    active = [b for b in buckets if b.status == "active"]
+    if not active:
+        return None
+    if any(not b.bounds_proven or b.start is None for b in active):
+        frontier = sealed_frontier(buckets)
+        if frontier is None:
+            return None
+        day = datetime.fromtimestamp(frontier / 1000, ZoneInfo(zone)).date()
+    else:
+        first_active = min(b.start for b in active)
+        day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
     return (day - timedelta(days=1)).isoformat()

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -53,7 +54,11 @@ class MainWindow(QMainWindow):
         self.worker = EngineWorker()
         self.worker.done.connect(self._done)
         self.worker.failed.connect(self._failed)
+        self.worker.trust_required.connect(self._trust_required)
         self.worker.start()
+        self.pending_credentials: dict[str, str] = {}
+        # Tests replace this to answer the identity dialog without a window.
+        self.ask_trust = self._ask_trust
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_status)
         # Results from a previous connection are dropped instead of landing in a reset state.
@@ -224,6 +229,19 @@ class MainWindow(QMainWindow):
             self.job_generation[job] = self.generation
         return accepted
 
+    def connection_values(self) -> dict[str, str]:
+        """Addresses and user names for a live connection; never secrets."""
+        settings = self.state.settings
+        return {
+            "source_host": settings.source_host,
+            "destination": settings.destination_host,
+            "source_api_user": settings.source_api_user,
+            "source_ssh_user": settings.source_ssh_user,
+            "destination_api_user": settings.destination_api_user,
+            "destination_ssh_user": settings.destination_ssh_user,
+            "ops_url": settings.ops_url,
+        }
+
     def connect_environments(self, credentials: dict[str, str]) -> None:
         settings = self.state.settings
         self.generation += 1
@@ -233,16 +251,19 @@ class MainWindow(QMainWindow):
         if fixture and not Path(fixture).expanduser().is_file():
             self.state.connect_error = (
                 f"gui:The simulator fixture file was not found: {fixture}. "
-                "Choose an existing fixture in Settings."
+                "Choose an existing fixture in Settings, or clear it to connect to appliances."
             )
             self.refresh_all()
             return
+        self.pending_credentials = dict(credentials)
+        self.state.mode = "live" if not fixture else "simulation"
         self.submit(
             "connect",
             "connect",
             fixture=settings.fixture_path,
             journal=settings.journal_path,
             credentials=credentials,
+            connection=self.connection_values(),
         )
 
     def reconnect_environments(self) -> None:
@@ -252,7 +273,48 @@ class MainWindow(QMainWindow):
             "connect", "reconnect", fixture=settings.fixture_path, journal=settings.journal_path
         )
 
+    def run_selftest(self) -> None:
+        if self.state.connected and self.state.live:
+            self.state.selftest_error = None
+            self.submit("selftest", "selftest")
+
+    def _ask_trust(self, identities: list[dict]) -> bool:
+        lines = "\n\n".join(i["display"] for i in identities)
+        answer = QMessageBox.question(
+            self,
+            "Trust appliance identities",
+            "These appliance identities are not enrolled yet. Compare each fingerprint with "
+            "the appliance before trusting it. Nothing has been sent to them.\n\n"
+            + lines
+            + "\n\nTrust and remember them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _trust_required(self, job: str, identities: list) -> None:
+        if not self._settle(job):
+            return
+        if self.ask_trust(list(identities)):
+            self.submit(
+                "trust",
+                "trust",
+                identities=[
+                    {"name": i["name"], "fingerprint": i["fingerprint"]} for i in identities
+                ],
+            )
+        else:
+            self.pending_credentials = {}
+            self.state.connected = False
+            self.state.discovered = None
+            self.state.connect_error = (
+                "gui:The appliance identities were not trusted, so nothing was sent. "
+                "Compare the fingerprints and test again to enroll them."
+            )
+            self.refresh_all()
+
     def disconnect_environments(self) -> None:
+        self.pending_credentials = {}
         self.timer.stop()
         self.generation += 1
         self.state.reset_connection()
@@ -289,10 +351,25 @@ class MainWindow(QMainWindow):
         state = self.state
         if not self._settle(job):
             return
+        if job == "trust":
+            # Identities enrolled; the connection that needed them runs again.
+            self.generation += 1
+            self.submit(
+                "connect",
+                "connect",
+                fixture=state.settings.fixture_path,
+                journal=state.settings.journal_path,
+                credentials=self.pending_credentials,
+                connection=self.connection_values(),
+            )
+            return
         if job == "connect":
+            self.pending_credentials = {}
             state.connected = True
             state.discovered = result
             state.connect_error = None
+            state.mode = result.get("mode", "simulation")
+            state.checks = [tuple(row) for row in result.get("checks", [])]
             self.timer.start(state.settings.refresh_seconds * 1000)
             self.submit("runs", "runs")
             self.poll_status()
@@ -370,12 +447,17 @@ class MainWindow(QMainWindow):
         elif job == "export":
             state.exported = result
             state.export_error = None
+        elif job == "selftest":
+            state.selftest = result
+            state.selftest_error = None
         self.refresh_all()
 
     def _failed(self, job: str, code: str) -> None:
         state = self.state
         if not self._settle(job):
             return
+        if job in {"connect", "trust"}:
+            self.pending_credentials = {}
         if job == "connect":
             state.connected = False
             state.discovered = None
@@ -411,6 +493,11 @@ class MainWindow(QMainWindow):
                 state.verify_error = code
         elif job == "export":
             state.export_error = code
+        elif job == "selftest":
+            state.selftest = None
+            state.selftest_error = code
+        elif job == "trust":
+            state.connect_error = code
         elif job.startswith("report:"):
             state.report = None
         self.refresh_all()
