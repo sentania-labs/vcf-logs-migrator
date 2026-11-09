@@ -59,13 +59,13 @@ jobs:
           - platform: macos-arm64
             os: macos-15
             suffix: .dmg
-            minutes: 150
+            minutes: 270
           - platform: macos-x86_64
             os: macos-15-intel
             suffix: .dmg
-            minutes: 150
+            minutes: 270
     runs-on: ${{ matrix.os }}
-    # macOS includes Apple's notary round trip, which has taken over an hour.
+    # macOS includes two Apple notary round trips (app, then disk image), each of which has taken over an hour.
     timeout-minutes: ${{ matrix.minutes }}
     env:
       PLATFORM: ${{ matrix.platform }}
