@@ -58,8 +58,8 @@ def parser():
         "--debug-log",
         nargs="?",
         const="",
-        metavar="PATH",
-        help="Write detailed troubleshooting log",
+        metavar="=PATH",
+        help="Write detailed troubleshooting log; choose the file with --debug-log=PATH",
     )
     p.add_argument(
         "-v", "--verbose", action="store_true", help="Echo troubleshooting log to stderr"

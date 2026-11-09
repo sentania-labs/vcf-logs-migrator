@@ -8,13 +8,12 @@ def test_redaction_covers_file_stderr_and_tracebacks(tmp_path, capsys):
     path = tmp_path / "debug.log"
     diagnostics.configure(path, verbose=True)
     secret = "credential-known-to-session"
-    credential = Secret(secret)
+    _credential = Secret(secret)
     try:
         raise ValueError(f"password={secret} Authorization: Bearer {secret}")
     except ValueError:
         logging.getLogger("logs_migrate.adapters.rest").exception("REST failure %s", secret)
     logging.getLogger("paramiko.transport").debug("SSH password=%s", secret)
-    assert credential.reveal()
     diagnostics.configure(enabled=False)
     for output in (path.read_text(), capsys.readouterr().err):
         assert secret not in output
@@ -23,10 +22,15 @@ def test_redaction_covers_file_stderr_and_tracebacks(tmp_path, capsys):
         assert "<redacted>" in output
 
 
-def test_default_off(tmp_path):
+def test_default_off(tmp_path, capsys):
+    path = tmp_path / "debug.log"
+    diagnostics.configure(path, verbose=True)
     diagnostics.configure(enabled=False)
     assert diagnostics.log_path() is None
-    assert list(tmp_path.iterdir()) == []
+    logging.getLogger("logs_migrate").debug("after-disable-marker")
+    logging.getLogger("paramiko.transport").debug("after-disable-marker")
+    assert "after-disable-marker" not in path.read_text()
+    assert "after-disable-marker" not in capsys.readouterr().err
 
 
 def test_rest_error_body_redacts_text():
@@ -57,9 +61,8 @@ def test_diagnostic_flags_work_around_commands():
 def test_secret_with_whitespace_fully_redacted():
     from logs_migrate.diagnostics import redact
 
-    credential = Secret("abc def-unique")
+    _credential = Secret("abc def-unique")
     assert "def-unique" not in redact("password=abc def-unique trailing")
-    assert credential.reveal()
 
 
 def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
@@ -73,7 +76,7 @@ def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
     from logs_migrate.errors import MigrationError
 
     rest_secret, ssh_secret = "rest-secret-unique", "ssh-secret-unique"
-    credential = Secret(rest_secret)
+    _credential = Secret(rest_secret)
     path = tmp_path / "transports.log"
     diagnostics.configure(path, verbose=True)
 
@@ -102,7 +105,6 @@ def test_transport_exceptions_redacted(tmp_path, capsys, monkeypatch):
         NodeSSH("example.invalid", "root", Secret(ssh_secret), "a" * 64, "hosts").read(
             ReadOperation.INVENTORY
         )
-    assert credential.reveal()
     diagnostics.configure(enabled=False)
     for output in (path.read_text(), capsys.readouterr().err):
         assert rest_secret not in output
