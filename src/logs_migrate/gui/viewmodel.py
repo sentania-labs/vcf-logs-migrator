@@ -55,13 +55,20 @@ ERROR_TEXT = {
 }
 
 
-def describe_error(code: str) -> str:
-    if code.startswith("gui:"):
-        return code[4:]
+def split_error(text: str) -> tuple[Code | None, str]:
+    """A failure is a bare code, `gui:<message>`, or `<code>: <message>` (a coded diagnostic)."""
+    if text.startswith("gui:"):
+        return None, text[4:]
+    head, separator, message = text.partition(": ")
     try:
-        return ERROR_TEXT[Code(code)]
+        code = Code(head if separator else text)
     except ValueError:
-        return "The operation failed. Query the API status before retrying."
+        return None, "The operation failed. Query the API status before retrying."
+    return code, message if separator else ERROR_TEXT[code]
+
+
+def describe_error(code: str) -> str:
+    return split_error(code)[1]
 
 
 # Formatting -------------------------------------------------------------------------------
@@ -490,13 +497,13 @@ PRE_POST_CODES = {
 }
 
 
+def is_pre_post(code: str) -> bool:
+    return split_error(code)[0] in PRE_POST_CODES
+
+
 def start_note(code: str) -> str:
     """Footer text after a failed Start; only pre-POST refusals promise nothing was sent."""
-    try:
-        before_post = Code(code) in PRE_POST_CODES
-    except ValueError:
-        before_post = False
-    if before_post:
+    if is_pre_post(code):
         return describe_error(code) + " No API request was submitted."
     return (
         describe_error(code)

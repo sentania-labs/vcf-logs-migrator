@@ -68,7 +68,7 @@ class EngineWorker(QObject):
                 ],
             )
         except SSHFailure as error:
-            self.failed.emit(job, f"gui:{error.message}")
+            self.failed.emit(job, f"{error.code.value}: {error.message}")
         except MigrationError as error:
             self.failed.emit(job, error.code.value)
         except LocalError as error:

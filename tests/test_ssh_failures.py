@@ -56,6 +56,7 @@ def ssh_client(monkeypatch):
     [
         ("tcp", Code.CONNECTION, "SSH TCP connection"),
         ("timeout", Code.CONNECTION, "SSH TCP connection"),
+        ("reset", Code.CONNECTION, "SSH handshake"),
         ("host", Code.AUTH, "SSH host key"),
         ("negotiation", Code.CONNECTION, "SSH negotiation"),
         ("auth", Code.AUTH, "SSH authentication"),
@@ -68,6 +69,7 @@ def test_failure_stages(ssh_client, kind, code, words):
     failures = {
         "tcp": ConnectionRefusedError("canary"),
         "timeout": TimeoutError("canary"),
+        "reset": ConnectionResetError("canary"),
         "host": module.BadHostKeyException("canary"),
         "negotiation": module.ssh_exception.IncompatiblePeer(
             "Incompatible ssh peer (no acceptable ciphers)"
@@ -199,9 +201,30 @@ def test_cli_ssh_message_and_exit_contract(monkeypatch, capsys, stage):
 
 def test_selftest_keeps_safe_ssh_diagnostic():
     from logs_migrate.adapters.ssh_errors import SSHFailure
+    from logs_migrate.gui import viewmodel as vm
     from logs_migrate.selftest import _code
 
     result = _code(SSHFailure("auth", TimeoutError("canary")))
     assert "authentication_failed" in result
     assert "SSH authentication" in result
     assert "canary" not in result
+    rows = dict(
+        vm.selftest_rows({"steps": [{"name": "Source SSH", "status": "fail", "detail": result}]})
+    )
+    assert "SSH authentication" in rows["Source SSH"]
+    assert "operation failed" not in rows["Source SSH"].lower()
+    assert "canary" not in rows["Source SSH"]
+
+
+@pytest.mark.parametrize("stage", ["host", "auth", "tcp", "command"])
+def test_ssh_failure_keeps_start_classification_through_worker_encoding(stage):
+    from logs_migrate.adapters.ssh_errors import SSHFailure
+    from logs_migrate.gui import viewmodel as vm
+
+    error = SSHFailure(stage)
+    encoded = f"{error.code.value}: {error.message}"
+    assert vm.describe_error(encoded) == error.message
+    assert vm.is_pre_post(encoded) == (error.code in vm.PRE_POST_CODES)
+    assert ("No API request was submitted." in vm.start_note(encoded)) == (
+        stage in {"host", "auth"}
+    )

@@ -79,5 +79,6 @@ def ssh_failure(error: Exception, stage: str) -> SSHFailure:
     elif isinstance(error, paramiko.ssh_exception.IncompatiblePeer):
         stage = "negotiation"
     elif stage == "connect":
-        stage = "tcp" if isinstance(error, OSError) else "handshake"
+        dropped = isinstance(error, ConnectionResetError | ConnectionAbortedError | BrokenPipeError)
+        stage = "tcp" if isinstance(error, OSError) and not dropped else "handshake"
     return SSHFailure(stage, error)
