@@ -82,7 +82,7 @@ tag not reachable from `main`, a tag that differs from the program's version, or
 missing signing secret, runs the test suite, builds and smoke-tests every platform
 through `binaries.yml` with signing required, and only then publishes all four
 archives with `SHA256SUMS` on the release. A published release is never modified by
-a rerun. Every download includes Paramiko 4.0.0 and its runtime dependencies;
+a rerun. Every download includes Paramiko (pinned in `packaging/requirements.txt`) and its runtime dependencies;
 the frozen SSH smoke imports it and exercises the crypto backend before checking
 that a closed localhost port reports a TCP failure. This catches the missing SSH
 dependency that caused v0.1.1 downloads to fail before contacting an appliance.
