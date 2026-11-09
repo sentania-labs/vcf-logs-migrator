@@ -151,7 +151,8 @@ def test_gui_connect_preserves_ssh_diagnostic(monkeypatch, stage):
     assert "API" not in str(caught.value)
 
 
-def test_trust_probe_reports_a_closed_port_as_tcp(ssh_client):
+def test_trust_probe_reports_a_closed_port_as_tcp():
+    pytest.importorskip("paramiko")
     import socket
 
     from logs_migrate.trust import probe_ssh
