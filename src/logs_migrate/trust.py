@@ -124,6 +124,7 @@ def probe_ssh(host: str, port: int = 22, timeout: float = 15) -> tuple[Identity,
     """Identity plus the known_hosts line to enroll once the operator accepts it."""
     import base64
     import hashlib
+    import socket
 
     from .adapters.ssh_errors import ssh_failure
 
@@ -131,7 +132,12 @@ def probe_ssh(host: str, port: int = 22, timeout: float = 15) -> tuple[Identity,
     try:
         import paramiko
 
-        transport = paramiko.Transport((host, port))
+        connection = socket.create_connection((host, port), timeout)
+        try:
+            transport = paramiko.Transport(connection)
+        except BaseException:
+            connection.close()
+            raise
         try:
             stage = "handshake"
             transport.banner_timeout = timeout

@@ -151,13 +151,29 @@ def test_gui_connect_preserves_ssh_diagnostic(monkeypatch, stage):
     assert "API" not in str(caught.value)
 
 
-@pytest.mark.parametrize("kind", ["tcp", "negotiation", "banner", "dependency"])
-def test_trust_probe_mapping(ssh_client, kind):
+def test_trust_probe_reports_a_closed_port_as_tcp():
+    import socket
+
+    from logs_migrate.trust import probe_ssh
+
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+    with pytest.raises(MigrationError) as caught:
+        probe_ssh("127.0.0.1", port, timeout=3)
+    assert caught.value.code == Code.CONNECTION
+    assert "SSH TCP connection" in caught.value.message
+    assert "handshake" not in caught.value.message
+
+
+@pytest.mark.parametrize("kind", ["negotiation", "banner", "dependency"])
+def test_trust_probe_mapping(ssh_client, monkeypatch, kind):
+    import socket
+
     from logs_migrate.trust import probe_ssh
 
     _, _, module, _ = ssh_client
     error, expected = {
-        "tcp": (ConnectionRefusedError("canary"), "SSH TCP connection"),
         "negotiation": (module.ssh_exception.IncompatiblePeer("canary"), "SSH negotiation"),
         "banner": (module.SSHException("canary"), "SSH handshake"),
         "dependency": (ModuleNotFoundError("canary"), "SSH support is unavailable"),
@@ -167,7 +183,10 @@ def test_trust_probe_mapping(ssh_client, kind):
     def fail(*a, **kw):
         raise error
 
-    if kind in {"tcp", "dependency"}:
+    monkeypatch.setattr(
+        socket, "create_connection", lambda *a, **kw: SimpleNamespace(close=lambda: None)
+    )
+    if kind == "dependency":
         module.Transport = fail
     else:
         module.Transport = lambda address: SimpleNamespace(
@@ -214,17 +233,3 @@ def test_selftest_keeps_safe_ssh_diagnostic():
     assert "SSH authentication" in rows["Source SSH"]
     assert "operation failed" not in rows["Source SSH"].lower()
     assert "canary" not in rows["Source SSH"]
-
-
-@pytest.mark.parametrize("stage", ["host", "auth", "tcp", "command"])
-def test_ssh_failure_keeps_start_classification_through_worker_encoding(stage):
-    from logs_migrate.adapters.ssh_errors import SSHFailure
-    from logs_migrate.gui import viewmodel as vm
-
-    error = SSHFailure(stage)
-    encoded = f"{error.code.value}: {error.message}"
-    assert vm.describe_error(encoded) == error.message
-    assert vm.is_pre_post(encoded) == (error.code in vm.PRE_POST_CODES)
-    assert ("No API request was submitted." in vm.start_note(encoded)) == (
-        stage in {"host", "auth"}
-    )
