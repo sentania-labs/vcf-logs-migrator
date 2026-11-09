@@ -4,7 +4,7 @@ Arguments always mean the CLI, exactly as the installed `logs-migrate` console s
 With no arguments, a Finder or `open` launch of the macOS app opens the window instead
 of printing usage. A terminal, a script or an agent calling with no arguments gets the
 CLI's usage error as before. Linux has no reliable desktop signal, so `logs-migrate gui`
-is explicit there; Windows double-clicks use the separate windowed gui_entry.py program.
+is explicit there; Windows detects a double-click and detaches its own console.
 """
 
 import os
@@ -24,7 +24,35 @@ def desktop_launch() -> bool:
         return False
     # Finder and `open` start an app through launchd; a shell or script is the parent
     # otherwise. The macOS app runs in-process (one-dir), so there is no bootloader.
+    if sys.platform == "win32":
+        return detach_owned_console()
     return sys.platform == "darwin" and os.getppid() == 1
+
+
+def detach_owned_console() -> bool:
+    """Hide and detach only a visible console belonging to this frozen program."""
+    try:
+        import ctypes
+
+        if not sys.stdout.isatty():
+            return False
+        kernel = ctypes.windll.kernel32
+        user = ctypes.windll.user32
+        kernel.GetConsoleWindow.restype = ctypes.c_void_p
+        user.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        processes = (ctypes.c_uint * 4)()
+        count = kernel.GetConsoleProcessList(processes, len(processes))
+        if not 0 < count <= (2 if getattr(sys, "frozen", False) else 1):
+            return False
+        window = kernel.GetConsoleWindow()
+        if not window or not user.IsWindowVisible(window):
+            return False
+        user.ShowWindow(window, 0)
+        kernel.FreeConsole()
+        return True
+    except (AttributeError, OSError):
+        return False
 
 
 def _install_gui_smoke(report: str) -> None:

@@ -52,6 +52,17 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(CONNECTION_ENVIRONMENT[name], default)
 
 
+class LicensesAction(argparse.Action):
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, default=default, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        from .licenses import text
+
+        sys.stdout.write(text())
+        parser.exit()
+
+
 def parser():
     p = Parser(prog="logs-migrate", description="Migration API wrapper for 8.18 to 9.x")
     p.add_argument(
@@ -65,6 +76,7 @@ def parser():
         "-v", "--verbose", action="store_true", help="Echo troubleshooting log to stderr"
     )
     p.add_argument("--version", action="version", version=__version__)
+    p.add_argument("--licenses", action=LicensesAction, help="Show third-party license notices")
     p.add_argument(
         "--journal", type=Path, help="Private plans, sent-bucket ledger and count evidence"
     )

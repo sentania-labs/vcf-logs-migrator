@@ -10,6 +10,7 @@ from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -52,6 +54,8 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: Settings):
         super().__init__()
         self.setWindowTitle("VCF Logs Migrator")
+        about = self.menuBar().addMenu("About")
+        about.addAction("Licenses", self.show_licenses)
         self.state = AppState(settings)
         self.worker = EngineWorker()
         self.worker.done.connect(self._done)
@@ -103,6 +107,19 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 600)
         self.refresh_all()
         self.show_page("overview")
+
+    def show_licenses(self) -> None:
+        from ..licenses import text
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Third-party licenses")
+        dialog.resize(800, 600)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(text())
+        layout.addWidget(view)
+        dialog.exec()
 
     # Chrome ------------------------------------------------------------------------------
 

@@ -19,76 +19,37 @@ overwrites destination data, or falls back to manual copying.
 
 ## Download
 
-Each platform gets one archive holding the desktop window and the `logs-migrate` CLI
-over one engine, plus a quickstart (`README.txt`), the simulator fixtures under
-`examples/`, and license notices:
+Each platform has one download with both the desktop window and CLI:
 
-| Platform | Archive | Open the window | Run the CLI |
+| Platform | Download | Open the window | Run the CLI |
 |---|---|---|---|
-| Windows x64 | `vcf-logs-migrator-vX.Y.Z-windows-x64.zip` | double-click `VCF Logs Migrator.exe` | `logs-migrate.exe <command>` |
-| macOS Apple silicon / Intel | `vcf-logs-migrator-vX.Y.Z-macos-arm64.zip` / `-macos-x86_64.zip` | double-click `VCF Logs Migrator.app` | `"VCF Logs Migrator.app/Contents/MacOS/logs-migrate" <command>` |
-| Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64.tar.gz` | `./logs-migrate gui` | `./logs-migrate <command>` |
+| Windows x64 | `vcf-logs-migrator-vX.Y.Z-windows-x64.exe` | Double-click the executable | `vcf-logs-migrator-vX.Y.Z-windows-x64.exe <command>` |
+| macOS Apple silicon / Intel | `vcf-logs-migrator-vX.Y.Z-macos-arm64.dmg` / `-macos-x86_64.dmg` | Open the disk image and drag the app to Applications | `/Applications/VCF Logs Migrator.app/Contents/MacOS/logs-migrate <command>` |
+| Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64` | Make executable, then run with `gui` | Run the executable with a command |
 
-Tagged versions are attached to [GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases)
-with `SHA256SUMS`. Every push to `main` also leaves signed builds as artifacts of its
-*Binaries* workflow run. Arguments always mean the CLI, so an agent drives the same
-engine a person opens by double-click; on macOS, with no arguments, only a Finder
-launch opens the window. On Linux the window needs a desktop session with the usual
-Qt libraries (libEGL/libGL, fontconfig, libxkbcommon-x11, libxcb-cursor0); the CLI
-needs none of them.
+[GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases) also
+provide `SHA256SUMS` and `THIRD-PARTY-NOTICES.txt`. Notices travel with the program:
+use `--licenses` or About → Licenses. On Linux the window needs a desktop session
+and the usual Qt libraries (libEGL/libGL, fontconfig, libxkbcommon-x11,
+libxcb-cursor0).
 
 ### How the downloads are built and signed
 
-`packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
-`packaging/requirements.txt`) on Python 3.12.10, the same interpreter `release.yml`
-tests with (on a pinned ubuntu-24.04 image; see the comment in `release.yml`). The result
-is a one-file console executable on Windows and Linux, a one-dir app bundle on macOS.
-Windows also gets a windowed `VCF Logs Migrator.exe`
-(`packaging/gui_entry.py`) so opening the window never shows a console.
-`.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
-Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each
-final archive into an empty directory and runs it with no Python on its path:
-`--version`, `--help`, argument refusal, both simulator migrations end to end, the
-configuration workflow, a real SSH probe against a reserved localhost port, and the
-`gui` path rendered once offscreen and once natively (the windowed program with no console on Windows,
-`open` and a PATH symlink on macOS, X11 under Xvfb on Linux). Launch screenshots are
-kept as workflow artifacts.
+`packaging/build.py` uses pinned PyInstaller tools and Python 3.12.10. The binary
+builds run natively on GitHub-hosted Linux, Windows and macOS runners; smoke tests
+exercise the CLI, simulator, a real SSH probe against a reserved localhost port and
+GUI from the finished download. Every download bundles Paramiko (pinned in
+`packaging/requirements.txt`). PyInstaller's analysis
+provides the bundled distribution inventory used to generate the embedded notices.
 
-Signing uses the org's shared actions in `sentania-labs/.github`, pinned by commit,
-with credentials held as sentania-labs organization secrets (none are stored in
-this repository):
+Windows is Authenticode signed through Azure Artifact Signing. macOS uses the org's
+Developer ID signing and notarization actions; the disk image is also signed,
+notarized and stapled. Linux is covered by `SHA256SUMS`. Signing credentials remain
+in organization secrets. Pull requests build and smoke unsigned downloads.
 
-- **macOS**: `macos-sign` signs the app's nested code and then the bundle with the
-  Developer ID Application identity, hardened runtime and a secure timestamp
-  (`MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_TEAM_ID`); `macos-notarize`
-  submits it to Apple's notary service, staples the ticket (retrying while Apple's
-  ticket propagates) and requires Gatekeeper to accept it (`NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8`).
-- **Windows**: `windows-sign` Authenticode-signs `logs-migrate.exe` and
-  `VCF Logs Migrator.exe` through Azure Artifact Signing with an RFC 3161 timestamp
-  (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
-  `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`).
-
-Only validated refs of this repository sign: a push to `main`, or a `vX.Y.Z` tag
-reachable from `main` that `release.yml` has validated. The signing job re-checks the
-ref before it touches a signing secret, and the smoke then verifies the signatures on
-the extracted archive (`codesign --verify --deep --strict`, `stapler validate` and
-`spctl --assess` on macOS, `Get-AuthenticodeSignature` on Windows). Pull requests and
-manual runs on any branch build and smoke unsigned and never reference the signing
-secrets. Linux archives are not signed; they are covered by
-`SHA256SUMS`.
-
-`.github/workflows/release.yml` runs on a `vX.Y.Z` tag. It refuses a malformed tag, a
-tag not reachable from `main`, a tag that differs from the program's version, or a
-missing signing secret, runs the test suite, builds and smoke-tests every platform
-through `binaries.yml` with signing required, and only then publishes all four
-archives with `SHA256SUMS` on the release. A published release is never modified by
-a rerun. Every download includes Paramiko (pinned in `packaging/requirements.txt`) and its runtime dependencies;
-the frozen SSH smoke imports it and exercises the crypto backend before checking
-that a closed localhost port reports a TCP failure. This catches the missing SSH
-dependency that caused v0.1.1 downloads to fail before contacting an appliance.
-To build locally: `python -m pip install -r packaging/requirements.txt '.[ssh]'`,
-then `python packaging/build.py build <platform>`, `python packaging/build.py package
-<platform>` and `python packaging/smoke.py dist/<archive>` (unsigned).
+To build locally, install `python -m pip install -r packaging/requirements.txt '.[ssh]'`,
+then run `python packaging/build.py build <platform>` and `python packaging/build.py
+package <platform>`. Run `python packaging/smoke.py dist/<download>` to smoke it.
 
 ## Try it
 
