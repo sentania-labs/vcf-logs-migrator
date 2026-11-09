@@ -11,6 +11,7 @@ import weakref
 from datetime import datetime
 from pathlib import Path
 
+MAX_DEFAULT_LOGS = 10
 _secrets: weakref.WeakSet = weakref.WeakSet()
 _handlers: list[logging.Handler] = []
 _log_path: Path | None = None
@@ -71,6 +72,12 @@ class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
             raise
 
 
+def _prune_default_logs(directory: Path, keep: int = MAX_DEFAULT_LOGS) -> None:
+    for old in sorted(directory.glob("debug-*.log"))[:-keep]:
+        for stale in (old, *(old.with_name(f"{old.name}.{n}") for n in (1, 2))):
+            stale.unlink(missing_ok=True)
+
+
 def configure(
     path: Path | None = None, *, verbose: bool = False, enabled: bool = True
 ) -> Path | None:
@@ -87,6 +94,7 @@ def configure(
         logging.getLogger("paramiko").setLevel(logging.CRITICAL + 1)
         logging.getLogger("paramiko").disabled = True
         return None
+    default_location = path is None
     if path is None:
         from .gui.settings import config_dir
 
@@ -96,6 +104,8 @@ def configure(
     handler = PrivateRotatingFileHandler(
         path, maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
     )
+    if default_location:
+        _prune_default_logs(path.parent)
     _handlers.append(handler)
     if verbose:
         _handlers.append(logging.StreamHandler(sys.stderr))

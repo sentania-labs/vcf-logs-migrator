@@ -188,3 +188,35 @@ def test_live_secrets_can_be_logged_after_enabling_and_are_not_retained(tmp_path
     second.release()
     assert diagnostics.redact("duplicate credential") == "duplicate credential"
     diagnostics.configure(enabled=False)
+
+
+def test_default_logs_pruned_to_ten_newest_but_custom_path_untouched(tmp_path, monkeypatch):
+    monkeypatch.setattr("logs_migrate.gui.settings.config_dir", lambda: tmp_path / "config")
+    logs = tmp_path / "config" / "logs"
+    logs.mkdir(parents=True)
+    for day in range(1, 13):
+        stamp = f"20260101-0000{day:02d}-000000"
+        for suffix in ("", ".1", ".2"):
+            (logs / f"debug-{stamp}.log{suffix}").write_text("old")
+    unrelated = logs / "notes.txt"
+    unrelated.write_text("keep")
+    custom_dir = tmp_path / "custom"
+    custom_dir.mkdir()
+    for day in range(1, 13):
+        (custom_dir / f"debug-20250101-0000{day:02d}-000000.log").write_text("mine")
+
+    diagnostics.configure(custom_dir / "chosen.log")
+    assert len(list(custom_dir.iterdir())) == 13
+    assert len(list(logs.glob("debug-*"))) == 36
+
+    new = diagnostics.configure()
+    diagnostics.configure(enabled=False)
+    bases = sorted(p.name for p in logs.glob("debug-*.log"))
+    assert len(bases) == 10
+    assert new.name in bases
+    assert "debug-20260101-000001-000000.log" not in bases
+    assert "debug-20260101-000003-000000.log" not in bases
+    assert "debug-20260101-000004-000000.log" in bases
+    assert not list(logs.glob("debug-20260101-000003-000000.log.*"))
+    assert len(list(logs.glob("debug-20260101-000012-000000.log.*"))) == 2
+    assert unrelated.read_text() == "keep"

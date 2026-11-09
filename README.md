@@ -142,7 +142,8 @@ never from command arguments, logs or reports.
 ### Troubleshooting logs
 
 Detailed logging is off by default. Run `logs-migrate --debug-log status` to write a
-bounded, credential-redacted log under the client configuration directory, or
+credential-redacted log under the client configuration directory (it keeps the 10 most
+recent logs, each capped at 5 MiB plus 2 backups), or
 `--debug-log=/path/to/log` to choose a file; add `-v` to echo it to stderr. In the
 desktop app, tick **Enable detailed troubleshooting log** in Settings, retry, then use
 **Show details**. Logs contain appliance addresses, so review before sharing. Details:

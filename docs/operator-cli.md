@@ -300,7 +300,9 @@ Standalone downloads of this same CLI and window are described in the README.
 Detailed logging is disabled by default. Add `--debug-log` to any command to create a
 timestamped log under the client configuration directory, or use
 `--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
-stderr and enables a log when used alone. Each file rotates at 5 MiB with two backups.
+stderr and enables a log when used alone. The default location keeps the 10 most recent
+logs, each capped at 5 MiB plus 2 backups; files you choose with `--debug-log=` are never
+pruned.
 The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
 applies to subsequent operations. After an error, **Show details** appears in the header:
 use it to inspect the log, open its folder, or save a copy.
