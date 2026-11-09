@@ -40,9 +40,10 @@ needs none of them.
 ### How the downloads are built and signed
 
 `packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
-`packaging/requirements.txt`) on Python 3.12.10, also the interpreter `release.yml`
-tests with: a one-file console executable on Windows and Linux, a
-one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
+`packaging/requirements.txt`) on Python 3.12.10, the same interpreter `release.yml`
+tests with (on a pinned ubuntu-24.04 image; see the comment in `release.yml`). The result
+is a one-file console executable on Windows and Linux, a one-dir app bundle on macOS.
+Windows also gets a windowed `VCF Logs Migrator.exe`
 (`packaging/gui_entry.py`) so opening the window never shows a console.
 `.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
 Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each
@@ -59,8 +60,8 @@ this repository):
 - **macOS**: `macos-sign` signs the app's nested code and then the bundle with the
   Developer ID Application identity, hardened runtime and a secure timestamp
   (`MACOS_CERT_P12`, `MACOS_CERT_PASSWORD`, `MACOS_TEAM_ID`); `macos-notarize`
-  submits it to Apple's notary service, staples the ticket and requires Gatekeeper
-  to accept it (`NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8`).
+  submits it to Apple's notary service, staples the ticket (retrying while Apple's
+  ticket propagates) and requires Gatekeeper to accept it (`NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8`).
 - **Windows**: `windows-sign` Authenticode-signs `logs-migrate.exe` and
   `VCF Logs Migrator.exe` through Azure Artifact Signing with an RFC 3161 timestamp
   (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,

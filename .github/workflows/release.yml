@@ -26,7 +26,8 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    # Pinned image: ubuntu-latest is 26.04, where actions/setup-python has no 3.12.10.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out
@@ -46,7 +47,7 @@ jobs:
             echo "::error::the program reports $embedded but the tag is $GITHUB_REF_NAME"; exit 1; }
 
       - name: Refuse to start without every macOS signing secret
-        uses: sentania-labs/.github/.github/actions/signing-secrets-present@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
+        uses: sentania-labs/.github/.github/actions/signing-secrets-present@9c071867797b51073ddfdca6d9451083d536656b # sentania-labs/.github latest merged 2026-11-03: macos-notarize retries staple/validate on Apple-side transients
         with:
           macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
           macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -78,7 +79,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          # Same exact interpreter the binaries job freezes into the downloads (see binaries.yml).
+          # Same exact interpreter the binaries job freezes into the downloads (see binaries.yml),
+          # which ubuntu-24.04 provides.
           python-version: '3.12.10'
 
       - name: Install Qt platform libraries for the offscreen GUI tests
@@ -104,7 +106,8 @@ jobs:
 
   publish:
     needs: binaries
-    runs-on: ubuntu-latest
+    # Pinned image: keep every Linux job on the image whose Python set is pinned (see validate).
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
