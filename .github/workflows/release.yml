@@ -47,7 +47,7 @@ jobs:
             echo "::error::the program reports $embedded but the tag is $GITHUB_REF_NAME"; exit 1; }
 
       - name: Refuse to start without every macOS signing secret
-        uses: sentania-labs/.github/.github/actions/signing-secrets-present@a37e4e029c8ebb8f1810c3dd50aa035acecbe1fc # sentania-labs/.github latest merged 2026-10-07
+        uses: sentania-labs/.github/.github/actions/signing-secrets-present@9c071867797b51073ddfdca6d9451083d536656b # sentania-labs/.github latest merged 2026-11-03: macos-notarize retries staple/validate on Apple-side transients
         with:
           macos-cert-p12: ${{ secrets.MACOS_CERT_P12 }}
           macos-cert-password: ${{ secrets.MACOS_CERT_PASSWORD }}
