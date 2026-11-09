@@ -9,3 +9,8 @@ tzdata==2026.6
 
 # SSH must be frozen into every download, not only available to source installs.
 paramiko==4.0.0
+
+# Last cryptography with a prebuilt macOS Intel wheel (universal2, OpenSSL statically
+# linked). 49+ ship arm64-only macOS wheels, so macos-15-intel builds it from source
+# against a shared libssl that PyInstaller then replaces with Python's older copy.
+cryptography==48.0.1

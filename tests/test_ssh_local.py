@@ -54,8 +54,8 @@ def test_local_ssh_post_connect(tmp_path, monkeypatch, failure):
             done.wait(3)
             if channel is not None:
                 channel.close()
-        except (paramiko.SSHException, EOFError):
-            pass  # Expected peer disconnect after host-key/negotiation rejection.
+        except (paramiko.SSHException, EOFError, ConnectionError):
+            pass  # Expected peer disconnect (or reset) after client-side rejection.
         except Exception as error:
             errors.append(type(error).__name__)
         finally:
