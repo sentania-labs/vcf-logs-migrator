@@ -40,10 +40,10 @@ needs none of them.
 ### How the downloads are built and signed
 
 `packaging/build.py` freezes `packaging/launcher.py` with PyInstaller (pinned in
-`packaging/requirements.txt`) on Python 3.12.10, also the interpreter `release.yml`
-tests with on its pinned ubuntu-24.04 runner (ubuntu-latest is 26.04, which has no
-3.12.10 for actions/setup-python): a one-file console executable on Windows and Linux, a
-one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
+`packaging/requirements.txt`) on Python 3.12.10, the same interpreter `release.yml`
+tests with. `release.yml` runs on a pinned ubuntu-24.04 image because `ubuntu-latest`
+is now 26.04, which has no 3.12.10 for actions/setup-python. The result is a one-file
+console executable on Windows and Linux, a one-dir app bundle on macOS. Windows also gets a windowed `VCF Logs Migrator.exe`
 (`packaging/gui_entry.py`) so opening the window never shows a console.
 `.github/workflows/binaries.yml` builds natively on GitHub-hosted Ubuntu 22.04,
 Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each
