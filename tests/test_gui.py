@@ -247,6 +247,29 @@ def test_start_failure_after_post_never_claims_nothing_was_sent(driver):
     assert driver.state.status["id"] == "sim-1"
 
 
+@pytest.mark.parametrize("stage", ["host", "auth"])
+def test_ssh_failure_at_start_stays_a_pre_post_refusal(driver, monkeypatch, stage):
+    from logs_migrate.adapters.ssh_errors import SSHFailure
+    from logs_migrate.gui.session import Session
+
+    error = SSHFailure(stage)
+
+    def fail(self, **kwargs):
+        raise error
+
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    monkeypatch.setattr(Session, "start", fail)
+    driver.start()
+    assert driver.state.started_run_id is None
+    page = driver.pages["plan"]
+    assert error.message in page.note.text()
+    assert "No API request was submitted." in page.note.text()
+    assert "may have reached the API" not in page.note.text()
+    assert page.start_button.isEnabled()
+
+
 def test_results_from_a_previous_connection_are_dropped(driver):
     driver.connect()
     driver.window.poll_status()
@@ -505,3 +528,23 @@ def test_reconnect_after_a_failed_reconnect_keeps_the_operators_dates(driver):
     driver.until(lambda: driver.state.connected)
     driver.idle()
     assert plan_page.current_dates() == chosen
+
+
+def test_ssh_failure_survives_worker_and_renders_in_connections(driver, monkeypatch):
+    from logs_migrate.adapters.ssh_errors import SSHFailure
+    from logs_migrate.gui.session import Session
+
+    error = SSHFailure("auth")
+
+    def fail(self, **kwargs):
+        raise error
+
+    monkeypatch.setattr(Session, "connect", fail)
+    driver.show("connections")
+    driver.connect()
+    banner = driver.pages["connections"].error
+    assert banner.isVisible()
+    shown = banner.text()
+    assert error.message in shown
+    assert "No migration request was submitted." in shown
+    assert "API did not respond" not in shown

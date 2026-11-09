@@ -427,7 +427,7 @@ class PlanPage(Page):
             )
             self.error.show()
         elif state.start_error:
-            before_post = state.start_error in {c.value for c in vm.PRE_POST_CODES}
+            before_post = vm.is_pre_post(state.start_error)
             set_banner(
                 self.error,
                 "Start failed" if before_post else "Start outcome uncertain",

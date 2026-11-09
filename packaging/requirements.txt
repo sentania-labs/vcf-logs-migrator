@@ -1,8 +1,16 @@
 # Pinned build tools for the standalone downloads (packaging/build.py). The package
-# itself is installed alongside, without extras. PySide6 6.12.0 is excluded for the
+# itself is installed alongside with the ssh extra. PySide6 6.12.0 is excluded for the
 # same reason as the gui extra; its Essentials wheel holds the three Qt modules the
 # GUI imports, without the Addons.
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.9
 PySide6-Essentials==6.11.3
 tzdata==2026.6
+
+# SSH must be frozen into every download, not only available to source installs.
+paramiko==4.0.0
+
+# Last cryptography with a prebuilt macOS Intel wheel (universal2, OpenSSL statically
+# linked). 49+ ship arm64-only macOS wheels, so macos-15-intel builds it from source
+# against a shared libssl that PyInstaller then replaces with Python's older copy.
+cryptography==48.0.1

@@ -3,7 +3,8 @@
 Extracts the archive into an empty temporary directory, then runs the program from
 there with no Python, virtualenv or source tree on its paths: `--version`, `--help`,
 argument refusal, the complete simulator migration and configuration workflows from
-tests/smoke_installed.py against the bundled examples, and the real `gui` path rendered
+tests/smoke_installed.py against the bundled examples, the real SSH probe against a
+reserved localhost port, and the `gui` path rendered
 offscreen until its first frame. `--native` adds the desktop launches (the windowed
 program on Windows, `open` and a PATH symlink on macOS, the X11 platform on Linux). `--signed`
 verifies signatures on the extracted bytes first. Screenshots and launch reports land in
@@ -81,6 +82,20 @@ def run(program: Path, *args: str, code: int = 0, cwd: Path, env=None) -> str:
             f"{args} returned {result.returncode}, expected {code}\n{result.stdout}{result.stderr}"
         )
     return result.stdout + result.stderr
+
+
+def check_ssh(program: Path, work: Path, evidence: Path) -> None:
+    report = work / "ssh-smoke.json"
+    run(program, "--version", cwd=work, env=dict(os.environ, LOGS_MIGRATE_SSH_SMOKE=str(report)))
+    status = json.loads(report.read_text(encoding="utf-8"))
+    if (
+        not status.get("paramiko_version")
+        or status.get("code") != "connection_failed"
+        or not status.get("message", "").startswith("SSH TCP connection")
+    ):
+        raise SystemExit(f"SSH dependency/probe smoke failed: {status}")
+    shutil.copy2(report, evidence / report.name)
+    print(f"PASS frozen SSH dependency and TCP probe: {status}", flush=True)
 
 
 def check_launch(report: Path, evidence: Path, label: str, **expected) -> None:
@@ -163,6 +178,7 @@ def main() -> None:
         for name in ("sealed-populated.fixture", "sealed-911.fixture"):
             smoke(examples / name, str(program))
         config_smoke(str(program))
+        check_ssh(program, work, evidence)
 
         report = work / "gui-offscreen.png"
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", LOGS_MIGRATE_GUI_SMOKE=str(report))

@@ -475,11 +475,7 @@ class MainWindow(QMainWindow):
             state.plan_error = code
         elif job == "start":
             state.start_error = code
-            try:
-                before_post = vm.Code(code) in vm.PRE_POST_CODES
-            except ValueError:
-                before_post = False
-            if not before_post and state.plan_run:
+            if not vm.is_pre_post(code) and state.plan_run:
                 # The POST may have landed; never offer this plan again.
                 state.started_run_id = state.plan_run["id"]
             self.poll_status()

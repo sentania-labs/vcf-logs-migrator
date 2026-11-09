@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from ..adapters.simulated import SimulatedClock, SimulatedEnvironment
+from ..adapters.ssh_errors import SSHFailure
 from ..engine import Engine
 from ..errors import Code, MigrationError, require
 from ..journal import Journal
@@ -106,10 +107,12 @@ class Session:
         except MigrationError as error:
             stage = env.notes.get("stage")
             if stage:
-                # Which host the failure concerns, with no remote text.
-                raise LocalError(
-                    f"{vm.describe_error(error.code.value)} While contacting {stage}."
-                ) from None
+                message = (
+                    error.message
+                    if isinstance(error, SSHFailure)
+                    else vm.describe_error(error.code.value)
+                )
+                raise LocalError(f"{message} While contacting {stage}.") from None
             raise
 
     def trust(self, *, identities: list[dict]) -> list[str]:

@@ -12,6 +12,7 @@ from enum import StrEnum
 
 from ..errors import Code, MigrationError, require
 from ..security import Secret
+from .ssh_errors import SSHFailure, ssh_failure
 
 STORE = "/storage/core/loginsight/cidata/store"
 CONFIG_DIR = "/storage/core/loginsight/config"
@@ -66,6 +67,7 @@ class NodeSSH:
     def read(self, operation: ReadOperation) -> str:
         require(operation in _READS, Code.INVALID_INPUT)
         client = None
+        stage = "host"
         try:
             import paramiko
 
@@ -76,9 +78,12 @@ class NodeSSH:
             # enrolled digest is checked against that same key before opening the connection.
             name = self.host if self.port == 22 else f"[{self.host}]:{self.port}"
             enrolled = client.get_host_keys().lookup(name)
-            require(enrolled is not None and len(enrolled) == 1, Code.AUTH)
+            if enrolled is None or len(enrolled) != 1:
+                raise SSHFailure("host")
             key = next(iter(enrolled.values()))
-            require(hashlib.sha256(key.asbytes()).hexdigest() == self.host_key_sha256, Code.AUTH)
+            if hashlib.sha256(key.asbytes()).hexdigest() != self.host_key_sha256:
+                raise SSHFailure("host")
+            stage = "connect"
             client.connect(
                 self.host,
                 port=self.port,
@@ -90,16 +95,19 @@ class NodeSSH:
                 auth_timeout=self.timeout,
                 banner_timeout=self.timeout,
             )
+            stage = "command"
             _, stdout, stderr = client.exec_command(_READS[operation], timeout=self.timeout)
             # Never print stderr; remote error text is untrusted and may contain credentials.
             output = stdout.read(16 * 1024 * 1024 + 1)
             require(len(output) <= 16 * 1024 * 1024, Code.SCHEMA)
-            require(stdout.channel.recv_exit_status() == 0, Code.CONNECTION)
+            status = stdout.channel.recv_exit_status()
+            if status != 0:
+                raise SSHFailure("command", status=status)
             return output.decode("utf-8", errors="strict")
         except MigrationError:
             raise
-        except Exception:
-            raise MigrationError(Code.CONNECTION) from None
+        except Exception as error:
+            raise ssh_failure(error, stage) from None
         finally:
             if client is not None:
                 client.close()

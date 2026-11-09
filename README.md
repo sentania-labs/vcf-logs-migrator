@@ -49,7 +49,8 @@ Windows also gets a windowed `VCF Logs Migrator.exe`
 Windows, macOS arm64 and macOS Intel runners, then `packaging/smoke.py` extracts each
 final archive into an empty directory and runs it with no Python on its path:
 `--version`, `--help`, argument refusal, both simulator migrations end to end, the
-configuration workflow, and the `gui` path rendered once offscreen and once natively (the windowed program with no console on Windows,
+configuration workflow, a real SSH probe against a reserved localhost port, and the
+`gui` path rendered once offscreen and once natively (the windowed program with no console on Windows,
 `open` and a PATH symlink on macOS, X11 under Xvfb on Linux). Launch screenshots are
 kept as workflow artifacts.
 
@@ -81,7 +82,11 @@ tag not reachable from `main`, a tag that differs from the program's version, or
 missing signing secret, runs the test suite, builds and smoke-tests every platform
 through `binaries.yml` with signing required, and only then publishes all four
 archives with `SHA256SUMS` on the release. A published release is never modified by
-a rerun. To build locally: `python -m pip install -r packaging/requirements.txt .`,
+a rerun. Every download includes Paramiko (pinned in `packaging/requirements.txt`) and its runtime dependencies;
+the frozen SSH smoke imports it and exercises the crypto backend before checking
+that a closed localhost port reports a TCP failure. This catches the missing SSH
+dependency that caused v0.1.1 downloads to fail before contacting an appliance.
+To build locally: `python -m pip install -r packaging/requirements.txt '.[ssh]'`,
 then `python packaging/build.py build <platform>`, `python packaging/build.py package
 <platform>` and `python packaging/smoke.py dist/<archive>` (unsigned).
 
@@ -163,12 +168,13 @@ Python 3.11+; the core and CLI do not import Qt. `gui` installs the optional PyS
 dependency for the desktop window. `ssh` installs the optional Paramiko adapter.
 
 ```sh
-python -m pip install '.[dev,gui]'
+python -m pip install '.[dev,gui,ssh]'
 make check
 make smoke
 ```
 
-GUI tests use Qt's offscreen platform and skip when PySide6 is absent.
+GUI tests use Qt's offscreen platform and skip when PySide6 is absent. Wire-level
+SSH tests skip when Paramiko is absent; CI installs both extras and runs them.
 
 `make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
 contracts (including the live adapter's listing, status and token-exchange codecs),

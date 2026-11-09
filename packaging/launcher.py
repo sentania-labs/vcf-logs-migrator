@@ -16,6 +16,7 @@ NO_GUI = "LOGS_MIGRATE_NO_GUI"
 # Packaging smoke only: the window renders, writes a screenshot and a launch report
 # next to this path, then exits.
 GUI_SMOKE = "LOGS_MIGRATE_GUI_SMOKE"
+SSH_SMOKE = "LOGS_MIGRATE_SSH_SMOKE"
 
 
 def desktop_launch() -> bool:
@@ -67,7 +68,46 @@ def _install_gui_smoke(report: str) -> None:
     gui_app.create = create_and_exit
 
 
+def _ssh_smoke(report: str) -> int:
+    """Prove the frozen SSH dependency and crypto backend work without lab access."""
+    import json
+    import socket
+    from pathlib import Path
+
+    import paramiko
+
+    from logs_migrate.adapters.ssh_errors import SSHFailure
+    from logs_migrate.errors import Code
+    from logs_migrate.trust import probe_ssh
+
+    # Exercise the bundled crypto extension, then the real SSH identity-probe path.
+    paramiko.RSAKey.generate(2048)
+    with socket.socket() as reserved:
+        reserved.bind(("127.0.0.1", 0))
+        port = reserved.getsockname()[1]
+        # Keep the port reserved without listening so no other process can take it.
+        try:
+            probe_ssh("127.0.0.1", port, timeout=3)
+        except SSHFailure as error:
+            status = {
+                "paramiko_version": paramiko.__version__,
+                "code": error.code.value,
+                "message": error.message,
+            }
+            Path(report).write_text(json.dumps(status), encoding="utf-8")
+            return (
+                0
+                if (
+                    error.code == Code.CONNECTION and error.message.startswith("SSH TCP connection")
+                )
+                else 1
+            )
+    return 1
+
+
 def run(argv=None) -> int:
+    if os.environ.get(SSH_SMOKE):
+        return _ssh_smoke(os.environ[SSH_SMOKE])
     argv = sys.argv[1:] if argv is None else list(argv)
     if not argv and desktop_launch():
         argv = ["gui"]

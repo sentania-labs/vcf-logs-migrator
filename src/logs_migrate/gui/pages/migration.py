@@ -92,9 +92,7 @@ class MigrationPage(Page):
     def refresh(self) -> None:
         state = self.app.state
         settings = state.settings
-        uncertain = bool(state.start_error) and state.start_error not in {
-            c.value for c in vm.PRE_POST_CODES
-        }
+        uncertain = bool(state.start_error) and not vm.is_pre_post(state.start_error)
         view = vm.progress_view(
             state.status,
             stale=state.stale,

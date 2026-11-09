@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
+from ..adapters.ssh_errors import SSHFailure
 from ..errors import MigrationError
 from ..trust import TrustRequired
 from .session import LocalError, Session
@@ -66,6 +67,8 @@ class EngineWorker(QObject):
                     for i in pending.identities
                 ],
             )
+        except SSHFailure as error:
+            self.failed.emit(job, f"{error.code.value}: {error.message}")
         except MigrationError as error:
             self.failed.emit(job, error.code.value)
         except LocalError as error:

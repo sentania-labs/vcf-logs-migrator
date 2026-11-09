@@ -9,7 +9,7 @@ console. CI signs between `build` and `package`.
 quickstart into `dist/vcf-logs-migrator-<label>-<platform>.tar.gz|.zip`.
 
 Run from the repository root with the pinned tools from packaging/requirements.txt
-installed next to the package (`python -m pip install -r packaging/requirements.txt .`).
+installed next to the package (`python -m pip install -r packaging/requirements.txt '.[ssh]'`).
 """
 
 from __future__ import annotations
@@ -37,7 +37,17 @@ GUI_EXE = "VCF Logs Migrator.exe"
 BUNDLE_ID = "net.sentania.vcf-logs-migrator"
 EXAMPLES = ("sealed-populated.fixture", "sealed-911.fixture", "config.fixture")
 # Distributions frozen into the executable besides this package and Python itself.
-BUNDLED = ("PySide6-Essentials", "shiboken6", "tzdata")
+BUNDLED = (
+    "PySide6-Essentials",
+    "shiboken6",
+    "tzdata",
+    "paramiko",
+    "bcrypt",
+    "cryptography",
+    "PyNaCl",
+    "cffi",
+    "pycparser",
+)
 
 
 def version() -> str:
@@ -77,6 +87,9 @@ def freeze(name: str, script: str, *layout: str) -> None:
             "logs_migrate",
             "--collect-data",
             "tzdata",
+            # SSH is a release capability, including lazy algorithm/backend imports.
+            "--collect-all",
+            "paramiko",
             "--exclude-module",
             "tkinter",
             str(PACKAGING / script),
@@ -167,9 +180,10 @@ def notices() -> str:
         "tzdata is used under the Apache License 2.0; its license files follow.",
         "",
     ]
-    for file in importlib.metadata.files("tzdata") or ():
-        if "licenses" in file.parts or file.name.startswith("LICENSE"):
-            lines += [f"----- tzdata: {file.name} -----", file.read_text(encoding="utf-8"), ""]
+    for name in BUNDLED:
+        for file in importlib.metadata.files(name) or ():
+            if "licenses" in file.parts or file.name.upper().startswith("LICENSE"):
+                lines += [f"----- {name}: {file.name} -----", file.read_text(encoding="utf-8"), ""]
     lines += ["----- Python license -----", python_license().read_text(encoding="utf-8")]
     return "\n".join(lines)
 
