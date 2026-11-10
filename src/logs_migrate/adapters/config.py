@@ -8,7 +8,7 @@ from contextlib import nullcontext
 from urllib.parse import quote
 
 from ..config import RULE_TYPES, indexed, write_body
-from ..errors import Code, Unrecognized, require, safe_boundary
+from ..errors import Code, require, safe_boundary
 
 ROUTES = {
     "partitions": ("/api/v1/partitioning", "partitions"),
@@ -45,8 +45,7 @@ class RestConfigEnvironment:
         path, wrapper = ROUTES[kind]
         response = client.call("GET", path)
         if wrapper:
-            if not (isinstance(response, dict) and isinstance(response.get(wrapper), list)):
-                raise Unrecognized(Code.SCHEMA)
+            require(isinstance(response, dict) and wrapper in response, Code.SCHEMA)
             response = response[wrapper]
         return list(indexed(response).values())
 

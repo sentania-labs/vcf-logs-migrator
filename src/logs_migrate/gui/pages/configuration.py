@@ -237,15 +237,6 @@ class ConfigurationPage(Page):
                 "info",
             )
             self.notice.show()
-        elif vm.unavailable_text(state.comparison):
-            set_banner(
-                self.notice,
-                "Some rule types were not compared",
-                vm.unavailable_text(state.comparison)
-                + ". Nothing of those types can be selected or written.",
-                "warn",
-            )
-            self.notice.show()
         else:
             self.notice.hide()
         if state.restart_pending:

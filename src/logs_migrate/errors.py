@@ -42,10 +42,6 @@ class Rejection(MigrationError):
     """The appliance answered with an HTTP error status: the request was received and refused."""
 
 
-class Unrecognized(MigrationError):
-    """One rule type's response did not have the expected shape; other types may still be read."""
-
-
 class Accepted(MigrationError):
     """The appliance answered 2xx but the body could not be read: the request took effect."""
 

@@ -456,37 +456,18 @@ def test_real_log_filter_wrapper_is_logfilters():
         env.config_rules("source", "filters")
 
 
-def test_one_unrecognized_rule_type_does_not_kill_compare_for_the_others():
-    default = {"id": "", "name": "Default", "retentionPeriodSeconds": 1}
-    source = inventory([default])
-    destination = inventory([default])
-    source[1] = record("GET", ROUTES["filters"][0], {"somethingElse": []})
-    del destination[1]  # the source read fails first, so the destination filters are never read
-    result = ConfigMigration(rest_env(source, destination)).compare()
-    assert result["unavailable"] == [{"type": "filters", "reason": Code.SCHEMA.value}]
-    assert [r["selector"] for r in result["rules"]] == ["partitions:Default"]
-
-
-def test_apply_works_for_a_selected_partition_when_filters_are_unrecognized():
+def test_apply_updates_a_partition_at_the_collection_route_with_the_id_in_the_body():
     source_part = {"id": "s", "name": "secops", "retentionPeriodSeconds": 5}
     dest_part = {"id": "d", "name": "secops", "retentionPeriodSeconds": 1}
     source = inventory([source_part])
-    source[1] = record("GET", ROUTES["filters"][0], {"nope": []})
     destination = inventory([dest_part])
-    del destination[1]
-    # write, then the read-back of partitions
-    destination.insert(3, record("PUT", "/api/v1/partitioning", {}))
+    destination.append(record("PUT", "/api/v1/partitioning", {}))
     destination.append(
-        record(
-            "GET",
-            ROUTES["partitions"][0],
-            {"partitions": [{**source_part, "id": "d"}]},
-        )
+        record("GET", ROUTES["partitions"][0], {"partitions": [{**source_part, "id": "d"}]})
     )
     env = rest_env(source, destination)
     result = ConfigMigration(env).apply(["partitions:secops"])
-    assert result["rules"][0]["status"] == "updated"
-    assert not result["complete"]  # a type was unreadable, so the run is not complete
+    assert result["rules"][0]["status"] == "updated" and result["complete"]
     put = next(r for r in env.destination.transport.requests if r[0] == "PUT")
     assert put[1] == "/api/v1/partitioning" and put[2]["id"] == "d"
 

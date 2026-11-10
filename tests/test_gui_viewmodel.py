@@ -494,23 +494,3 @@ def test_exported_markdown_uses_the_pages_words(rig):
         )
         == "info"
     )
-
-
-def test_config_banner_names_rule_types_that_could_not_be_read():
-    applied = {
-        "rules": [
-            {"type": "partitions", "name": "secops", "status": "created", "comparison": "missing"}
-        ],
-        "unavailable": [{"type": "filters", "reason": "unrecognized_response_schema"}],
-        "complete": False,
-    }
-    status, title, text = vm.config_banner(applied)
-    assert status == "warn" and "not compared" in title and "0 need attention" not in title
-    assert "unrecognized response schema" in text
-    failed = {
-        **applied,
-        "rules": [{**applied["rules"][0], "status": "failed", "reason": "invalid_input"}],
-    }
-    assert "secops" in vm.config_banner(failed)[2]
-    assert "unrecognized response schema" in vm.config_banner(failed)[2]
-    assert vm.unavailable_text({"rules": [], "complete": True}) == ""

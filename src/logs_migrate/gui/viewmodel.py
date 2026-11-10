@@ -1152,21 +1152,11 @@ def config_result_rows(result: dict | None) -> list[tuple[str, str, str]]:
     return rows
 
 
-def unavailable_text(result: dict | None) -> str:
-    items = (result or {}).get("unavailable") or []
-    return "; ".join(
-        f"{KIND_LABEL.get(i['type'], i['type'])} could not be read "
-        f"({i['reason'].replace('_', ' ')})"
-        for i in items
-    )
-
-
 def config_banner(result: dict | None) -> tuple[str, str, str] | None:
     if result is None:
         return None
     applied = sum(1 for r in result["rules"] if r["status"] in {"created", "updated"})
     failed = [r for r in result["rules"] if r["status"] in {"failed", "uncertain"}]
-    skipped = unavailable_text(result)
     if result["complete"]:
         return (
             "ok",
@@ -1174,18 +1164,12 @@ def config_banner(result: dict | None) -> tuple[str, str, str] | None:
             f"{applied} rule{'s' if applied != 1 else ''} created or updated on the "
             "destination. Nothing was deleted; source rules are unchanged.",
         )
-    plural = "s" if applied != 1 else ""
-    if not failed:
-        return (
-            "warn",
-            f"{applied} rule{plural} applied; some rule types were not compared",
-            f"{skipped}. Nothing of those types was compared or written.",
-        )
     names = ", ".join(r["name"] for r in failed)
-    text = f"{names}: successful changes remain. Compare again, then retry only the failed rule."
-    if skipped:
-        text += f" {skipped}; nothing of those types was compared or written."
-    return ("warn", f"{applied} rule{plural} applied; {len(failed)} need attention", text)
+    return (
+        "warn",
+        f"{applied} rule{'s' if applied != 1 else ''} applied; {len(failed)} need attention",
+        f"{names}: successful changes remain. Compare again, then retry only the failed rule.",
+    )
 
 
 # Reports ----------------------------------------------------------------------------------
