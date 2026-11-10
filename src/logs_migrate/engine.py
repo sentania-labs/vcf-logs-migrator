@@ -19,6 +19,7 @@ from .models import (
     Window,
     digest,
     sealed_frontier,
+    selected_message_count,
 )
 from .planning import build_plan, partition_diff
 from .ports import SystemClock, Transfer
@@ -560,15 +561,18 @@ class Engine:
                     **({"detail": error.message} if hasattr(error, "message") else {}),
                 }
             if not self.attribution and not result.get("complete"):
-                result.setdefault(
-                    "expected_count", sum(b["messages"] for b in run["plan"]["selected"])
-                )
+                result.setdefault("expected_count", selected_message_count(run["plan"]["selected"]))
                 result.setdefault("actual_count", None)
                 if run.get("baseline") is None:
                     result["received_unavailable_reason"] = (
                         "No baseline was recorded, so arrivals cannot be calculated. "
                         "See the daily comparison when available."
                     )
+            if result.get("expected_count", 0) is None:
+                result["expected_unavailable_reason"] = (
+                    "One or more selected groups did not report an event count. "
+                    "Check the source inventory."
+                )
             result["count_basis"] = COUNT_BASIS
             result["at"] = self.clock.now()
             run["verification"] = result
@@ -658,7 +662,7 @@ class Engine:
         result = reconcile(source, baseline, actual, ingest)
         # Bucket metadata supplies the selected total; daily queries cover only the
         # recorded baseline window and cannot attribute arrivals to individual groups.
-        result["expected_count"] = sum(b["messages"] for b in run["plan"]["selected"])
+        result["expected_count"] = selected_message_count(run["plan"]["selected"])
         coverage_days = day_window(Window(**run["plan"]["coverage"]))
         measured_start = max(days.start, coverage_days.start)
         measured_end = min(days.end, coverage_days.end)

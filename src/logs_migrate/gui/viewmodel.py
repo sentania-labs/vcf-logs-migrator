@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..errors import Code
-from ..models import DAY, LEGACY_RESULT_NOTE, Window, is_legacy_result
+from ..models import DAY, LEGACY_RESULT_NOTE, Window, is_legacy_result, selected_message_count
 
 UNAVAILABLE = "Unavailable"
 PRESETS = (
@@ -387,7 +387,7 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
     capacity = plan["capacity"]
     diff = plan["partition_diff"]
     active = plan["active_skipped"]
-    events = sum(b["messages"] for b in selected)
+    events = selected_message_count(selected)
     size = sum(b["size"] for b in selected)
     groups = [
         (
@@ -1089,7 +1089,12 @@ def verification_view(
             (
                 "Expected from selected groups",
                 format_count(result.get("expected_count")) if has_counts else "Pending",
-                "Sum of the selected groups' event counts" if has_counts else "Not yet comparable",
+                (
+                    result.get("expected_unavailable_reason")
+                    or "Sum of the selected groups' event counts"
+                )
+                if has_counts
+                else "Not yet comparable",
             ),
             (
                 "Arrived at destination since this run started",

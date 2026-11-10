@@ -88,6 +88,7 @@ def markdown(run, events):
         "",
         "Count evidence only. Query `status` for current API task progress.",
         verification.get("received_unavailable_reason") or "",
+        verification.get("expected_unavailable_reason") or "",
         "",
         f"Verification: **{verification['outcome']}**. "
         f"Complete query evidence: **{verification.get('complete', False)}**.",

@@ -874,7 +874,7 @@ class LiveEnvironment:
                         partition,
                         "active" if active else "archived",
                         size,
-                        0 if active else (listed.messages or 0),
+                        0 if active else listed.messages,
                         None if active else listed.start,
                         None if active else listed.end,
                         None,

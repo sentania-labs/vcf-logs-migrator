@@ -1907,3 +1907,37 @@ def test_shared_ssh_keys_include_previously_enrolled_hosts():
         Identity("tls", "node-d:443", "a" * 64),
     ]
     assert shared_ssh_keys([enrolled, *identities]) == [("node-b:22", "node-a:22")]
+
+
+@pytest.mark.parametrize("count_text", ["", " messages=not-a-number"])
+def test_missing_sealed_message_count_stays_unknown(rigged, count_text):
+    env, _, _, ssh, _ = rigged
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = (
+        f"id={A}, status=archived, startTime=1780543623050, endTime=1792570139600,{count_text}"
+    )
+    inventory = env.node_inventory("src-1.lab")
+    assert inventory.buckets[0].messages is None
+    cluster = env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    assert cluster.buckets[0].messages is None
+
+
+def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.reporting import markdown
+
+    env, engine = _live_rig(tmp_path)
+    env.data["source"]["buckets"][0]["messages"] = None
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    assert run["plan"]["selected"][0]["messages"] is None
+    assert "Unavailable" in str(vm.plan_view(run, None))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    result = engine.verify(run["id"])
+    assert result["expected_count"] is None
+    assert result["actual_count"] == 6
+    assert "Unavailable" in str(vm.verification_view(result, engine.status(), 0, False, run))
+    assert "unavailable" in markdown(engine.journal.load(run["id"]), []).lower()
