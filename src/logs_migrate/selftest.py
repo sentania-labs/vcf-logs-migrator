@@ -283,7 +283,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     step("Source ingest (cutover check)", recent)
 
     def plan():
-        sealed = [b for b in source.buckets if not b.undated]
+        sealed = [b for b in source.buckets if b.status != "active" and not b.undated]
         if window is not None:
             requested = window
         elif sealed:

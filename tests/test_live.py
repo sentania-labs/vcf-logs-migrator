@@ -498,7 +498,7 @@ def test_start_does_not_adopt_the_previous_task_with_the_same_window(rigged):
     assert task.id == "task-2" and task.status == "running"
 
 
-def test_selftest_reports_every_read_and_sends_nothing(rigged):
+def _run_selftest(rigged, window):
     from logs_migrate import selftest
 
     env, source, destination, ssh = trusted(rigged)
@@ -535,7 +535,11 @@ def test_selftest_reports_every_read_and_sends_nothing(rigged):
         return destination_request(method, path, body, headers)
 
     destination.request = destination_counts
-    result = selftest.run(env, Window(1780000000000, 1782000000000))
+    return env, destination, selftest.run(env, window)
+
+
+def test_selftest_reports_every_read_and_sends_nothing(rigged):
+    env, destination, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
     names = [s.name for s in result.steps]
     assert "Source API version" in names and "Plan preview (no request sent)" in names
     failed = [(s.name, s.detail) for s in result.steps if s.status == "fail"]
@@ -545,6 +549,13 @@ def test_selftest_reports_every_read_and_sends_nothing(rigged):
     data = result.data()
     assert data["summary"]["fail"] == 0 and "status_response_keys" in data["notes"]
     assert "canary" not in json.dumps(data)
+
+
+def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
+    env, destination, result = _run_selftest(rigged, None)
+    (plan,) = [s for s in result.steps if s.name == "Plan preview (no request sent)"]
+    assert plan.status == "pass", plan.detail
+    assert "active skipped" in plan.detail
 
 
 def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
