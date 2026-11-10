@@ -12,6 +12,7 @@ from ..errors import Code, MigrationError, require
 from ..journal import Journal
 from ..models import ACTIVE_ACK, Policy, Window
 from ..planning import compatible
+from ..ports import Transfer
 from ..reporting import report_data
 from ..security import Credentials
 from ..trust import TrustRequired, TrustStore
@@ -212,12 +213,26 @@ class Session:
         return self._engine().plan(Window(start, end), Policy(attempts, poll_seconds))
 
     def start(self, *, run_id: str, acknowledged: bool) -> dict:
-        return self._engine().run(
-            run_id, backup_ack=True, active_ack=ACTIVE_ACK if acknowledged else ""
-        )
+        before = len(self.journal.events(run_id))
+        try:
+            return self._engine().run(
+                run_id, backup_ack=True, active_ack=ACTIVE_ACK if acknowledged else ""
+            )
+        except MigrationError as error:
+            events = self.journal.events(run_id)[before:]
+            kinds = {event["kind"] for event in events}
+            if "api_start_requested" not in kinds or "api_start_rejected" in kinds:
+                raise LocalError("pre_start:" + vm.describe_error(error.code.value)) from None
+            raise
 
-    def status(self) -> dict:
-        return self._engine().status()
+    def status(self, *, run_id: str | None = None) -> dict:
+        result = (
+            self._engine().status(run_id)
+            if run_id
+            else self._engine()._progress(Transfer("", "idle"))
+        )
+        result["run_id"] = run_id
+        return result
 
     def stop(self, *, task_id: str) -> dict:
         return self._engine().stop(task_id)
@@ -257,7 +272,7 @@ class Session:
             if "markdown" in formats:
                 status = None
                 try:
-                    status = self._engine().status()
+                    status = self._engine().status(run_id)
                 except Exception:
                     status = None  # The report still renders; the task row says Not observed.
                 path = target / (stem + ".md")

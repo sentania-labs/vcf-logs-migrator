@@ -78,7 +78,7 @@ def test_transfers_with_intersecting_coverage_verify_without_double_counting(rig
         b["id"] for b in second["plan"]["selected"]
     )
     execute(engine, first)
-    assert engine.status()["status"] == "completed"
+    assert engine.status(first["id"])["status"] == "completed"
     execute(engine, second)
     assert engine.status()["status"] == "completed"
     for run in (first, second):
@@ -216,19 +216,23 @@ def test_api_task_uncertainty_never_reports_verification_success(rig, status):
     assert engine.verify(run["id"])["outcome"] == "incomplete_verification"
 
 
-def test_status_is_api_truth_without_a_journal_and_supplies_estimates(rig):
+def test_status_requires_run_identity_and_supplies_estimates(rig):
     engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
     task = Transfer(
-        "api-task", "running", bytes_transferred=200, elapsed_seconds=4, total_bytes=1000
+        "sim-1",
+        "running",
+        bytes_transferred=200,
+        elapsed_seconds=4,
+        total_bytes=1000,
+        destination=run["plan"]["destination"]["id"],
     )
     env.transfer = lambda: task
-    wrapper = Engine(env, None)
-    assert wrapper.status()["rate_bytes_per_second"] == 50
-    assert wrapper.status()["eta_seconds"] == 16
-    task = replace(task, status="failed", elapsed_seconds=None)
-    result = wrapper.status()
-    assert result["status"] == "failed" and result["rate_bytes_per_second"] is None
-    assert result["eta_seconds"] is None
+    assert engine.status(run["id"])["eta_seconds"] == 16
+    assert Engine(env, None).status()["status"] == "idle"
+    task = replace(task, id="old-task", status="completed")
+    assert engine.status(run["id"])["status"] == "idle"
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "idle", "unknown"])
@@ -248,8 +252,8 @@ def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(r
         execute(engine, run)
     assert error.value.code == Code.UNCERTAIN
     fresh = Engine(env, None)
-    task = fresh.status()
-    assert task["status"] == "running"
+    assert fresh.status()["status"] == "idle"
+    task = {"id": env.transfer().id}
     with pytest.raises(MigrationError):
         fresh.stop("different-task")
     assert fresh.stop(task["id"])["status"] == "cancelled"

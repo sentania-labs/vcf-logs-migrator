@@ -148,29 +148,26 @@ preview; `adapters.live.LiveEnvironment` wires it to real hosts. The routes and 
 wrappers follow [config-migration.md](config-migration.md); recorded fixtures
 exercise the codec and the lab guide is where a real run is checked.
 
-## Status belongs to the API
+## Status belongs to the run
 
-`status` queries the destination's current task and per-node details on every
-invocation. It needs no run UUID or journal. For the simulator, use `--remote-state`
-to name the same simulated appliance without opening a journal:
+`status` reads the destination API and displays a task only when its ID matches
+this run's journal record. Supply the same `--journal` used to start the run.
+It defaults to the latest plan; pass a run UUID to select another run. A missing
+or unidentifiable task shows idle rather than another run's status.
 
 ```sh
-logs-migrate --fixture tests/fixtures/sealed-populated.fixture \
-  --remote-state /private/migration/run.simulated-state status
+logs-migrate --journal /private/migration/run.sqlite \
+  --fixture tests/fixtures/sealed-populated.fixture status RUN_ID
 ```
 
-The result exposes task ID, API status, completed/skipped buckets, bytes and node
-observations. Rate is transferred bytes divided by API elapsed seconds; ETA uses
-remaining bytes and that average rate. Unknown elapsed time, total size or rate
-produces null estimates. These are relative estimates, not promises. The simulator
-uses configured poll intervals as synthetic elapsed time, not measured throughput.
+The result includes per-node progress and scheduled and total bucket counts by
+source node when supplied by the API. Rate and ETA are estimates from available
+bytes or node progress and elapsed time; missing evidence leaves them unavailable.
 An API completion does not itself claim verified success.
 
-The local journal stores plans, the sent-bucket ledger, pre-transfer source and
-destination counts, verification evidence and operator audit events. It does not
-maintain running/stopped/recovery task states. Reports are historical evidence;
-query `status` for current progress. With `--journal`, `status` and `stop` also
-record into the ledger which buckets the finished task actually transferred.
+The journal stores plans, the sent-bucket ledger, counts and verification evidence.
+The API remains the source of task state. Status records finished transfers in the
+ledger only after matching the task to the run.
 
 An interrupted client or lost POST response does not imply a stopped task. Query
 status. Explicit cancellation uses the currently observed **API task ID**:

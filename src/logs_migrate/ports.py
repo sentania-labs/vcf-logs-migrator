@@ -13,7 +13,11 @@ class NodeTransfer:
     status: str
     completed: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
-    bytes_transferred: int = 0
+    bytes_transferred: int | None = 0
+    progress: float | None = None
+    scheduled_buckets: dict[str, int] | None = None
+    total_buckets: dict[str, int] | None = None
+    elapsed_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -22,7 +26,7 @@ class Transfer:
     status: str  # idle, running, completed, cancelled, failed, unknown
     completed: tuple[str, ...] = ()  # Source bucket keys, independently reconciled.
     skipped: tuple[str, ...] = ()
-    bytes_transferred: int = 0
+    bytes_transferred: int | None = 0
     nodes: tuple[NodeTransfer, ...] = ()
     # Observed request identity from the destination, never invented from local task state.
     source: str = ""
@@ -31,6 +35,8 @@ class Transfer:
     bucket_keys: tuple[str, ...] = ()
     elapsed_seconds: float | None = None
     total_bytes: int | None = None
+    created_at_ms: int | None = None
+    progress: float | None = None
 
 
 @dataclass(frozen=True)

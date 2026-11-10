@@ -469,7 +469,7 @@ def test_start_does_not_adopt_the_previous_task_with_the_same_window(rigged):
         record("GET", "/api/v2/data-migrations", {**previous, "id": "task-2", "status": "RUNNING"}),
     ]
     task = env.start(Window(1, 2), ("src-1.lab/" + A,))
-    assert task.id == "task-2" and task.status == "running"
+    assert task.id == "" and task.status == "running"  # No creation time to bind it safely.
 
 
 def test_selftest_reports_every_read_and_sends_nothing(rigged):
@@ -1332,3 +1332,69 @@ def test_cli_expect_fingerprint_enrolls_and_proceeds_only_on_a_match(monkeypatch
 def test_logs90_identity_is_the_transport_pin():
     transport = RecordedTransport([])
     assert Logs90(transport, "a", Secret("b")).identity == "recorded"
+
+
+def test_task_details_from_90_status():
+    task = decode_task(
+        {
+            "taskId": "task-1",
+            "status": "RUNNING",
+            "taskDetails": {
+                "dest-1": {
+                    "status": "RUNNING",
+                    "progress": 25,
+                    "startTime": 1700000000000,
+                    "endTime": None,
+                    "scheduledBuckets": {"src-1": ["a", "b"]},
+                    "totalBucketsCount": {"src-1": 4},
+                    "bytesTransferred": 100,
+                }
+            },
+        },
+        destination="d",
+        now_ms=1700000060000,
+    )
+    assert task.id == "task-1" and task.bytes_transferred == 100
+    assert task.elapsed_seconds == 60
+    assert task.nodes[0].progress == 25
+    assert task.nodes[0].scheduled_buckets == {"src-1": 2}
+    assert task.nodes[0].total_buckets == {"src-1": 4}
+
+
+def test_recorded_90_task_list_selects_this_task_and_falls_back_only_for_unique_match():
+    from pathlib import Path
+
+    response = json.loads(
+        (Path(__file__).parent / "fixtures/real-90-task-status.fixture").read_text()
+    )
+
+    class Client:
+        identity = "test"
+
+        def migration_status(self):
+            return response
+
+    env = LiveEnvironment(Connection(source_host="src", destination="dst"), Credentials({}))
+    env.destination_client = Client()
+    first, second = response["tasks"][:2]
+    task = env.transfer_for(second["taskId"])
+    assert task.id == second["taskId"] and len(task.nodes) == 3
+    assert task.bytes_transferred is None and task.nodes[0].bytes_transferred is None
+    assert task.window == Window(second["bucketStartTime"], second["bucketEndTime"])
+    assert task.elapsed_seconds == (second["taskEndTime"] - second["taskCreateTime"]) / 1000
+    assert (
+        task.nodes[0].total_buckets
+        == second["taskDetails"][task.nodes[0].node]["totalBucketsCount"]
+    )
+    window = Window(first["bucketStartTime"], first["bucketEndTime"])
+    assert (
+        env.transfer_for(window=window, attempted_at_ms=first["taskCreateTime"]).id
+        == first["taskId"]
+    )
+    assert (
+        env.transfer_for(window=window, attempted_at_ms=first["taskCreateTime"] + 1).status
+        == "idle"
+    )
+    response["tasks"].append(dict(first, taskId="duplicate"))
+    assert env.transfer_for(window=window, attempted_at_ms=first["taskCreateTime"]).status == "idle"
+    assert env.transfer_for("missing").status == "idle"

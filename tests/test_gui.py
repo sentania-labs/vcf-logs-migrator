@@ -244,7 +244,7 @@ def test_start_failure_after_post_never_claims_nothing_was_sent(driver):
     assert not page.start_button.isEnabled()
     assert page.start_button.text() == "Start migration · submitted"
     driver.poll_until_finished()
-    assert driver.state.status["id"] == "sim-1"
+    assert driver.state.status["status"] == "idle"
 
 
 @pytest.mark.parametrize("stage", ["host", "auth"])

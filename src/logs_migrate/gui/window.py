@@ -352,7 +352,7 @@ class MainWindow(QMainWindow):
 
     def poll_status(self) -> None:
         if self.state.connected:
-            self.submit("status", "status")
+            self.submit("status", "status", run_id=self.state.run_id)
 
     def verify_run(self, run_id: str) -> None:
         self.state.verify_run_id = run_id
@@ -361,6 +361,8 @@ class MainWindow(QMainWindow):
 
     def select_run(self, run_id: str) -> None:
         self.state.run_id = run_id
+        self.state.status = None
+        self.poll_status()
         self.state.report = None
         self.state.verification = None
         self.state.verify_error = None
@@ -423,6 +425,8 @@ class MainWindow(QMainWindow):
             state.start_error = None
             state.acknowledged = False
             state.run_id = result["id"]
+            state.status = None
+            self.poll_status()
             state.verification = None
             state.verify_error = None
             state.exported = []
@@ -430,14 +434,18 @@ class MainWindow(QMainWindow):
             self.submit("runs", "runs")
             self.load_report(result["id"])
         elif job == "start":
-            state.status = result["task"]
+            state.status = result["task"] if result["task"].get("id") else None
             state.status_at = vm.now_iso()
             state.status_error = None
             state.start_error = None
             state.started_run_id = result["run_id"]
             self.load_report(result["run_id"])
             self.show_page("migration")
+            self.poll_status()
         elif job in {"status", "stop"}:
+            if job == "status" and result.get("run_id") != state.run_id:
+                self.poll_status()
+                return
             previous = state.status["status"] if state.status else None
             state.status = result
             state.status_at = vm.now_iso()
@@ -462,6 +470,7 @@ class MainWindow(QMainWindow):
             if state.run_id is None and result:
                 state.run_id = result[-1]["id"]
                 self.load_report(state.run_id)
+            self.poll_status()
         elif job.startswith("report:"):
             if result["run"]["id"] == state.run_id:
                 state.report = result
@@ -506,6 +515,7 @@ class MainWindow(QMainWindow):
             state.plan_error = code
         elif job == "start":
             state.start_error = code
+            state.status = None
             if not vm.is_pre_post(code) and state.plan_run:
                 # The POST may have landed; never offer this plan again.
                 state.started_run_id = state.plan_run["id"]

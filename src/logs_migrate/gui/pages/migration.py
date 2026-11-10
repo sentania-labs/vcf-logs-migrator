@@ -24,7 +24,7 @@ class MigrationPage(Page):
         self.progress.setRange(0, 100)
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(8)
-        self.progress.setAccessibleName("Transferred bytes")
+        self.progress.setAccessibleName("Migration progress")
         frames[0].layout().insertWidget(2, self.progress)
         self.body.addWidget(columns(*frames))
         nodes_card, nodes_layout = card("Per-node API progress")
@@ -32,13 +32,17 @@ class MigrationPage(Page):
         nodes_layout.addWidget(self.nodes)
         nodes_layout.addWidget(
             label(
-                "The API reports each node's state, bytes and buckets so far; it publishes no "
-                "per-node total, so no per-node bar is drawn.",
+                "Progress and scheduled bucket counts come from the destination API. "
+                "Scheduled buckets have not necessarily been received yet.",
                 "hint",
                 wrap=True,
             )
         )
         self.body.addWidget(nodes_card)
+        self.buckets_card, bucket_layout = card("Buckets by source node")
+        self.buckets = Table(["Destination node", "Source node", "Scheduled", "Total"])
+        bucket_layout.addWidget(self.buckets)
+        self.body.addWidget(self.buckets_card)
         details_card, details_layout = card("Transfer details")
         self.details = KeyValues()
         details_layout.addWidget(self.details)
@@ -101,6 +105,13 @@ class MigrationPage(Page):
             hosts=self.app.hosts(),
             start_uncertain=uncertain,
         )
+        if state.start_error and view["state"] == "idle":
+            title = "Start outcome uncertain" if uncertain else "Migration did not start"
+            view["banner"] = (
+                "warn" if uncertain else "bad",
+                title,
+                vm.start_note(state.start_error),
+            )
         if state.stale:
             subtitle = "Connection to status API lost; last observed progress retained"
         elif view["state"] == "failed":
@@ -123,6 +134,8 @@ class MigrationPage(Page):
             self.progress.setValue(view["progress"])
             self.progress.show()
         self.nodes.set_rows(view["nodes"])
+        self.buckets.set_rows(view["bucket_rows"])
+        self.buckets_card.setVisible(bool(view["bucket_rows"]))
         self.details.set_rows(view["details"] or [("API task", "None observed")])
         running = view["state"] == "running" and not state.stale
         finished = view["state"] in {"completed", "failed", "cancelled"}

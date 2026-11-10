@@ -20,7 +20,7 @@ from .models import (
     sealed_frontier,
 )
 from .planning import build_plan, partition_diff
-from .ports import SystemClock
+from .ports import SystemClock, Transfer
 from .verification import combine, reconcile, stable_counts
 
 TERMINAL = {"idle", "completed", "cancelled", "failed"}
@@ -166,10 +166,10 @@ class Engine:
         for row in rows:
             if task.destination != destination:
                 matched = False
+            elif row.get("task_id"):
+                matched = bool(task.id) and task.id == row["task_id"]
             elif task.bucket_keys:
                 matched = _ids(row["keys"]) == _ids(task.bucket_keys)
-            elif task.id and row.get("task_id"):
-                matched = task.id == row["task_id"]
             elif task.window is not None and row.get("window"):
                 # Compared by day: a server may echo the window on day boundaries.
                 matched = day_window(Window(**row["window"])) == day_window(task.window)
@@ -177,8 +177,6 @@ class Engine:
                 # The API reported neither the requested buckets nor the window; the only
                 # open selection for this destination is the one it answered for.
                 matched = len(rows) == 1
-            if matched and task.id and not row.get("task_id"):
-                self.journal.note_transfer_task(row["run"], task.id)
             if not matched:
                 if self.attribution:
                     self.journal.settle_transfer(row["run"], [])
@@ -389,13 +387,34 @@ class Engine:
     def _progress(self, task):
         result = asdict(task)
         elapsed = task.elapsed_seconds
-        rate = task.bytes_transferred / elapsed if elapsed and elapsed > 0 else None
+        rate = (
+            task.bytes_transferred / elapsed
+            if task.bytes_transferred is not None and elapsed and elapsed > 0
+            else None
+        )
         result["rate_bytes_per_second"] = rate
         result["eta_seconds"] = (
             max(0, task.total_bytes - task.bytes_transferred) / rate
             if rate and task.total_bytes is not None
             else None
         )
+        if (
+            result["eta_seconds"] is None
+            and task.status == "running"
+            and task.elapsed_seconds is not None
+            and task.progress is not None
+            and task.progress > 0
+        ):
+            result["eta_seconds"] = task.elapsed_seconds * (100 - task.progress) / task.progress
+        if result["eta_seconds"] is None and task.status == "running" and task.nodes:
+            # Every node must have an estimate before a task-wide estimate is meaningful.
+            estimates = [
+                n.elapsed_seconds * (100 - n.progress) / n.progress
+                for n in task.nodes
+                if n.elapsed_seconds is not None and n.progress is not None and n.progress > 0
+            ]
+            if len(estimates) == len(task.nodes):
+                result["eta_seconds"] = max(estimates)
         if task.status == "completed":
             result["eta_seconds"] = 0
         elif task.status != "running":
@@ -406,10 +425,39 @@ class Engine:
         return result
 
     @safe_boundary
-    def status(self):
+    def status(self, run_id=None):
         with self._exclusive():
-            task = self.env.transfer()
-            self._record(task, task.destination)
+            if self.journal is None:
+                return self._progress(Transfer("", "idle"))
+            runs = self.journal.runs()
+            if run_id is None:
+                run_id = runs[-1]["id"] if runs else None
+            run = next((r for r in runs if r["id"] == run_id), None)
+            if run is None:
+                return self._progress(Transfer("", "idle"))
+            destination = run["plan"]["destination"]["id"]
+            row = next((r for r in self.journal.transfers(destination) if r["run"] == run_id), None)
+            if not row or not row.get("acknowledged"):
+                return self._progress(Transfer("", "idle", destination=destination))
+            task_id = row.get("task_id") or ""
+            finder = getattr(self.env, "transfer_for", None)
+            if finder is not None:
+                attempted = row.get("attempted_at")
+                try:
+                    attempted_ms = int(datetime.fromisoformat(attempted).timestamp() * 1000)
+                except (TypeError, ValueError):
+                    attempted_ms = None
+                task = finder(task_id, window=Window(**row["window"]), attempted_at_ms=attempted_ms)
+                if not task_id and task.id:
+                    self.journal.note_transfer_task(run_id, task.id)
+                    task_id = task.id
+            elif task_id:
+                task = self.env.transfer()
+            else:
+                return self._progress(Transfer("", "idle", destination=destination))
+            if not task_id or task.id != task_id or task.destination != destination:
+                return self._progress(Transfer("", "idle", destination=destination))
+            self._record(task, destination)
             return self._progress(task)
 
     @safe_boundary

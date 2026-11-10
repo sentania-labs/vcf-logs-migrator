@@ -300,3 +300,104 @@ def test_credentials_same_password_nodes_and_stream_not_argv():
     credentials.clear()
     with pytest.raises(MigrationError, match=Code.AUTH):
         credentials.get("destination_ssh")
+
+
+def test_440_reauthenticates_and_retries_post_once():
+    from logs_migrate.adapters.rest import SessionExpired
+
+    class Transport:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, body=None, headers=None, **kwargs):
+            self.calls.append((method, path))
+            if path.endswith("sessions"):
+                return {"sessionId": "new"}
+            if self.calls.count((method, path)) == 1:
+                raise SessionExpired()
+            return {"ok": True}
+
+    transport = Transport()
+    client = Logs90(transport, "admin", Secret("pw"))
+    client.token = Secret("old")
+    assert client.call("POST", "/api/v2/data-migrations", {}) == {"ok": True}
+    assert transport.calls == [
+        ("POST", "/api/v2/data-migrations"),
+        ("POST", "/api/v1/sessions"),
+        ("POST", "/api/v2/data-migrations"),
+    ]
+
+
+def test_expired_session_relogin_failure_is_authentication_failure():
+    from logs_migrate.adapters.rest import SessionExpired
+
+    class Transport:
+        def request(self, method, path, body=None, headers=None, **kwargs):
+            if path == "/api/v1/sessions":
+                raise MigrationError(Code.CONNECTION)
+            raise SessionExpired()
+
+    client = Logs90(Transport(), "admin", Secret("pw"))
+    client.token = Secret("old")
+    with pytest.raises(MigrationError) as error:
+        client.call("GET", "/api/v1/version")
+    assert error.value.code == Code.AUTH
+
+
+def test_expired_session_is_retried_at_most_once():
+    from logs_migrate.adapters.rest import SessionExpired
+
+    class Transport:
+        calls = 0
+
+        def request(self, method, path, body=None, headers=None, **kwargs):
+            if path == "/api/v1/sessions":
+                return {"sessionId": "new"}
+            self.calls += 1
+            raise SessionExpired()
+
+    transport = Transport()
+    client = Logs90(transport, "admin", Secret("pw"))
+    client.token = Secret("old")
+    with pytest.raises(MigrationError) as error:
+        client.call("POST", "/api/v2/data-migrations", {})
+    assert error.value.code == Code.AUTH and transport.calls == 2
+
+
+def test_https_maps_http_440_to_session_expired(monkeypatch):
+    from logs_migrate.adapters.rest import SessionExpired
+
+    class Socket:
+        def getpeercert(self, binary_form):
+            return b"certificate"
+
+    class Response:
+        status = 440
+
+        def read(self, *args):
+            return b""
+
+    class Connection:
+        sock = Socket()
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("http.client.HTTPSConnection", Connection)
+    transport = HTTPS(
+        "https://logs.invalid", certificate_sha256=hashlib.sha256(b"certificate").hexdigest()
+    )
+    with pytest.raises(SessionExpired):
+        transport.request("POST", "/api/v2/data-migrations", {})
