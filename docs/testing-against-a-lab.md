@@ -259,4 +259,4 @@ recorded.
   typed, so a VIP, a node name and an IP of the same endpoint share one record. Two
   nodes with different certificates do not.
 - The source member list must be readable from the typed node's config file; if it is
-  not, the connection fails (stage `source members`) rather than planning from one node.
+  not, the connection fails (stage `ssh <host>:<port> (members)`) rather than planning from one node.
