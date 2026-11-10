@@ -1,7 +1,7 @@
 """Config REST boundary using the existing 8.18/9.0/9.1.1 authentication clients.
 
 Routes and bodies follow docs/config-migration.md: GET wrappers per rule type, PUT by
-destination id for updates, the `/batch` wrapper for forwarder creates.
+destination id for updates (partitions: id in the body), the `/batch` wrapper for forwarder creates.
 """
 
 from contextlib import nullcontext
@@ -12,7 +12,7 @@ from ..errors import Code, require, safe_boundary
 
 ROUTES = {
     "partitions": ("/api/v1/partitioning", "partitions"),
-    "filters": ("/api/v1/log-filter", "logFilterRules"),
+    "filters": ("/api/v1/log-filter", "logFilters"),
     "masking": ("/api/v1/log-mask", "logMaskRules"),
     "forwarding": ("/api/v1/log-forwarder", None),
 }
@@ -62,7 +62,11 @@ class RestConfigEnvironment:
         if existing is not None:
             require(bool(existing["id"]), Code.UNSUPPORTED)
             # Updates address the destination object, never a source-only ID.
-            self.destination.call("PUT", path + "/" + quote(existing["id"], safe=""), body)
+            if kind == "partitions":
+                # 9.0 serves the update at the collection route with the id in the body.
+                self.destination.call("PUT", path, body)
+            else:
+                self.destination.call("PUT", path + "/" + quote(existing["id"], safe=""), body)
         elif kind == "forwarding":
             # GET is a bare array; the batch create endpoint requires this wrapper.
             self.destination.call("POST", path + "/batch", {"forwarders": [body]})

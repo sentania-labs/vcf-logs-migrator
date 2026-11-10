@@ -237,6 +237,8 @@ ROUTES = {
     ("GET", "/api/v2/data-migrations"),
     ("DELETE", "/api/v2/data-migrations"),
     ("POST", "/api/v1/log-forwarder/batch"),
+    # Partition updates carry the id in the body; PUT /partitioning/{id} is a 404 on 9.0.
+    ("PUT", "/api/v1/partitioning"),
 } | {(method, path) for path in CONFIG_PATHS for method in ("GET", "POST")}
 
 
@@ -246,7 +248,7 @@ def allowed(method: str, path: str) -> bool:
     if method == "GET" and path.startswith("/api/v1/aggregated-events/timestamp/"):
         return True
     if method == "PUT":
-        for base in CONFIG_PATHS:
+        for base in CONFIG_PATHS - {"/api/v1/partitioning"}:
             rest = path[len(base) + 1 :] if path.startswith(base + "/") else ""
             if rest and "/" not in rest and "?" not in rest and "#" not in rest:
                 return True

@@ -11,7 +11,7 @@ from logs_migrate.adapters.simulated import SimulatedEnvironment
 from logs_migrate.cli import main
 from logs_migrate.config import RULE_TYPES, ConfigMigration
 from logs_migrate.engine import Engine
-from logs_migrate.errors import Code, MigrationError
+from logs_migrate.errors import Accepted, Code, MigrationError, Rejection
 from logs_migrate.security import Secret
 
 FIXTURE = Path(__file__).parent / "fixtures" / "config.fixture"
@@ -190,7 +190,13 @@ def test_rest_wire_shapes_and_auth(kind, version, update):
     source = client([record("GET", path, response)])
     existing = {**rule, "id": "destination-id"} if update else None
     route = (
-        path + "/destination-id" if update else path + "/batch" if kind == "forwarding" else path
+        path
+        if update and kind == "partitions"
+        else path + "/destination-id"
+        if update
+        else path + "/batch"
+        if kind == "forwarding"
+        else path
     )
     destination = client([record("PUT" if update else "POST", route, {})], version)
     env = RestConfigEnvironment(source, destination, version + ".0")
@@ -332,7 +338,7 @@ def test_rest_default_partition_empty_id_fails_before_any_write():
     def inventory(partitions):
         return [
             record("GET", ROUTES["partitions"][0], {"partitions": partitions}),
-            record("GET", ROUTES["filters"][0], {"logFilterRules": []}),
+            record("GET", ROUTES["filters"][0], {"logFilters": []}),
             record("GET", ROUTES["masking"][0], {"logMaskRules": []}),
             record("GET", ROUTES["forwarding"][0], []),
         ]
@@ -424,3 +430,93 @@ def test_archive_preflight_still_detects_configuration_changes(config_env, setti
     )
     archive[setting] = value
     assert engine.discover()["partition_diff"]["different"] == ["Archive"]
+
+
+def rest_env(source_records, destination_records):
+    return RestConfigEnvironment(client(source_records), client(destination_records), "9.0.2")
+
+
+def inventory(partitions, filters=None):
+    return [
+        record("GET", ROUTES["partitions"][0], {"partitions": partitions}),
+        record("GET", ROUTES["filters"][0], {"logFilters": filters or []}),
+        record("GET", ROUTES["masking"][0], {"logMaskRules": []}),
+        record("GET", ROUTES["forwarding"][0], []),
+    ]
+
+
+def test_real_log_filter_wrapper_is_logfilters():
+    env = rest_env(
+        [record("GET", "/api/v1/log-filter", {"logFilters": [{"id": "f", "name": "drop"}]})], []
+    )
+    assert env.config_rules("source", "filters") == [{"id": "f", "name": "drop"}]
+    # The invented wrapper is not accepted: reading it is a schema error, never an empty list.
+    env = rest_env([record("GET", "/api/v1/log-filter", {"logFilterRules": []})], [])
+    with pytest.raises(MigrationError, match=Code.SCHEMA):
+        env.config_rules("source", "filters")
+
+
+def test_apply_updates_a_partition_at_the_collection_route_with_the_id_in_the_body():
+    source_part = {"id": "s", "name": "secops", "retentionPeriodSeconds": 5}
+    dest_part = {"id": "d", "name": "secops", "retentionPeriodSeconds": 1}
+    source = inventory([source_part])
+    destination = inventory([dest_part])
+    destination.append(record("PUT", "/api/v1/partitioning", {}))
+    destination.append(
+        record("GET", ROUTES["partitions"][0], {"partitions": [{**source_part, "id": "d"}]})
+    )
+    env = rest_env(source, destination)
+    result = ConfigMigration(env).apply(["partitions:secops"])
+    assert result["rules"][0]["status"] == "updated" and result["complete"]
+    put = next(r for r in env.destination.transport.requests if r[0] == "PUT")
+    assert put[1] == "/api/v1/partitioning" and put[2]["id"] == "d"
+
+
+class WriteEnv:
+    mode = "live"
+
+    def __init__(self, error):
+        self.error = error
+        self.rules = {"partitions": [{"id": "d", "name": "p", "retentionPeriodSeconds": 1}]}
+        self.written = False
+
+    def exclusive(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def config_rules(self, scope, kind):
+        if kind != "partitions":
+            return []
+        if scope == "source":
+            return [{"id": "s", "name": "p", "retentionPeriodSeconds": 9}]
+        if self.written:
+            return [{"id": "d", "name": "p", "retentionPeriodSeconds": 9}]
+        return self.rules["partitions"]
+
+    def config_write(self, kind, rule, existing):
+        if self.error is not Accepted:
+            raise self.error(Code.CONNECTION)
+        self.written = True
+        raise Accepted(Code.SCHEMA)
+
+
+def test_a_refused_write_is_failed_and_a_2xx_text_body_is_confirmed_by_reading_back():
+    refused = ConfigMigration(WriteEnv(Rejection)).apply(["partitions:p"])
+    assert refused["rules"][0]["status"] == "failed" and not refused["complete"]
+    assert refused["rules"][0]["reason"] == Code.CONNECTION.value
+    done = ConfigMigration(WriteEnv(Accepted)).apply(["partitions:p"])
+    assert done["rules"][0]["status"] == "updated" and done["complete"]
+    uncertain = ConfigMigration(WriteEnv(MigrationError)).apply(["partitions:p"])
+    assert uncertain["rules"][0]["status"] == "uncertain"
+
+
+def test_partition_update_route_is_the_collection_and_the_old_route_stays_closed():
+    from logs_migrate.adapters.rest import allowed
+
+    assert allowed("PUT", "/api/v1/partitioning")
+    assert not allowed("PUT", "/api/v1/partitioning/abc")
+    assert allowed("PUT", "/api/v1/log-filter/abc")
+    assert not allowed("PUT", "/api/v1/log-filter")
+    assert not allowed("DELETE", "/api/v1/partitioning")
+    assert not allowed("POST", "/api/v1/partitioning/abc")

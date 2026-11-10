@@ -39,6 +39,15 @@ def markdown(run, events):
         f"Whole-bucket coverage (Unix ms): {json.dumps(plan['coverage'], sort_keys=True)}.",
         f"Active buckets skipped: {len(plan['active_skipped'])}.",
         f"Last fully sealed day: {plan['last_fully_sealed_day'] or 'unknown'}.",
+        *(
+            [
+                "Sealed buckets excluded for having no time range: "
+                + ", ".join(f"{b['node']}/{b['id']}" for b in plan["undated_excluded"])
+                + "."
+            ]
+            if plan.get("undated_excluded")
+            else []
+        ),
         "",
     ]
     if "buckets" in verification:

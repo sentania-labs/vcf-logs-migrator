@@ -3,7 +3,7 @@
 from copy import deepcopy
 from typing import Protocol
 
-from .errors import Code, MigrationError, require, safe_boundary
+from .errors import Accepted, Code, MigrationError, Rejection, require, safe_boundary
 from .models import canonical
 
 # Apply ingest configuration before forwarders.
@@ -156,10 +156,20 @@ class ConfigMigration:
                 except MigrationError as error:
                     result.update(status="failed", reason=error.code.value)
                     continue
+                written = True
                 try:
                     self.env.config_write(kind, rule, existing)
+                except Accepted:
+                    # A 2xx with an unreadable (e.g. plain text) body: the appliance took the
+                    # write. The read-back below confirms it.
+                    pass
+                except Rejection as error:
+                    # A 4xx/auth refusal means the write did not happen.
+                    written = False
+                    result.update(status="failed", reason=error.code.value)
                 except MigrationError as error:
-                    # A transport/auth error can follow an accepted write. No automatic retry.
+                    written = False
+                    # A transport error can follow an accepted write. No automatic retry.
                     uncertain = error.code not in {
                         Code.INVALID_INPUT,
                         Code.UNSUPPORTED,
@@ -169,8 +179,9 @@ class ConfigMigration:
                         status="uncertain" if uncertain else "failed", reason=error.code.value
                     )
                 except Exception:
+                    written = False
                     result.update(status="uncertain", reason=Code.UNCERTAIN.value)
-                else:
+                if written:
                     try:
                         actual = indexed(self.env.config_rules("destination", kind)).get(name)
                         require(

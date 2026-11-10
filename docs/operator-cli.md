@@ -26,7 +26,9 @@ logs-migrate --journal /private/migration/run.sqlite \
 Use the returned run UUID below. Dates must include a timezone. The end is
 exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so the
 preview includes both the requested interval and actual bucket coverage. Active
-buckets are always excluded. The last fully sealed day is the day
+buckets are always excluded. A sealed bucket the appliance lists with no time range
+(8.18 does this after a restart) cannot be shown to touch the window, so it is never
+selected: the plan lists it by node and id as excluded, and the operator decides. The last fully sealed day is the day
 before the first active bucket's proven start (America/Chicago). A live 8.18 listing
 shows no dates for active buckets, so there it is the day before the oldest node's
 newest sealed bucket end (America/Chicago); it is unknown when a node with an active bucket
@@ -100,7 +102,8 @@ acknowledgment. This is additive migration: nothing is deleted on either side,
 and the source is never written.
 
 The engine applies partitions, filters, masking, then forwarding. Existing rules
-are updated by destination ID after matching their name; creates of partitions,
+are updated by destination ID after matching their name (partitions are updated at
+`PUT /api/v1/partitioning` with the ID in the body; the per-ID route is a 404 on 9.0); creates of partitions,
 masking and filters omit the source `id` so the destination assigns its own.
 Masking and filters retain their API definitions. Partition retention/archive
 settings travel with the rule. A newly created partition needs **one destination
@@ -119,7 +122,10 @@ Apply returns `created`, `updated`, `unchanged`, `skipped`, `failed` or `uncerta
 per source rule. Created/updated means the destination readback matches its
 configuration; it does not prove log delivery, masking, filtering or partition
 routing. A failed rule does not roll back earlier changes, and other selected
-rules are still attempted. A lost write response is uncertain and never retried
+rules are still attempted. An HTTP error answer (4xx) means the write was refused and
+is `failed`. A 2xx answer whose body is not JSON (9.0 answers a partition update with
+plain text) counts as accepted and is confirmed by the readback. A lost write response is
+uncertain and never retried
 automatically. Compare again to inspect the destination before selecting a retry.
 Exit 8 means at least one uncertain result; exit 7 means a failed rule; exit 0
 means the selected changes were observed (even if maintenance remains necessary).

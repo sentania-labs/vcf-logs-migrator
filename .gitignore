@@ -5,3 +5,4 @@ __pycache__/
 !src/logs_migrate/gui/lattice/lattice-palette.json
 /build/
 /dist/
+uv.lock
