@@ -1,6 +1,4 @@
-# Standalone downloads: one archive per OS holding the GUI and the CLI over one engine
-# (packaging/build.py), built natively on each platform and smoke-tested
-# from the extracted archive (packaging/smoke.py).
+# Standalone downloads: GUI and CLI built natively and smoke-tested on each platform.
 #
 # Signing follows vcf-ops-telegraf-helper's binaries workflow through the org's
 # shared actions in sentania-labs/.github, pinned by commit: macOS apps are
@@ -52,22 +50,22 @@ jobs:
           # 22.04 sets the glibc floor (2.35); PySide6 6.11 itself needs 2.34.
           - platform: linux-x86_64
             os: ubuntu-22.04
-            archive: tar.gz
+            suffix: ""
             minutes: 30
           - platform: windows-x64
             os: windows-2025
-            archive: zip
+            suffix: .exe
             minutes: 45
           - platform: macos-arm64
             os: macos-15
-            archive: zip
-            minutes: 150
+            suffix: .dmg
+            minutes: 270
           - platform: macos-x86_64
             os: macos-15-intel
-            archive: zip
-            minutes: 150
+            suffix: .dmg
+            minutes: 270
     runs-on: ${{ matrix.os }}
-    # macOS includes Apple's notary round trip, which has taken over an hour.
+    # macOS includes two Apple notary round trips (app, then disk image), each of which has taken over an hour.
     timeout-minutes: ${{ matrix.minutes }}
     env:
       PLATFORM: ${{ matrix.platform }}
@@ -125,7 +123,7 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then label="$GITHUB_REF_NAME"
           else label="v${version}-dev.${SHA::7}"; fi
           echo "LABEL=$label" >> "$GITHUB_ENV"
-          echo "ARCHIVE=dist/vcf-logs-migrator-$label-$PLATFORM.${{ matrix.archive }}" >> "$GITHUB_ENV"
+          echo "ARCHIVE=dist/vcf-logs-migrator-$label-$PLATFORM${{ matrix.suffix }}" >> "$GITHUB_ENV"
 
       - name: Build
         run: python packaging/build.py build "$PLATFORM"
@@ -144,17 +142,42 @@ jobs:
         uses: sentania-labs/.github/.github/actions/macos-notarize@9c071867797b51073ddfdca6d9451083d536656b # sentania-labs/.github latest merged 2026-11-03: macos-notarize retries staple/validate on Apple-side transients
         with:
           bundle: dist/VCF Logs Migrator.app
-          # The action's own zip holds only the app; packaging adds the examples.
+          # The action creates a temporary zip to submit the app.
           output-zip: build/notarized-app.zip
           notary-issuer-id: ${{ secrets.NOTARY_ISSUER_ID }}
           notary-key-id: ${{ secrets.NOTARY_KEY_ID }}
           notary-key-p8: ${{ secrets.NOTARY_KEY_P8 }}
 
-      # macos-sign and macos-notarize clean up their own failures; this covers a
-      # cancellation between them.
-      - name: Remove the signing keychain (macOS)
-        if: always() && env.SIGN == 'true' && runner.os == 'macOS'
-        run: security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
+      # The disk image is built from the stapled app so the app carries its own ticket
+      # once dragged out of the image.
+      - name: Package the stapled app (macOS)
+        if: runner.os == 'macOS'
+        run: python packaging/build.py package "$PLATFORM" --label "$LABEL"
+
+      # macos-notarize removes the signing keychain, so this imports it again. A disk
+      # image takes a plain signature: no hardened runtime and no entitlements.
+      - name: Sign the disk image (macOS)
+        if: env.SIGN == 'true' && runner.os == 'macOS'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          password="$(/usr/bin/openssl rand -base64 24)"
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+          security create-keychain -p "$password" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$password" "$KEYCHAIN"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          codesign --force --sign "$SIGN_ID" --timestamp "$ARCHIVE"
+          codesign --verify --strict --verbose=2 "$ARCHIVE"
 
       - name: Sign the executables (Windows)
         if: env.SIGN == 'true' && runner.os == 'Windows'
@@ -162,7 +185,6 @@ jobs:
         with:
           files: |
             ${{ github.workspace }}\dist\logs-migrate.exe
-            ${{ github.workspace }}\dist\VCF Logs Migrator.exe
           endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
@@ -170,22 +192,53 @@ jobs:
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
 
+      - name: Notarize and staple the disk image (macOS)
+        if: env.SIGN == 'true' && runner.os == 'macOS'
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/vlm-notary-key.p8"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$key"
+          chmod 600 "$key"
+          xcrun notarytool submit "$ARCHIVE" --key "$key" --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" --wait --timeout 90m --output-format json > "$RUNNER_TEMP/dmg-notary.json"
+          python -c 'import json, sys; result=json.load(open(sys.argv[1])); print(result); sys.exit(result.get("status") != "Accepted")' "$RUNNER_TEMP/dmg-notary.json"
+          xcrun stapler staple "$ARCHIVE"
+          xcrun stapler validate "$ARCHIVE"
+          codesign --verify --verbose "$ARCHIVE"
+
+      # macos-sign and macos-notarize clean up their own failures; this covers a
+      # cancellation or a failure after the disk image is signed.
+      - name: Remove the signing keychain (macOS)
+        if: always() && env.SIGN == 'true' && runner.os == 'macOS'
+        run: security delete-keychain "${KEYCHAIN:-$RUNNER_TEMP/signing.keychain-db}" 2>/dev/null || true
+
       - name: Package the download
+        if: runner.os != 'macOS'
         run: python packaging/build.py package "$PLATFORM" --label "$LABEL"
 
-      - name: Smoke-test the extracted download (Linux, X11 under Xvfb)
+      - name: Smoke-test the download (Linux, X11 under Xvfb)
         if: runner.os == 'Linux'
         run: xvfb-run -a -s '-screen 0 1600x1000x24' python packaging/smoke.py "$ARCHIVE" --native
 
-      - name: Smoke-test the extracted download (Windows, macOS)
+      - name: Smoke-test the download (Windows, macOS)
         if: runner.os != 'Linux'
         run: python packaging/smoke.py "$ARCHIVE" --native ${{ env.SIGN == 'true' && '--signed' || '' }}
+
+      - name: Name platform notices
+        run: cp dist/THIRD-PARTY-NOTICES.txt "dist/notices-$PLATFORM.txt"
 
       - name: Upload the download
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vcf-logs-migrator-${{ matrix.platform }}
-          path: ${{ env.ARCHIVE }}
+          path: |
+            ${{ env.ARCHIVE }}
+            dist/notices-${{ matrix.platform }}.txt
           if-no-files-found: error
 
       - name: Upload launch screenshots

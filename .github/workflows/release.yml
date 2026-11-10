@@ -126,26 +126,31 @@ jobs:
       - name: Check the set and hash the final bytes
         working-directory: release
         run: |
-          for platform in linux-x86_64.tar.gz windows-x64.zip macos-arm64.zip macos-x86_64.zip; do
+          for platform in linux-x86_64 windows-x64.exe macos-arm64.dmg macos-x86_64.dmg; do
             [ -f "vcf-logs-migrator-$TAG-$platform" ] || {
               echo "::error::missing vcf-logs-migrator-$TAG-$platform"; exit 1; }
           done
-          sha256sum vcf-logs-migrator-* > SHA256SUMS
+          for platform in linux-x86_64 windows-x64 macos-arm64 macos-x86_64; do
+            [ -f "notices-$platform.txt" ] || { echo "::error::missing notices for $platform"; exit 1; }
+            printf '\n===== %s =====\n' "$platform" >> THIRD-PARTY-NOTICES.txt
+            cat "notices-$platform.txt" >> THIRD-PARTY-NOTICES.txt
+          done
+          rm notices-*.txt
+          sha256sum vcf-logs-migrator-* THIRD-PARTY-NOTICES.txt > SHA256SUMS
           cat SHA256SUMS
 
       - name: Publish the GitHub Release
         run: |
           cat > notes.md <<EOF
           Standalone downloads: the desktop window and the \`logs-migrate\` CLI over one
-          engine. No Python install is needed. Each archive holds README.txt (quickstart),
-          simulator fixtures under examples/, and license notices.
+          engine. No Python install is needed. License notices are embedded and also provided as THIRD-PARTY-NOTICES.txt.
 
           | Platform | Download | Signature |
           |---|---|---|
-          | Windows x64 | vcf-logs-migrator-$TAG-windows-x64.zip | Authenticode (Azure Artifact Signing) |
-          | macOS Apple silicon | vcf-logs-migrator-$TAG-macos-arm64.zip | Developer ID, notarized and stapled |
-          | macOS Intel | vcf-logs-migrator-$TAG-macos-x86_64.zip | Developer ID, notarized and stapled |
-          | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64.tar.gz | SHA256SUMS |
+          | Windows x64 | vcf-logs-migrator-$TAG-windows-x64.exe | Authenticode (Azure Artifact Signing) |
+          | macOS Apple silicon | vcf-logs-migrator-$TAG-macos-arm64.dmg | Developer ID, notarized and stapled |
+          | macOS Intel | vcf-logs-migrator-$TAG-macos-x86_64.dmg | Developer ID, notarized and stapled |
+          | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64 | SHA256SUMS |
 
           Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\`. SmartScreen
           can still warn while the publisher builds reputation. This build runs against real appliances and a

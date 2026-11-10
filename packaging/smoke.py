@@ -1,13 +1,12 @@
 """Smoke-test a finished download exactly as a tester receives it.
 
-Extracts the archive into an empty temporary directory, then runs the program from
+Copies the download into an empty temporary directory, then runs the program from
 there with no Python, virtualenv or source tree on its paths: `--version`, `--help`,
 argument refusal, the complete simulator migration and configuration workflows from
-tests/smoke_installed.py against the bundled examples, the real SSH probe against a
-reserved localhost port, and the `gui` path rendered
-offscreen until its first frame. `--native` adds the desktop launches (the windowed
-program on Windows, `open` and a PATH symlink on macOS, the X11 platform on Linux). `--signed`
-verifies signatures on the extracted bytes first. Screenshots and launch reports land in
+tests/smoke_installed.py against repository fixtures, the real SSH probe against a
+reserved localhost port, and the real `gui` path rendered offscreen until its first
+frame. `--native` adds desktop launches on each platform. `--signed`
+verifies signatures on the download first. Screenshots and launch reports land in
 `--evidence`.
 """
 
@@ -19,33 +18,36 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "packaging"))
 
-from build import APP, GUI_EXE, NAME, version  # noqa: E402
+from build import APP, NAME, version  # noqa: E402
 from smoke_installed import config_smoke, smoke  # noqa: E402
 
 TIMEOUT = 180
 
 
-def extract(archive: Path, into: Path) -> Path:
-    if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive) as bundle:
-            bundle.extractall(into, filter="tar")
-    elif sys.platform == "darwin":
-        # ditto restores the app's extended attributes and symlinks as Finder would.
-        subprocess.run(["ditto", "-x", "-k", str(archive), str(into)], check=True)
+def extract(artifact: Path, into: Path) -> Path:
+    if artifact.suffix == ".dmg":
+        mount = into / "mounted"
+        mount.mkdir()
+        subprocess.run(
+            ["hdiutil", "attach", "-nobrowse", "-mountpoint", str(mount), str(artifact)], check=True
+        )
+        try:
+            subprocess.run(["ditto", str(mount / APP), str(into / APP)], check=True)
+            if not (mount / "Applications").exists():
+                raise SystemExit("disk image missing Applications link")
+        finally:
+            subprocess.run(["hdiutil", "detach", str(mount)], check=True)
+        mount.rmdir()
     else:
-        with zipfile.ZipFile(archive) as bundle:
-            bundle.extractall(into)
-    (top,) = into.iterdir()
-    return top
+        shutil.copy2(artifact, into / (NAME + (".exe" if os.name == "nt" else "")))
+    return into
 
 
 def clean_environment(home: Path) -> dict[str, str]:
@@ -114,10 +116,9 @@ def verify_signatures(top: Path) -> None:
     if sys.platform == "darwin":
         app = top / APP
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
-        subprocess.run(["xcrun", "stapler", "validate", str(app)], check=True)
         subprocess.run(["spctl", "--assess", "--type", "execute", str(app)], check=True)
     elif sys.platform == "win32":
-        for name in (f"{NAME}.exe", GUI_EXE):
+        for name in (f"{NAME}.exe",):
             exe = str(top / name).replace("'", "''")
             subprocess.run(
                 [
@@ -155,11 +156,12 @@ def main() -> None:
         program = top / (
             f"{APP}/Contents/MacOS/{NAME}" if mac else NAME + (".exe" if os.name == "nt" else "")
         )
-        examples = top / "examples"
-        for name in ("LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "README.txt"):
-            if not (top / name).is_file():
-                raise SystemExit(f"download is missing {name}")
+        examples = ROOT / "tests" / "fixtures"
         if args.signed:
+            if mac:
+                subprocess.run(["xcrun", "stapler", "validate", str(archive)], check=True)
+                subprocess.run(["codesign", "--verify", str(archive)], check=True)
+                subprocess.run(["xcrun", "stapler", "validate", str(top / APP)], check=True)
             verify_signatures(top)
         # The smoke_installed helpers inherit this process's environment.
         clean = clean_environment(scratch / "home")
@@ -172,6 +174,8 @@ def main() -> None:
             raise SystemExit(f"--version printed {printed!r}, expected {version()!r}")
         if "plan" not in run(program, "--help", cwd=work):
             raise SystemExit("--help does not list the commands")
+        if "GNU LESSER GENERAL PUBLIC LICENSE" not in run(program, "--licenses", cwd=work):
+            raise SystemExit("embedded licenses missing")
         run(program, cwd=work, code=2)
         run(program, "plan", "--password", "x", cwd=work, code=2)
         print(f"PASS CLI {printed}: --version, --help and argument refusal", flush=True)
@@ -190,13 +194,14 @@ def main() -> None:
         if not args.native:
             return
         if sys.platform == "win32":
-            # The windowed program a double click starts: no arguments, no console.
+            # A fresh console simulates Explorer launching the program without arguments.
             report = work / "gui-windowed.png"
             subprocess.run(
-                [str(top / GUI_EXE)],
+                [str(program)],
                 cwd=work,
                 env=dict(os.environ, LOGS_MIGRATE_GUI_SMOKE=str(report)),
                 timeout=TIMEOUT,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
                 check=True,
             )
             check_launch(
