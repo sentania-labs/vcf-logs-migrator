@@ -699,7 +699,7 @@ class LiveEnvironment:
             self._check(identity, line, unknown)
         if unknown:
             raise TrustRequired(unknown)
-        self.notes["stage"] = "source members"
+        self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port} (members)"
         self.source_client = self._logs_client(tls_source, "source_api", connection.source_api_user)
         if connection.preview:
             logs = self._https(tls_destination)
@@ -745,7 +745,11 @@ class LiveEnvironment:
     def _ssh(self, host: str, credential: str, username: str) -> NodeSSH:
         name = f"{host}:{self.connection.ssh_port}"
         pin = self.trust.known(Identity("ssh", name, ""))
-        require(pin is not None, Code.AUTH)
+        require(
+            pin is not None,
+            Code.AUTH,
+            f"The SSH host key for {name} is not enrolled; trust it before connecting.",
+        )
         return NodeSSH(
             host,
             username,
