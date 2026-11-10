@@ -299,7 +299,11 @@ class MainWindow(QMainWindow):
 
     def probe_environments(self, credentials: dict[str, str]) -> None:
         self.pending_credentials = dict(credentials)
+        self.timer.stop()
+        self.generation += 1
+        self.state.reset_connection()
         self.submit("probe", "probe_endpoints", connection=self.connection_values())
+        self.refresh_all()
 
     def connect_environments(self, credentials: dict[str, str]) -> None:
         settings = self.state.settings

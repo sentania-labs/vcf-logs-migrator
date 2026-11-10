@@ -684,7 +684,7 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    assert result["outcome"] == "incomplete_verification" and "2026-03-03" in result["partial_days"]
+    assert result["outcome"] == "verified_success" and "2026-03-03" in result["partial_days"]
     assert not result["partial_differences"]
     assert result["expected_count"] == 6
     assert result["actual_count"] == result["measured_arrival_count"] == 6
@@ -1989,17 +1989,15 @@ def test_live_bucket_verification_checks_destination_counts(tmp_path):
     matching = tuple(
         replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in selected_ids
     )
-    env.discover = lambda: (
-        source,
-        replace(destination, buckets=matching, inventory_available=True),
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=matching, inventory_available=True
     )
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_success", str(result)
     assert result["bucket_check"]["matched_groups"] == len(matching)
     assert result["bucket_check"]["matched_events"] == result["bucket_check"]["total_events"]
-    env.discover = lambda: (
-        source,
-        replace(destination, buckets=matching[:-1], inventory_available=True),
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=matching[:-1], inventory_available=True
     )
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_discrepancy"
@@ -2022,9 +2020,8 @@ def test_live_bucket_verification_does_not_claim_difference_for_unknown_count(tm
         replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids
     )
     matching = (replace(matching[0], messages=None), *matching[1:])
-    env.discover = lambda: (
-        source,
-        replace(destination, buckets=matching, inventory_available=True),
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=matching, inventory_available=True
     )
     result = engine.verify(run["id"])
     assert result["outcome"] == "incomplete_verification"
@@ -2066,3 +2063,124 @@ def test_plan_lists_the_requested_days_an_open_bucket_with_recorded_dates_shares
     ]
     assert days("after", "2026-03-04T00:00:00Z", "2026-06-08T00:00:00Z") == []
     assert days("ended", "2026-01-01T00:00:00Z", "2026-02-28T23:59:59Z") == []
+
+
+def test_a_fresh_destination_read_rereads_only_the_destination_listing(rigged, monkeypatch):
+    env, source, destination, ssh = trusted(rigged)
+    monkeypatch.setattr(LiveEnvironment, "_destination_ssh_enabled", lambda self: True)
+    xml = '<distributed><daemon host="dst.lab"/></distributed>'
+    ssh.replies.update(
+        {
+            ("dst.lab", ReadOperation.MEMBERS): xml,
+            ("dst.lab", ReadOperation.SERVICE): "active\n",
+            ("dst.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
+            ("dst.lab", ReadOperation.INVENTORY): "",
+            ("dst.lab", ReadOperation.USAGE): "",
+        }
+    )
+    destination.records += [session()] + [
+        record(*item)
+        for _ in range(3)
+        for item in (
+            ("GET", "/api/v1/version", {"version": "9.0.2.0200.25430789"}),
+            ("GET", "/api/v1/partitioning", {"partitions": []}),
+        )
+    ]
+
+    def reads(host):
+        return [op for h, op in ssh.reads if h == host and op == ReadOperation.INVENTORY]
+
+    env.destination_cluster()
+    env.destination_cluster()
+    assert len(reads("dst.lab")) == 1
+    env.destination_cluster(fresh=True)
+    assert len(reads("dst.lab")) == 2
+    assert reads("src-1.lab") == [] and reads("src-2.lab") == []
+
+
+def _verified_rig(tmp_path, *, skip=None, drop_events=False, unknown_first=False):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination_id = run["plan"]["destination"]["id"]
+    if skip:
+        env.transfer = lambda: Transfer(
+            "sim-1", "completed", (), (skip,), destination=destination_id
+        )
+    engine.status()
+    if drop_events:
+        env.data["destination_events"] = [
+            e for e in env.data["destination_events"] if e.get("cohort") == "baseline"
+        ]
+    source, destination = env.discover()
+    ids = {b["id"] for b in run["plan"]["selected"]} - {skip}
+    landed = tuple(replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids)
+    if unknown_first:
+        landed = (replace(landed[0], messages=None), *landed[1:])
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=landed, inventory_available=True
+    )
+    discoveries = []
+    original = env.discover
+    env.discover = lambda: discoveries.append(1) or original()
+    return env, engine, run, discoveries
+
+
+def test_verify_reads_only_the_destination_after_the_task(tmp_path):
+    _, engine, run, discoveries = _verified_rig(tmp_path)
+    assert engine.verify(run["id"])["outcome"] == "verified_success"
+    assert discoveries == []
+
+
+def test_a_group_the_destination_skipped_reaches_the_not_received_guidance(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+
+    skipped = "00000000-0000-0000-0000-000000000001"
+    _, engine, run, _ = _verified_rig(tmp_path, skip=skipped)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["bucket_check"]["unmatched"] == ["src-1/" + skipped]
+    view = vm.verification_view(result, engine.status(), 0, False, run)
+    tone, title, text = view["banner"]
+    assert "not received" in title
+    assert "covers the missing history again" in text
+    assert "2 of 3 groups registered" in text
+
+
+def test_an_unknown_group_count_never_hides_a_daily_discrepancy(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+
+    _, engine, run, _ = _verified_rig(tmp_path, drop_events=True, unknown_first=True)
+    result = engine.verify(run["id"])
+    assert result["bucket_check"]["unknown"] and not result["bucket_check"]["unmatched"]
+    assert result["outcome"] == "verified_discrepancy"
+    tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
+    assert title == "Group counts unavailable" and "Daily counts differ" in text
+
+
+def test_an_unknown_group_count_alone_is_incomplete_and_the_banner_shows_both_checks(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+
+    _, engine, run, _ = _verified_rig(tmp_path, unknown_first=True)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification" and not result["complete"]
+    tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
+    assert title == "Group counts unavailable"
+    assert text.index(result["bucket_check"]["unknown"][0]) < text.index("Daily counts")
+
+
+def test_matching_groups_with_a_daily_difference_show_the_difference_in_the_banner(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+
+    _, engine, run, _ = _verified_rig(tmp_path, drop_events=True)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy" and not result["bucket_check"]["unmatched"]
+    tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
+    assert title == "Selected groups checked" and tone == "bad"
+    assert text.startswith("3 of 3 groups registered") and "Daily counts differ" in text

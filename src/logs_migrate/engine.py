@@ -579,7 +579,7 @@ class Engine:
             require("baseline" in run and "source_by_bucket" in run, Code.STATE)
             try:
                 planned = run["plan"]["destination"]
-                _, destination = self.env.discover()
+                destination = self.env.destination_cluster()
                 require(
                     destination.id == planned["id"] and destination.identity == planned["identity"],
                     Code.TOPOLOGY,
@@ -588,42 +588,32 @@ class Engine:
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
                 # Re-read after the transfer is terminal; never compare a cached listing.
-                cache = getattr(self.env, "_inventory_cache", None)
-                if cache is not None:
-                    cache.clear()
-                    _, destination = self.env.discover()
-                    require(
-                        destination.id == planned["id"]
-                        and destination.identity == planned["identity"],
-                        Code.TOPOLOGY,
-                    )
+                destination = self.env.destination_cluster(fresh=True)
+                require(
+                    destination.id == planned["id"] and destination.identity == planned["identity"],
+                    Code.TOPOLOGY,
+                )
                 bucket_check = None
                 if not self.attribution and destination.inventory_available:
                     selected = run["plan"]["selected"]
                     by_id = {b.id: b for b in destination.buckets}
-                    matches = [
-                        b
-                        for b in selected
-                        if b["id"] in by_id
-                        and b["messages"] is not None
-                        and by_id[b["id"]].messages == b["messages"]
-                    ]
-                    unknown = [
-                        b
-                        for b in selected
-                        if b["id"] in by_id
-                        and (b["messages"] is None or by_id[b["id"]].messages is None)
-                    ]
+                    matched, unknown, unmatched = [], [], []
+                    for b in selected:
+                        seen = by_id.get(b["id"])
+                        if seen is None:
+                            unmatched.append(b)
+                        elif b["messages"] is None or seen.messages is None:
+                            unknown.append(b)
+                        elif seen.messages == b["messages"]:
+                            matched.append(b)
+                        else:
+                            unmatched.append(b)
                     bucket_check = {
-                        "matched_groups": len(matches),
+                        "matched_groups": len(matched),
                         "total_groups": len(selected),
-                        "matched_events": sum(b["messages"] for b in matches),
+                        "matched_events": sum(b["messages"] for b in matched),
                         "total_events": selected_message_count(selected),
-                        "unmatched": [
-                            b["node"] + "/" + b["id"]
-                            for b in selected
-                            if b not in matches and b not in unknown
-                        ],
+                        "unmatched": [b["node"] + "/" + b["id"] for b in unmatched],
                         "unknown": [b["node"] + "/" + b["id"] for b in unknown],
                     }
                 try:
@@ -641,11 +631,13 @@ class Engine:
                     }
                 if bucket_check is not None:
                     result["bucket_check"] = bucket_check
+                    result["daily_outcome"] = result["outcome"]
                     if bucket_check["unmatched"]:
                         result["outcome"] = Verification.DISCREPANCY.value
                     elif bucket_check["unknown"]:
-                        result["outcome"] = Verification.INCOMPLETE.value
-                        result["complete"] = False
+                        if result["outcome"] != Verification.DISCREPANCY.value:
+                            result["outcome"] = Verification.INCOMPLETE.value
+                            result["complete"] = False
                     elif (
                         result["outcome"] == Verification.INCOMPLETE.value
                         and result.get("reason") == "no_fully_covered_days"
@@ -655,7 +647,7 @@ class Engine:
                 elif (
                     not self.attribution
                     and result["outcome"] == Verification.SUCCESS.value
-                    and (result.get("unmeasured_day_count") or result.get("partial_days"))
+                    and result.get("unmeasured_day_count")
                 ):
                     result["outcome"] = Verification.INCOMPLETE.value
                     result["complete"] = False

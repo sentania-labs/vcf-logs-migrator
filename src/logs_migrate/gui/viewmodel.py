@@ -1008,21 +1008,8 @@ def verification_view(
     missing = result.get("buckets", {}).get("not_received", [])
     missing_labels = [format_day_label(day) for day, _ in missing_days(result, run)]
     exact = result.get("bucket_check")
-    if exact and exact["unmatched"]:
-        outcome = "verified_discrepancy"
-        banner = ("bad", "Selected groups do not match", ", ".join(exact["unmatched"]))
-    elif exact and exact.get("unknown"):
-        banner = ("warn", "Group counts unavailable", ", ".join(exact["unknown"]))
-    elif exact:
-        banner = (
-            "ok" if outcome == "verified_success" else "warn",
-            "Selected groups checked",
-            f"{exact['matched_groups']} of {exact['total_groups']} groups registered on the "
-            f"destination; {format_count(exact['matched_events'])} of "
-            f"{format_count(exact['total_events'])} events. "
-            "Daily counts provide a separate search-level check.",
-        )
-    elif missing:
+    daily_outcome = result.get("daily_outcome", outcome)
+    if missing:
         outcome = "partial"
         banner = (
             "bad",
@@ -1041,7 +1028,7 @@ def verification_view(
             + "Plan a window that covers the missing history again, or export the evidence "
             "for the appliance administrator.",
         )
-    elif outcome == "verified_success":
+    elif daily_outcome == "verified_success":
         partial = result.get("partial_days", [])
         banner = (
             "warn" if active_count or partial else "ok",
@@ -1060,7 +1047,7 @@ def verification_view(
                 else ""
             ),
         )
-    elif outcome == "verified_discrepancy":
+    elif daily_outcome == "verified_discrepancy":
         differing = [d for d in result["daily"] if d["difference"] != 0 and not d.get("partial")]
         differing = differing or [d for d in result["daily"] if d["difference"] != 0]
         first = differing[0]
@@ -1105,6 +1092,43 @@ def verification_view(
             + share
             + "Partial counts cannot attribute every arrival to the selected groups.",
         )
+    if exact:
+        groups = (
+            f"{exact['matched_groups']} of {exact['total_groups']} groups registered on the "
+            f"destination; {format_count(exact['matched_events'])} of "
+            f"{format_count(exact['total_events'])} events."
+        )
+        daily = (
+            "Daily counts provide a separate search-level check."
+            if daily_outcome == "verified_success" and not missing
+            else f"Daily counts: {banner[1]}. {banner[2]}"
+        )
+        if exact["unmatched"]:
+            outcome = "verified_discrepancy"
+        if exact["unmatched"] and missing:
+            banner = (banner[0], banner[1], f"{groups} {banner[2]}")
+        elif exact["unmatched"]:
+            banner = (
+                "bad",
+                "Selected groups do not match",
+                f"{', '.join(exact['unmatched'])}. {groups} {daily}",
+            )
+        elif exact.get("unknown"):
+            banner = (
+                "bad" if daily_outcome == "verified_discrepancy" else "warn",
+                "Group counts unavailable",
+                f"{', '.join(exact['unknown'])}. {daily}",
+            )
+        else:
+            banner = (
+                "ok"
+                if outcome == "verified_success"
+                else "bad"
+                if daily_outcome == "verified_discrepancy"
+                else "warn",
+                "Selected groups checked",
+                f"{groups} {daily}",
+            )
     complete = result.get("complete", False)
     has_counts = "expected_count" in result
     unmeasured = result.get("unmeasured_day_count", 0)

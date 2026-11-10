@@ -941,8 +941,11 @@ class LiveEnvironment:
             self.source_client.identity,
         )
 
-    def destination_cluster(self) -> Cluster:
+    def destination_cluster(self, *, fresh: bool = False) -> Cluster:
         require(self.destination_client is not None, Code.STATE)
+        if fresh:
+            for key in [k for k in self._inventory_cache if k[1] == "destination_ssh"]:
+                del self._inventory_cache[key]
         host, _ = self.connection.destination_endpoint
         version = self.destination_version()
         try:

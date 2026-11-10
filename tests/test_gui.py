@@ -141,10 +141,11 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.start()
     driver.poll_until_finished()
     driver.verify()
-    assert state.verification["outcome"] == "incomplete_verification"
+    assert state.verification["outcome"] == "verified_success"
     assert state.verification["partial_days"] == ["2026-03-03"]
     verification = driver.pages["verification"]
-    assert "incomplete" in verification.banner.text().lower()
+    assert "fully covered day" in verification.banner.text()
+    assert "1 partial day" in verification.banner.text()
 
 
 def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
@@ -753,3 +754,15 @@ def test_probing_endpoints_releases_an_open_connection_first(monkeypatch):
     assert Env.source_client.cleared and Env.destination_client.cleared
     assert session.credentials is not held
     assert not held.snapshot()
+
+
+def test_testing_endpoints_from_a_connected_window_drops_the_stale_connection(driver, monkeypatch):
+    _live_simulator(monkeypatch, driver)
+    driver.connect()
+    assert driver.state.connected and driver.window.timer.isActive()
+    driver.window.probe_environments({"source_api": "x"})
+    assert not driver.state.connected and driver.state.discovered is None
+    assert not driver.window.timer.isActive()
+    driver.until(lambda: not driver.window.worker.pending)
+    driver.idle()
+    assert driver.state.status_error is None

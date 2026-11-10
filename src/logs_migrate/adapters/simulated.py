@@ -132,6 +132,9 @@ class SimulatedEnvironment:
                 self._persist()
                 self.locked = False
 
+    def destination_cluster(self, *, fresh: bool = False):
+        return self.discover()[1]
+
     def discover(self):
         self._fault("discover")
 
