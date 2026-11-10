@@ -1,12 +1,12 @@
 # VCF Logs Migrator
 
-VCF Logs Migrator is an independent community tool. It is not a Broadcom product and is not supported by Broadcom. VCF Operations' built-in log data transfer supports 90 days of logs. This tool uses the same APIs and lets you move as much history as you want and have the patience for.
+VCF Logs Migrator is an independent community tool. It isn't a Broadcom product and Broadcom doesn't support it. The log data transfer built into VCF Operations covers 90 days of logs. This tool uses the same APIs, but you can move as much history as you want and have the patience for.
 
-It moves logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs and checks event counts. A completed transfer alone does not prove every event arrived.
+It moves logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs and compares event counts afterward. A finished transfer doesn't prove every event arrived, so look at the checks.
 
 ## Download
 
-Each download includes a desktop window and a command-line interface (CLI). You do not need Python.
+Each download has both a desktop window and a command-line interface (CLI). You don't need Python.
 
 | Platform | Download | Open the window | Run the CLI |
 |---|---|---|---|
@@ -14,29 +14,29 @@ Each download includes a desktop window and a command-line interface (CLI). You 
 | macOS Apple silicon | `vcf-logs-migrator-vX.Y.Z-macos-arm64.dmg` | Open the disk image and drag the app to Applications | `/Applications/VCF Logs Migrator.app/Contents/MacOS/logs-migrate <command>` |
 | Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64` | Make executable, then run with `gui` | Run the executable with a command |
 
-[GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases) also provides `SHA256SUMS` and `THIRD-PARTY-NOTICES.txt`. Use `--licenses` or About → Licenses to see bundled notices. On Linux, the window needs a desktop session and Qt system libraries (libEGL/libGL, fontconfig, libxkbcommon-x11 and libxcb-cursor0).
+[GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases) also has `SHA256SUMS` and `THIRD-PARTY-NOTICES.txt`. To see the bundled notices, use `--licenses` or About → Licenses. On Linux, the window needs a desktop session and the Qt system libraries (libEGL/libGL, fontconfig, libxkbcommon-x11 and libxcb-cursor0).
 
 ## Before you start
 
-- Copying only adds data to the destination and has no undo. Decide beforehand how you would recover.
-- You need an 8.18 cluster member address, a Logs API account and password, and root SSH access to **every** 8.18 member. Your workstation must be able to reach the source Logs API on port 9543 and each source member over SSH on port 22. The destination also needs SSH access to each source member.
-- You need the destination Logs address, an API account and password, and access to port 9543. You can also provide destination root SSH access so the plan can check available storage on each destination node.
-- During copy, the source root SSH password is sent to the destination so it can pull the data. Enter passwords at a prompt or in the window. For automation, use the private credential methods in the [lab guide](docs/testing-against-a-lab.md). Never put passwords in command arguments.
-- Check certificate and SSH host key fingerprints against the appliances before trusting them. Check that partition configuration matches and the destination has enough space. See the [lab guide](docs/testing-against-a-lab.md) for the full checklist and commands.
+- A copy only adds data to the destination, and there's no undo. Work out how you'd recover before you start.
+- On the source, you need the address of one 8.18 cluster member, a Logs API account and password, and root SSH access to **every** 8.18 member. Your workstation has to reach the source Logs API on port 9543 and each source member over SSH on port 22. The destination needs SSH access to each source member too.
+- On the destination, you need the Logs address, an API account and password, and access to port 9543. If you also give it root SSH access, the plan can check free storage on each destination node.
+- During the copy, the source root SSH password goes to the destination so it can pull the data. Type passwords at a prompt or in the window. For automation, use the private credential methods in the [lab guide](docs/testing-against-a-lab.md), and never put a password in a command argument.
+- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks. Its advice is sized for a lab, so scale it to your environment.
 
 ## Walk through a migration with the CLI
 
-This example uses a 9.0 destination and a two-day UTC interval. Use your own addresses and dates. The end date is exclusive: the example covers March 19 and 20.
+This example uses a 9.0 destination and a two-day UTC interval. Swap in your own addresses and dates. The end date is exclusive, so the example covers March 19 and 20.
 
-Open a terminal on the machine where you downloaded the tool. Replace `logs-migrate` on every line below with the command for your platform:
+Open a terminal on the machine where you downloaded the tool. On every line below, replace `logs-migrate` with the command for your platform:
 
 - **macOS:** use the full command from the download table.
-- **Linux:** use `./vcf-logs-migrator-vX.Y.Z-linux-x86_64`. First run `chmod +x` on the download.
+- **Linux:** use `./vcf-logs-migrator-vX.Y.Z-linux-x86_64`, after running `chmod +x` on the download.
 - **Windows PowerShell:** use `./vcf-logs-migrator-vX.Y.Z-windows-x64.exe`.
 
-The tool prompts for passwords when it needs them.
+It asks for passwords when it needs them.
 
-Set the addresses once in your terminal so each command uses them. On macOS or Linux:
+Set the addresses once in your terminal so every command picks them up. On macOS or Linux:
 
 ```sh
 export LOGS_SOURCE=source.example.com LOGS_DESTINATION=destination.example.com
@@ -49,9 +49,9 @@ $env:LOGS_SOURCE = "source.example.com"
 $env:LOGS_DESTINATION = "destination.example.com"
 ```
 
-The default API user is `admin` and the default source SSH user is `root`. See the [lab guide](docs/testing-against-a-lab.md#what-you-need) for other usernames and credential options. Use the same private run file for every command below. It records what you selected and what the tool observed for this destination. Keep it safe for later runs.
+The API user defaults to `admin` and the source SSH user to `root`. The [lab guide](docs/testing-against-a-lab.md#what-you-need) covers other usernames and credential options. Every command below uses the same private run file. It records what you selected and what the tool saw on this destination, so keep it somewhere safe for later runs.
 
-1. **Trust and test.** First, record the appliances' identities. This command sends no credentials. Compare the printed fingerprints with the appliances before continuing. Repeat this step if the tool discovers more cluster members.
+1. **Trust and test.** Start by recording the appliances' identities. This sends no credentials. Compare the fingerprints it prints with the appliances before you go on. If it finds more cluster members later, run this step again.
 
    ```text
    logs-migrate --trust-new selftest
@@ -61,7 +61,7 @@ The default API user is `admin` and the default source SSH user is `root`. See t
    {"enrolled": [...], "credentials_sent": false, "next": "Verify each fingerprint ..."}
    ```
 
-   Run the read-only checks after the identities are trusted:
+   Once the identities are trusted, run the read-only checks:
 
    ```text
    logs-migrate selftest
@@ -73,7 +73,7 @@ The default API user is `admin` and the default source SSH user is `root`. See t
    Read-only: nothing was started, written or stopped.
    ```
 
-2. **Plan.** Choose a private path for `migration.sqlite` and use it throughout. Review selected groups, skipped open groups, partition differences, capacity and warnings before continuing. The output below is shortened from an evaluation, with identifiers masked. Your results will differ.
+2. **Plan.** Pick a private path for `migration.sqlite` and stick with it. Read through the selected groups, the skipped open groups, partition differences, capacity and warnings before you continue. The output below is trimmed from an evaluation, with identifiers masked, so yours will look different.
 
    ```text
    logs-migrate --journal migration.sqlite plan --since 2024-03-19T00:00:00Z --until 2024-03-21T00:00:00Z
@@ -88,16 +88,16 @@ The default API user is `admin` and the default source SSH user is `root`. See t
    }
    ```
 
-   Copy the actual `id` from your plan and replace `<run-id>` below. If partitions differ, resolve the differences before copying. See [configuration rules](docs/operator-cli.md#configuration-rules).
+   Take the `id` from your plan and use it in place of `<run-id>` below. If the partitions differ, sort that out before copying. See [configuration rules](docs/operator-cli.md#configuration-rules).
 
-3. **Copy.** After deciding how you would recover and reviewing the plan, start the transfer. `--ack-backup` records your acknowledgment before a transfer with no undo. If the plan excludes open groups, you must also acknowledge that their data will not be copied. Keep the quotes exactly as shown.
+3. **Copy.** Once you've read the plan and settled your recovery plan, start the transfer. `--ack-backup` records that you know there's no undo. If the plan leaves out open groups, you also have to acknowledge that their data won't be copied. Keep the quotes exactly as shown.
 
    ```text
    logs-migrate --journal migration.sqlite copy <run-id> --ack-backup --ack-active "i understand you aren't going to copy the latest data"
    {"run_id": "<run-id>", "task": {"id": "<task-id>", "status": "running", "progress": 0.0, ...}, ...}
    ```
 
-4. **Watch, verify and report.** Repeat `status` until the task finishes, then run `verify` and `report`. The tool prints the report as Markdown. Redirect it to a private file if you want to keep it. A completed task can still have skipped data, so inspect the verification and any partial days.
+4. **Watch, verify and report.** Run `status` until the task finishes, then run `verify` and `report`. The report comes out as Markdown, so redirect it to a private file if you want to keep it. A completed task can still have skipped data, so look closely at the verification and any partial days.
 
    ```text
    logs-migrate --journal migration.sqlite status
@@ -112,52 +112,52 @@ The default API user is `admin` and the default source SSH user is `root`. See t
    5 selected groups; 342,837 events sent from selected groups; arrivals were counted for the requested dates only (... 24,286 arrived); 71 other days these groups touch were not counted; ... 1 fully matched days; 1 partial days.
    ```
 
-The example report compares whole selected groups with a narrower requested date window. Counts are evidence, not proof of identical event content. The [CLI operator guide](docs/operator-cli.md) explains incomplete checks, errors, and reports. For a detailed walkthrough on real appliances, see [Testing against a lab](docs/testing-against-a-lab.md).
+The example report compares whole selected groups against a narrower requested date window, which is why the arrival count is much smaller than the events sent. The [CLI operator guide](docs/operator-cli.md) explains incomplete checks, errors and reports. For a longer walkthrough against lab appliances, see [Testing against a lab](docs/testing-against-a-lab.md).
 
 ## Use the window
 
-Open the download as shown above. These pictures use the simulator, not a real environment.
+Open the download as shown above. These pictures come from the simulator, not a real environment.
 
-1. On **Connections**, enter the source and destination addresses and credentials. Test the connection and compare each trust prompt's fingerprint with the appliance. Run the self-test and review its results.
+1. On **Connections**, enter the source and destination addresses and credentials. Test the connection and compare the fingerprint in each trust prompt with the appliance. Then run the self-test and read the results.
 
    ![Connections page in the simulator](docs/images/gui/04-connections.png)
 
-2. On **Discovery & Plan**, choose the dates and preview the plan. Review the selected and excluded groups, capacity, partitions and warnings. Decide how you would recover and acknowledge that there is no undo before starting.
+2. On **Discovery & Plan**, pick your dates and preview the plan. Go through the selected and excluded groups, capacity, partitions and warnings. Before you start, make sure you know how you'd recover, and acknowledge that there's no undo.
 
    ![Plan preview in the simulator](docs/images/gui/07-plan-light.png)
 
-3. Watch the **Migration** page until the destination reports completion.
+3. Keep an eye on the **Migration** page until the destination reports it's done.
 
    ![Migration in progress in the simulator](docs/images/gui/11-migration-light.png)
 
-4. Run the checks on **Verification** and examine partial days and any missing evidence.
+4. Run the checks on **Verification**, then look at the partial days and anything it couldn't confirm.
 
    ![Verification page in the simulator](docs/images/gui/15-verified-light.png)
 
-5. Open **Reports** and export the results for your records.
+5. Open **Reports** and export the results to keep.
 
    ![Reports page in the simulator](docs/images/gui/20-reports.png)
 
 ## What to expect
 
-- A bucket is a group of logs stored by the source. The tool selects whole closed buckets, so the actual coverage can extend beyond the requested dates. Open buckets are skipped. You may need another run after they close to pick up the newest data. Some open data may never close, so keep the source according to your retention plan.
-- Days shared with open or unselected buckets are partial. Their counts can differ and need review. On 9.0, migrated events land in the destination's Default partition. Matching counts do not prove that the event contents or partition placement match.
-- Allow minutes for each step on a large source. In one evaluation with about 4,300 source buckets, planning took 206 seconds and starting the transfer took 200 seconds. The transfer itself took about 146 seconds, and verification took 117 seconds. Your times depend on inventory, data, network and appliance load.
-- The tool never stops the source or writes to it. It never deletes source buckets or anything on the destination. Copying only adds data. The destination applies its own retention and disk limits, so check available space first.
-- Forwarding, partition, masking and filter rules can be compared and copied separately with `config compare` and `config apply`, or on the window's **Configuration** page. Only the rules you select are applied. Each selected rule overwrites any destination rule with the same name. See [configuration rules](docs/operator-cli.md#configuration-rules).
-- 9.1.1 support is a preview. Count verification is not available for that destination. See the [9.1.1 notes](docs/testing-against-a-lab.md#911-preview) before using it.
+- A bucket is a group of logs stored by the source. The tool copies whole closed buckets, so coverage can run past the dates you asked for. Open buckets are skipped, so you may need another run once they close to pick up the newest data. Some open data may never close, so keep the source around according to your retention plan.
+- Days that share a bucket with open or unselected data are partial, and their counts can differ. Those days need a look. On 9.0, migrated events land in the destination's Default partition. Matching counts don't show that event contents or partition placement match.
+- Plan on minutes per step against a large source. In one evaluation with about 4,300 source buckets, planning took 206 seconds and starting the transfer took 200 seconds. The transfer itself took about 146 seconds and verification took 117 seconds. Your times will depend on inventory, data, network and appliance load.
+- The tool never stops or writes to the source. It never deletes source buckets or anything on the destination, and copying only adds data. The destination applies its own retention and disk limits, so check free space first.
+- You can compare and copy forwarding, partition, masking and filter rules separately with `config compare` and `config apply`, or on the window's **Configuration** page. Only the rules you select are applied, and each one overwrites any destination rule with the same name. See [configuration rules](docs/operator-cli.md#configuration-rules).
+- 9.1.1 support is a preview, and count verification isn't available for that destination. Read the [9.1.1 notes](docs/testing-against-a-lab.md#911-preview) before you use it.
 
-For troubleshooting, see [operator troubleshooting](docs/operator-cli.md#troubleshooting-logs). Detailed logs can contain appliance addresses, so review them before sharing.
+For troubleshooting, see [operator troubleshooting](docs/operator-cli.md#troubleshooting-logs). Detailed logs can contain appliance addresses, so check them before you share them.
 
 ---
 
 ## Building and development
 
-`packaging/build.py` uses pinned PyInstaller tools and Python 3.12.10. Builds run natively on GitHub-hosted Linux, Windows and macOS runners, with smoke tests for the CLI and window. Windows downloads are Authenticode signed. macOS downloads are signed and notarized. Linux downloads have checksums.
+`packaging/build.py` uses pinned PyInstaller tools and Python 3.12.10. Builds run natively on GitHub-hosted Linux, Windows and macOS runners, with smoke tests for the CLI and window. Windows downloads are Authenticode signed, macOS downloads are signed and notarized, and Linux downloads come with checksums.
 
-To build locally, install the dependencies with `python -m pip install -r packaging/requirements.txt '.[ssh]'`, then run `python packaging/build.py build <platform>` and `python packaging/build.py package <platform>`. Run `python packaging/smoke.py dist/<download>` to test the download.
+To build locally, install the dependencies with `python -m pip install -r packaging/requirements.txt '.[ssh]'`, then run `python packaging/build.py build <platform>` and `python packaging/build.py package <platform>`. To test the result, run `python packaging/smoke.py dist/<download>`.
 
-For development, install Python 3.11+ and run `python -m pip install '.[dev,gui,ssh]'`. Then run `make check` and `make smoke`. GUI tests use Qt's offscreen platform and skip when PySide6 is absent. SSH tests skip when Paramiko is absent. `python tests/gui_screenshots.py --output DIR` renders the simulator's window pages for review.
+For development, install Python 3.11+ and run `python -m pip install '.[dev,gui,ssh]'`, then `make check` and `make smoke`. GUI tests use Qt's offscreen platform and skip if PySide6 isn't installed. SSH tests skip if Paramiko isn't installed. `python tests/gui_screenshots.py --output DIR` renders the simulator's window pages so you can review them.
 
 ## Research and historical evidence
 
@@ -172,6 +172,6 @@ For development, install Python 3.11+ and run `python -m pip install '.[dev,gui,
 | [Specification](docs/spec.md) | Product design and historical appendix; the operator guide describes shipped commands |
 | [Testing against a lab](docs/testing-against-a-lab.md) | Step-by-step for real hosts |
 
-The files under `scripts/` are historical research prototypes, not this CLI's execution path. Some contain source stops, insecure transport or deletion flows. Do not use them as production operator instructions.
+The files under `scripts/` are old research prototypes, and the CLI doesn't use them. Some stop the source, use insecure transport or delete data, so don't follow them as production instructions.
 
-MIT licensed. Simulator tests and lab results alone do not show that the tool is ready for your production environment.
+MIT licensed. Passing simulator tests and lab results don't mean the tool is ready for your production environment.
