@@ -170,7 +170,15 @@ The API remains the source of task state. Status records finished transfers in t
 ledger only after matching the task to the run.
 
 An interrupted client or lost POST response does not imply a stopped task. Query
-status. Explicit cancellation uses the currently observed **API task ID**:
+status. When the start was acknowledged without a task ID, or its response was lost,
+status looks in the appliance's task list for a task with exactly this run's window
+created no earlier than five minutes before the start attempt (a margin for clock
+difference between this machine and the appliance). A single match is shown with its
+progress and remembered for this run, and its ID can be used to stop it. If none is
+found, status reports `idle` with `start_outcome: unknown`: the start may not have
+reached the appliance, or its task is not listed yet. Run status again; if it still
+shows nothing once the 15-minute uncertain-start hold has passed, plan and copy again. Explicit
+cancellation uses the currently observed **API task ID**:
 
 ```sh
 logs-migrate --journal /private/migration/run.sqlite \

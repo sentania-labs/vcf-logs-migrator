@@ -251,9 +251,11 @@ def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(r
     with pytest.raises(MigrationError) as error:
         execute(engine, run)
     assert error.value.code == Code.UNCERTAIN
-    fresh = Engine(env, None)
-    assert fresh.status()["status"] == "idle"
-    task = {"id": env.transfer().id}
+    fresh = Engine(env, journal, engine.clock)
+    task = fresh.status(run["id"])
+    assert task["status"] == "running" and task["id"] == "sim-1"
+    assert "start_outcome" not in task
+    assert journal.transfers(env.data["destination"]["id"])[0]["task_id"] == "sim-1"
     with pytest.raises(MigrationError):
         fresh.stop("different-task")
     assert fresh.stop(task["id"])["status"] == "cancelled"
@@ -261,6 +263,43 @@ def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(r
     with pytest.raises(MigrationError):
         execute(engine, run)
     assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
+
+
+def test_lost_post_ack_with_no_task_found_says_the_start_is_unknown(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["faults"] = {"start.before": "connection"}
+    with pytest.raises(MigrationError) as error:
+        execute(engine, run)
+    assert error.value.code == Code.UNCERTAIN
+    result = Engine(env, journal, engine.clock).status(run["id"])
+    assert result["status"] == "idle" and result["id"] == ""
+    assert result["start_outcome"] == "unknown"
+
+
+@pytest.mark.parametrize("skew_seconds,found", [(120, True), (1200, False)])
+def test_lost_post_lookup_tolerates_a_few_minutes_of_appliance_clock_skew(rig, skew_seconds, found):
+    from datetime import datetime
+
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["faults"] = {"start.after": "connection"}
+    with pytest.raises(MigrationError):
+        execute(engine, run)
+    destination = env.data["destination"]["id"]
+    row = journal.transfers(destination)[0]
+    created = int(datetime.fromisoformat(row["attempted_at"]).timestamp() * 1000)
+    created -= skew_seconds * 1000
+
+    def finder(task_id="", *, window=None, attempted_at_ms=None):
+        if window == Window(**row["window"]) and created >= attempted_at_ms:
+            return Transfer("late-task", "running", destination=destination, window=window)
+        return Transfer("", "idle", destination=destination)
+
+    env.transfer_for = finder
+    result = Engine(env, journal, engine.clock).status(run["id"])
+    assert (result["id"] == "late-task") is found
+    assert (result.get("start_outcome") == "unknown") is (not found)
 
 
 def test_stop_does_not_relabel_a_completed_task(rig):

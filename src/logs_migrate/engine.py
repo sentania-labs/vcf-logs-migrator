@@ -29,6 +29,7 @@ INGEST_WINDOW_SECONDS = 86_400
 # A start whose outcome is uncertain (no HTTP answer) holds its window this long; after that,
 # an appliance history with no task covering the window is the evidence that nothing started.
 UNCERTAIN_RELEASE_SECONDS = 900
+START_CLOCK_SLACK_MS = 300_000
 
 
 def _ids(keys):
@@ -436,27 +437,39 @@ class Engine:
             if run is None:
                 return self._progress(Transfer("", "idle"))
             destination = run["plan"]["destination"]["id"]
-            row = next((r for r in self.journal.transfers(destination) if r["run"] == run_id), None)
-            if not row or not row.get("acknowledged"):
+            rows = self.journal.transfers(destination)
+            row = next((r for r in rows if r["run"] == run_id), None)
+            if row is None:
                 return self._progress(Transfer("", "idle", destination=destination))
             task_id = row.get("task_id") or ""
+            window = Window(**row["window"])
             finder = getattr(self.env, "transfer_for", None)
             if finder is not None:
-                attempted = row.get("attempted_at")
                 try:
-                    attempted_ms = int(datetime.fromisoformat(attempted).timestamp() * 1000)
-                except (TypeError, ValueError):
+                    attempted_ms = int(
+                        datetime.fromisoformat(row["attempted_at"]).timestamp() * 1000
+                    )
+                except (KeyError, TypeError, ValueError):
                     attempted_ms = None
-                task = finder(task_id, window=Window(**row["window"]), attempted_at_ms=attempted_ms)
-                if not task_id and task.id:
-                    self.journal.note_transfer_task(run_id, task.id)
-                    task_id = task.id
-            elif task_id:
-                task = self.env.transfer()
+                if attempted_ms is not None:
+                    attempted_ms -= START_CLOCK_SLACK_MS
+                task = finder(task_id, window=window, attempted_at_ms=attempted_ms)
             else:
-                return self._progress(Transfer("", "idle", destination=destination))
-            if not task_id or task.id != task_id or task.destination != destination:
-                return self._progress(Transfer("", "idle", destination=destination))
+                task = self.env.transfer()
+            others = {r["task_id"] for r in rows if r["run"] != run_id and r.get("task_id")}
+            found = (
+                bool(task.id)
+                and task.destination == destination
+                and task.id not in others
+                and (task.id == task_id if task_id else finder is not None or task.window == window)
+            )
+            if not found:
+                result = self._progress(Transfer("", "idle", destination=destination))
+                if not row.get("acknowledged") and not row["closed"]:
+                    result["start_outcome"] = "unknown"
+                return result
+            if not task_id:
+                self.journal.note_transfer_task(run_id, task.id)
             self._record(task, destination)
             return self._progress(task)
 
