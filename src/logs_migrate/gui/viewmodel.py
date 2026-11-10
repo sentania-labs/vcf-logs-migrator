@@ -916,6 +916,18 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
 def report_headline_rows(verification: dict) -> list[tuple[str, str]]:
     if is_legacy_result(verification):
         return [("Counts", LEGACY_RESULT_NOTE)]
+    exact = verification.get("bucket_check")
+    if exact:
+        return [
+            (
+                "Groups registered on destination",
+                f"{exact['matched_groups']} of {exact['total_groups']}",
+            ),
+            (
+                "Events in matching groups",
+                f"{format_count(exact['matched_events'])} of {format_count(exact['total_events'])}",
+            ),
+        ]
     if "expected_count" not in verification:
         return [("Sent from selected groups", "Pending")]
     sent = format_count(verification.get("expected_count"))
@@ -995,7 +1007,22 @@ def verification_view(
     outcome = result["outcome"]
     missing = result.get("buckets", {}).get("not_received", [])
     missing_labels = [format_day_label(day) for day, _ in missing_days(result, run)]
-    if missing:
+    exact = result.get("bucket_check")
+    if exact and exact["unmatched"]:
+        outcome = "verified_discrepancy"
+        banner = ("bad", "Selected groups do not match", ", ".join(exact["unmatched"]))
+    elif exact and exact.get("unknown"):
+        banner = ("warn", "Group counts unavailable", ", ".join(exact["unknown"]))
+    elif exact:
+        banner = (
+            "ok" if outcome == "verified_success" else "warn",
+            "Selected groups checked",
+            f"{exact['matched_groups']} of {exact['total_groups']} groups registered on the "
+            f"destination; {format_count(exact['matched_events'])} of "
+            f"{format_count(exact['total_events'])} events. "
+            "Daily counts provide a separate search-level check.",
+        )
+    elif missing:
         outcome = "partial"
         banner = (
             "bad",
@@ -1064,11 +1091,19 @@ def verification_view(
                 f" The API task {task}; plan the remainder with a window that excludes "
                 "received groups."
             )
+        expected = result.get("expected_count")
+        measured = result.get("measured_arrival_count")
+        share = (
+            f"{min(100, measured * 100 / expected):.1f}% of selected events were counted. "
+            if expected and measured is not None
+            else "The verified share is unavailable. "
+        )
         banner = (
             "warn",
             "Verification incomplete",
             (why + " " if why else "")
-            + "Received partial counts are not a destination total; no success is claimed.",
+            + share
+            + "Partial counts cannot attribute every arrival to the selected groups.",
         )
     complete = result.get("complete", False)
     has_counts = "expected_count" in result
@@ -1340,6 +1375,7 @@ def report_view(
     not_started = "source_by_bucket" not in run
     return {
         "subtitle": f"{name} · {'not started' if not_started else outcome_label(verification)}",
+        "warnings": plan.get("warnings", []),
         "banner": (
             "bad",
             f"{len(missing)} selected group{'s' if len(missing) != 1 else ''} not received",
@@ -1356,7 +1392,11 @@ def report_view(
             "verified_success": (
                 "warn" if plan["active_skipped"] else "ok",
                 "Included history verified",
-                "Complete repeated daily counts matched. "
+                (
+                    "Every selected group and its event count matched on the destination. "
+                    if verification.get("bucket_check")
+                    else "Complete repeated daily counts matched. "
+                )
                 + (
                     "Open groups were excluded as acknowledged."
                     if plan["active_skipped"]
@@ -1465,6 +1505,9 @@ def report_markdown(
         "",
     ]
     lines += [f"- {key}: {value}" for key, value in report["rows"]]
+    if report["warnings"]:
+        lines += ["", "## Plan warnings", ""]
+        lines += [f"- {warning}" for warning in report["warnings"]]
     if view is not None:
         lines += ["", "## Daily reconciliation (UTC)", ""]
         if view["rows"]:

@@ -684,7 +684,7 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_success" and "2026-03-03" in result["partial_days"]
+    assert result["outcome"] == "incomplete_verification" and "2026-03-03" in result["partial_days"]
     assert not result["partial_differences"]
     assert result["expected_count"] == 6
     assert result["actual_count"] == result["measured_arrival_count"] == 6
@@ -1602,7 +1602,7 @@ def test_source_growth_ignores_a_stale_cached_inventory(rigged, monkeypatch):
     assert result["bytes"] == 100 and result["window_seconds"] == 5
 
 
-def test_active_buckets_keep_no_dates_whatever_the_listing_reports(rigged):
+def test_active_buckets_keep_recorded_dates(rigged):
     env, source, destination, ssh = trusted(rigged)
     stamped = LISTING.replace(
         f"id={C}, status=active created=2026-11-08T00:00:00.000+0000 size=0 cmd=[NULL]",
@@ -1616,11 +1616,21 @@ def test_active_buckets_keep_no_dates_whatever_the_listing_reports(rigged):
     (bucket,) = [b for b in cluster.buckets if b.id == C]
     assert bucket.status == "active"
     assert (bucket.start, bucket.end, bucket.messages, bucket.bounds_proven) == (
-        None,
-        None,
-        0,
-        False,
+        1780000000000,
+        1781000000000,
+        7,
+        True,
     )
+
+
+def test_empty_active_bucket_sentinel_has_no_dates():
+    line = (
+        f"id={C}, status=active cmd=[startTime=9223372036854775807 "
+        "endTime=-9223372036854775808 messages=0]"
+    )
+    (bucket,) = parse_listing(line)
+    assert bucket.start is None and bucket.end is None and bucket.messages == 0
+    assert bucket.empty_proven
 
 
 def test_source_growth_refuses_bucket_rollover(rigged):
@@ -1939,3 +1949,91 @@ def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
     assert result["actual_count"] == 6
     assert "Unavailable" in str(vm.verification_view(result, engine.status(), 0, False, run))
     assert "unavailable" in markdown(engine.journal.load(run["id"]), []).lower()
+
+
+def test_external_window_overlap_warns_only_with_destination_inventory(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import Policy, parse_time
+    from logs_migrate.ports import History, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    source, destination = env.discover()
+    env.transfer = lambda: Transfer("", "idle", destination=destination.id)
+    env.history = lambda: (History("src", destination.id, window, (), (), True, "old-task"),)
+    with pytest.raises(MigrationError) as error:
+        engine.plan(window, Policy(poll_seconds=0))
+    assert error.value.code == Code.OVERLAP
+    assert "old-task" in error.value.message and "Selected groups" in error.value.message
+    env.discover = lambda: (source, replace(destination, inventory_available=True))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    assert any(
+        "old-task" in warning and "Selected groups" in warning
+        for warning in run["plan"]["warnings"]
+    )
+
+
+def test_live_bucket_verification_checks_destination_counts(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    source, destination = env.discover()
+    selected_ids = {b["id"] for b in run["plan"]["selected"]}
+    matching = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in selected_ids
+    )
+    env.discover = lambda: (
+        source,
+        replace(destination, buckets=matching, inventory_available=True),
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_success", str(result)
+    assert result["bucket_check"]["matched_groups"] == len(matching)
+    assert result["bucket_check"]["matched_events"] == result["bucket_check"]["total_events"]
+    env.discover = lambda: (
+        source,
+        replace(destination, buckets=matching[:-1], inventory_available=True),
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert len(result["bucket_check"]["unmatched"]) == 1
+
+
+def test_live_bucket_verification_does_not_claim_difference_for_unknown_count(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    source, destination = env.discover()
+    ids = {b["id"] for b in run["plan"]["selected"]}
+    matching = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids
+    )
+    matching = (replace(matching[0], messages=None), *matching[1:])
+    env.discover = lambda: (
+        source,
+        replace(destination, buckets=matching, inventory_available=True),
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification"
+    assert result["bucket_check"]["unknown"] and not result["bucket_check"]["unmatched"]
+
+
+def test_empty_active_sentinel_does_not_hide_dated_open_groups():
+    from logs_migrate.models import Bucket, last_sealed_day
+
+    dated = Bucket(A, "a", "", "active", 0, 5, 5 * DAY, 6 * DAY, None, True, False)
+    empty = Bucket(B, "a", "", "active", 0, 0, None, None, None, False, False, empty_proven=True)
+    assert last_sealed_day((dated, empty), zone="UTC") == "1970-01-05"

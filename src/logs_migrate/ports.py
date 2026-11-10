@@ -51,6 +51,7 @@ class History:
     # Finished with skipped buckets but no exhaustive received list: part of its window
     # may have landed, and nothing says which part.
     partial: bool = False
+    created_at_ms: int | None = None
 
 
 class Environment(Protocol):

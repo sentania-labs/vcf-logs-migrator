@@ -65,7 +65,7 @@ def _live_simulator(monkeypatch, driver, *, refuse=False):
 
     attempts = []
 
-    def open_live(self):
+    def open_live(self, *, probe_only=False):
         attempts.append(1)
         if len(attempts) == 1:
             identities = [
@@ -110,7 +110,7 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.connect()
     assert len(asked) == 1 and all("SHA256" in text for text in asked[0])
     assert store.enrolled == ["aria-logs.lab.example:9543", "aria-logs.lab.example:22"]
-    assert len(attempts) == 2 and state.connected and state.live
+    assert len(attempts) == 3 and state.connected and state.live
     assert driver.window.pending_credentials == {}
     page = driver.pages["connections"]
     driver.show("connections")
@@ -141,11 +141,10 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.start()
     driver.poll_until_finished()
     driver.verify()
-    assert state.verification["outcome"] == "verified_success"
+    assert state.verification["outcome"] == "incomplete_verification"
     assert state.verification["partial_days"] == ["2026-03-03"]
     verification = driver.pages["verification"]
-    assert "fully covered day" in verification.banner.text()
-    assert "1 partial day" in verification.banner.text()
+    assert "incomplete" in verification.banner.text().lower()
 
 
 def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
@@ -715,3 +714,16 @@ def test_connections_selftest_failure_wraps_and_accepts_keyboard_focus(driver):
     table.setCurrentCell(row, 1)
     QTest.keyClick(table, Qt.Key.Key_Down)
     assert table.hasFocus() and table.currentRow() > row
+
+
+def test_live_trust_is_requested_before_credentials(driver, monkeypatch):
+    attempts, asked, store = _live_simulator(monkeypatch, driver)
+    page = driver.pages["connections"]
+    page.source_host.setText("aria-logs.lab.example")
+    page.destination_host.setText("vcf-logs.lab.example:9543")
+    page.connect()
+    driver.until(lambda: bool(page.validation))
+    driver.idle()
+    assert len(asked) == 1 and store.enrolled and len(attempts) == 2
+    assert "password" in page.validation.lower()
+    assert not driver.state.connected

@@ -40,7 +40,7 @@ from .state import AppState
 from .widgets import button, label, section
 from .worker import EngineWorker
 
-PROGRESS_JOBS = {"connect", "selftest", "plan", "start", "verify", "discover"}
+PROGRESS_JOBS = {"probe", "connect", "selftest", "plan", "start", "verify", "discover"}
 
 NAV = [
     ("overview", "Overview"),
@@ -92,7 +92,13 @@ class MainWindow(QMainWindow):
         middle.setSpacing(0)
         middle.addWidget(self._sidebar())
         self.stack = QStackedWidget()
-        middle.addWidget(self.stack, 1)
+        content = QVBoxLayout()
+        self.page_progress = label("", "hint", wrap=True)
+        self.page_progress.setAccessibleName("Current operation progress")
+        self.page_progress.hide()
+        content.addWidget(self.page_progress)
+        content.addWidget(self.stack, 1)
+        middle.addLayout(content, 1)
         outer.addLayout(middle, 1)
 
         self.pages = {
@@ -263,7 +269,10 @@ class MainWindow(QMainWindow):
     def _show_progress(self, message: str) -> None:
         key = message.split(": sizing", 1)[0] if ": sizing" in message else "query"
         self.progress_lines[key] = message
-        self.progress_label.setText("\n".join(self.progress_lines.values()))
+        text = "\n".join(self.progress_lines.values())
+        self.progress_label.setText(text)
+        self.page_progress.setText(text)
+        self.page_progress.show()
 
     def submit(self, job: str, method: str, **kwargs) -> bool:
         accepted = self.worker.submit(job, method, **kwargs)
@@ -271,6 +280,7 @@ class MainWindow(QMainWindow):
             if job.split(":")[0] in PROGRESS_JOBS:
                 self.progress_lines.clear()
                 self.progress_label.clear()
+                self.page_progress.hide()
             self.job_generation[job] = self.generation
         return accepted
 
@@ -286,6 +296,10 @@ class MainWindow(QMainWindow):
             "destination_ssh_user": settings.destination_ssh_user,
             "ops_url": settings.ops_url,
         }
+
+    def probe_environments(self, credentials: dict[str, str]) -> None:
+        self.pending_credentials = dict(credentials)
+        self.submit("probe", "probe_endpoints", connection=self.connection_values())
 
     def connect_environments(self, credentials: dict[str, str]) -> None:
         settings = self.state.settings
@@ -349,6 +363,7 @@ class MainWindow(QMainWindow):
         if not self._settle(job):
             return
         if self.ask_trust(list(identities)):
+            self.pending_trust_job = job
             self.submit(
                 "trust",
                 "trust",
@@ -403,11 +418,25 @@ class MainWindow(QMainWindow):
         if job.split(":")[0] in PROGRESS_JOBS:
             self.progress_lines.clear()
             self.progress_label.clear()
+            self.page_progress.hide()
         return self.job_generation.pop(job, self.generation) == self.generation
 
     def _done(self, job: str, result) -> None:
         state = self.state
         if not self._settle(job):
+            return
+        if job == "trust" and getattr(self, "pending_trust_job", "connect") == "probe":
+            self.submit("probe", "probe_endpoints", connection=self.connection_values())
+            return
+        if job == "probe":
+            page = self.pages["connections"]
+            missing = vm.missing_fields(page.values(), bool(page.ops_url.text().strip()))
+            if missing:
+                page.validation = "Enter " + ", ".join(missing) + " before testing."
+                self.pending_credentials = {}
+                self.refresh_all()
+            else:
+                self.connect_environments(self.pending_credentials)
             return
         if job == "trust":
             # Identities enrolled; the connection that needed them runs again.
@@ -523,9 +552,9 @@ class MainWindow(QMainWindow):
             return
         self.last_error = f"{job}: {code}"
         self.details_button.show()
-        if job in {"connect", "trust"}:
+        if job in {"connect", "trust", "probe"}:
             self.pending_credentials = {}
-        if job == "connect":
+        if job in {"connect", "probe"}:
             state.connected = False
             state.discovered = None
             state.connect_error = code

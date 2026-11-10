@@ -203,7 +203,19 @@ class ConnectionsPage(Page):
 
     def connect(self) -> None:
         self.remember_addresses()
-        missing = vm.missing_fields(self.values(), bool(self.ops_url.text().strip()))
+        values = self.values()
+        missing = (
+            vm.missing_fields(values, bool(self.ops_url.text().strip()))
+            if self.app.state.settings.fixture_path
+            else [
+                label
+                for key, label in (
+                    ("source_host", "Cluster member"),
+                    ("destination_host", "Logs host and port"),
+                )
+                if not values[key].strip()
+            ]
+        )
         if missing:
             self.validation = "Enter " + ", ".join(missing) + " before testing."
             self.refresh()
@@ -211,7 +223,10 @@ class ConnectionsPage(Page):
         self.validation = ""
         self.source_badge.setText("Testing…")
         self.destination_badge.setText("Testing…")
-        self.app.connect_environments(self.credentials())
+        if self.app.state.settings.fixture_path:
+            self.app.connect_environments(self.credentials())
+        else:
+            self.app.probe_environments(self.credentials())
 
     def disconnect(self) -> None:
         for widget in (

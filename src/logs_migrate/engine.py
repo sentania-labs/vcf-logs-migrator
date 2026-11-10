@@ -64,7 +64,7 @@ def partial_days(source, plan: dict) -> list[str]:
     partial = set()
     unproven_active = False
     for bucket in source.buckets:
-        if bucket.key in selected:
+        if bucket.key in selected or bucket.empty_proven:
             continue
         if bucket.status == "active" and not (bucket.bounds_proven and bucket.start is not None):
             unproven_active = True
@@ -218,7 +218,6 @@ class Engine:
                 uncertain = not prior["closed"] and not prior.get("acknowledged")
                 raise MigrationError(Code.UNCERTAIN_START if uncertain else Code.OVERLAP)
         # Include transfers started outside this journal, wherever the appliance exposes them.
-        coverage = Window(**plan["coverage"])
         ours = {row["task_id"] for row in self.journal.transfers(destination) if row.get("task_id")}
         for prior in self.env.history():
             if prior.destination != destination or (prior.task_id and prior.task_id in ours):
@@ -228,7 +227,26 @@ class Engine:
                 # A finished transfer with no received list (one started from the product UI,
                 # say), or one that lists only what it skipped, covered whole buckets in its
                 # window; anything of ours overlapping that window may already be there.
-                require(not coverage.overlaps(prior.window), Code.OVERLAP)
+                crossing = [
+                    b
+                    for b in plan["selected"]
+                    if Window(b["start"], b["end"] + 1).overlaps(prior.window)
+                ]
+                if crossing:
+                    when = (
+                        _day(prior.created_at_ms) if prior.created_at_ms is not None else "unknown"
+                    )
+                    groups = ", ".join(f"{b['node']}/{b['id']}" for b in crossing)
+                    detail = (
+                        f"Earlier task {prior.task_id or 'unknown'} ran {when}; "
+                        f"its window was {_day(prior.window.start)} to "
+                        f"{_day(prior.window.end - 1)} UTC. Selected groups crossing "
+                        f"that window: {groups}."
+                    )
+                    if plan["destination"].get("inventory_available"):
+                        plan["warnings"].append(detail + " Destination identities were checked.")
+                    else:
+                        raise MigrationError(Code.OVERLAP, detail)
 
     def _source_ingest(self) -> dict:
         try:
@@ -266,6 +284,25 @@ class Engine:
                 for host in sorted(getattr(self.env, "listing_warnings", ()))
             ]
             plan["partial_days"] = partial_days(source, plan)
+            requested = day_window(window)
+            plan["open_bucket_days"] = sorted(
+                {
+                    _day(day)
+                    for b in source.buckets
+                    if b.status == "active"
+                    and b.bounds_proven
+                    and b.start is not None
+                    and b.end is not None
+                    for day in range(requested.start, requested.end, DAY)
+                    if b.start < day + DAY and b.end >= day
+                }
+            )
+            if plan["open_bucket_days"]:
+                plan["warnings"].append(
+                    "Requested days shared with open groups: "
+                    + ", ".join(plan["open_bucket_days"])
+                    + "."
+                )
             self._settle(destination.id)
             self._overlap(plan)
             run = {
@@ -541,8 +578,8 @@ class Engine:
             run = self.journal.load(run_id)
             require("baseline" in run and "source_by_bucket" in run, Code.STATE)
             try:
-                _, destination = self.env.discover()
                 planned = run["plan"]["destination"]
+                _, destination = self.env.discover()
                 require(
                     destination.id == planned["id"] and destination.identity == planned["identity"],
                     Code.TOPOLOGY,
@@ -550,10 +587,78 @@ class Engine:
                 task = self._settle(destination.id)
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
-                if self.attribution:
-                    result = self._reconcile(run, destination.id)
-                else:
-                    result = self._reconcile_days(run, destination.id)
+                # Re-read after the transfer is terminal; never compare a cached listing.
+                cache = getattr(self.env, "_inventory_cache", None)
+                if cache is not None:
+                    cache.clear()
+                    _, destination = self.env.discover()
+                    require(
+                        destination.id == planned["id"]
+                        and destination.identity == planned["identity"],
+                        Code.TOPOLOGY,
+                    )
+                bucket_check = None
+                if not self.attribution and destination.inventory_available:
+                    selected = run["plan"]["selected"]
+                    by_id = {b.id: b for b in destination.buckets}
+                    matches = [
+                        b
+                        for b in selected
+                        if b["id"] in by_id
+                        and b["messages"] is not None
+                        and by_id[b["id"]].messages == b["messages"]
+                    ]
+                    unknown = [
+                        b
+                        for b in selected
+                        if b["id"] in by_id
+                        and (b["messages"] is None or by_id[b["id"]].messages is None)
+                    ]
+                    bucket_check = {
+                        "matched_groups": len(matches),
+                        "total_groups": len(selected),
+                        "matched_events": sum(b["messages"] for b in matches),
+                        "total_events": selected_message_count(selected),
+                        "unmatched": [
+                            b["node"] + "/" + b["id"]
+                            for b in selected
+                            if b not in matches and b not in unknown
+                        ],
+                        "unknown": [b["node"] + "/" + b["id"] for b in unknown],
+                    }
+                try:
+                    result = (
+                        self._reconcile(run, destination.id)
+                        if self.attribution
+                        else self._reconcile_days(run, destination.id)
+                    )
+                except MigrationError as error:
+                    result = {
+                        "outcome": Verification.INCOMPLETE.value,
+                        "complete": False,
+                        "reason": error.code.value,
+                        **({"detail": error.message} if hasattr(error, "message") else {}),
+                    }
+                if bucket_check is not None:
+                    result["bucket_check"] = bucket_check
+                    if bucket_check["unmatched"]:
+                        result["outcome"] = Verification.DISCREPANCY.value
+                    elif bucket_check["unknown"]:
+                        result["outcome"] = Verification.INCOMPLETE.value
+                        result["complete"] = False
+                    elif (
+                        result["outcome"] == Verification.INCOMPLETE.value
+                        and result.get("reason") == "no_fully_covered_days"
+                        and not result.get("buckets", {}).get("not_received")
+                    ):
+                        result["outcome"] = Verification.SUCCESS.value
+                elif (
+                    not self.attribution
+                    and result["outcome"] == Verification.SUCCESS.value
+                    and (result.get("unmeasured_day_count") or result.get("partial_days"))
+                ):
+                    result["outcome"] = Verification.INCOMPLETE.value
+                    result["complete"] = False
             except MigrationError as error:
                 result = {
                     "outcome": Verification.INCOMPLETE.value,
