@@ -855,7 +855,7 @@ def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, mon
     def slow_open(self, *, probe_only=False):
         if probe_only and not attempts:
             self.on_progress("Contacting tls aria-logs.lab.example:9543")
-            time.sleep(1.3)
+            time.sleep(1.8)
         return original(self, probe_only=probe_only)
 
     monkeypatch.setattr(session.Session, "_open_live", slow_open)
@@ -864,9 +864,8 @@ def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, mon
     page.destination_host.setText("vcf-logs.lab.example:9543")
     page.connect()
     driver.until(lambda: driver.window.probe_activity.isVisible())
-    driver.wait(1100)
+    driver.until(lambda: "0:01 elapsed" in driver.window.probe_elapsed.text(), timeout_ms=1500)
     assert driver.window.probe_activity.minimum() == driver.window.probe_activity.maximum() == 0
-    assert "0:01 elapsed" in driver.window.probe_elapsed.text()
     assert "Checking this appliance's identity" in driver.window.page_progress.text()
     assert "tls" not in driver.window.page_progress.text()
     driver.until(lambda: bool(page.validation))

@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.poll_status)
         self.probe_clock = QElapsedTimer()
         self.probe_timer = QTimer(self)
-        self.probe_timer.setInterval(1000)
+        self.probe_timer.setInterval(250)
         self.probe_timer.timeout.connect(self._update_probe_elapsed)
         # Results from a previous connection are dropped instead of landing in a reset state.
         self.generation = 0
