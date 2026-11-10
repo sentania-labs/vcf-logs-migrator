@@ -147,8 +147,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             )
             if inventory.unrecognized:
                 detail += (
-                    " · WARNING: the bucket listing had no recognizable groups; first line: "
-                    + inventory.unrecognized
+                    " · WARNING: the bucket listing returned text but no recognizable groups; "
+                    "check this node by hand"
                 )
             if inventory.listing_keys:
                 detail += " · listing keys: " + ", ".join(inventory.listing_keys)

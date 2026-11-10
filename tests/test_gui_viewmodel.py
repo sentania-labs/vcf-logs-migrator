@@ -438,7 +438,7 @@ def test_plan_error_text_lists_only_the_selected_conflicting_groups(rig):
         "Choose dates that exclude these groups."
     )
     text = vm.plan_error_text(code, discovered, None)
-    assert text.startswith("1 selected groups already exist on the destination")
+    assert text.startswith("1 selected group already exists on the destination")
     assert text.count(" (") == 1
     duplicate = (
         f"bucket_identity_conflict: Source groups have duplicate identities: "

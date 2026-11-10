@@ -1876,16 +1876,13 @@ def test_unmeasured_days_headline_is_one_figure_in_the_window_and_the_report(tmp
     assert "events expected" not in summary
 
 
-def test_unrecognized_listing_is_a_masked_warning_not_a_failure(rigged):
+def test_unrecognized_listing_names_the_host_and_never_the_remote_text(rigged):
     env, _, _, ssh, _ = rigged
     banner = "Welcome token=hunter2 AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 to the appliance"
     ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = banner + "\nsecond line\n"
     inventory = env.node_inventory("src-1.lab")
-    assert inventory.buckets == []
-    assert inventory.unrecognized.startswith("Welcome token=<redacted>")
-    assert "hunter2" not in inventory.unrecognized and "AbCdEf" not in inventory.unrecognized
-    assert "second line" not in inventory.unrecognized
-    assert env.listing_warnings == {"src-1.lab": inventory.unrecognized}
+    assert inventory.buckets == [] and inventory.unrecognized is True
+    assert env.listing_warnings == {"src-1.lab"}
 
 
 def test_selftest_names_the_node_with_an_unrecognized_listing(rigged):
@@ -1894,7 +1891,8 @@ def test_selftest_names_the_node_with_an_unrecognized_listing(rigged):
     _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
     (step,) = [s for s in result.steps if s.name.startswith("Node src-1.lab")]
     assert step.status == "pass"
-    assert "no recognizable groups; first line: Welcome to the appliance 10.0.0.9" in step.detail
+    assert "no recognizable groups" in step.detail and "check this node by hand" in step.detail
+    assert "Welcome" not in step.detail and "10.0.0.9" not in step.detail
 
 
 def test_shared_ssh_keys_include_previously_enrolled_hosts():

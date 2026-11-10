@@ -6,6 +6,8 @@ pytest.importorskip("PySide6")
 
 from gui_driver import FIXTURES, Driver  # noqa: E402
 
+from logs_migrate.gui import viewmodel as vm  # noqa: E402
+
 
 @pytest.fixture
 def driver():
@@ -396,6 +398,55 @@ def test_blocked_preview_keeps_the_date_editors_reachable(driver):
     assert page.stack.currentIndex() == 0
     assert page.start_date.isEnabled() and page.refresh_button.isEnabled()
     assert "blocked" in page.error.text().lower() and page.error.isVisible()
+
+
+def test_blocked_page_shows_the_refusal_it_received(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.plan()
+    page = driver.pages["plan"]
+    assert page.stack.currentIndex() == 1
+    refused = dict(page.overlap_rows.rows())["Refused"]
+    assert refused == vm.plan_error_text(
+        driver.state.plan_error,
+        driver.state.discovered,
+        vm.window_from_days(*page.current_dates()),
+    )
+    assert "already exist" in refused or "already exists" in refused
+
+
+def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(driver):
+    driver.connect()
+    driver.plan()
+    first = driver.state.discovered["source"]["buckets"][0]
+    driver.state.plan_error = (
+        "bucket_identity_conflict: Source groups have duplicate identities: "
+        f"{first['node']}/{first['id']}. Inspect the source inventory before retrying."
+    )
+    page = driver.pages["plan"]
+    page.refresh()
+    assert page.stack.currentIndex() == 0 and not page.change_button.isVisible()
+    text = page.error.text()
+    assert "duplicate identities" in text and f"{first['node']}/{first['id']}" in text
+    assert "Inspect the source inventory" in text
+    assert "overlaps a previous import" not in page.title.text()
+
+
+def test_long_check_rows_wrap_and_take_keyboard_focus(driver):
+    from PySide6.QtCore import Qt
+
+    from logs_migrate.gui.widgets import KeyValues
+
+    reason = "8 sealed buckets have no start/end (" + ", ".join(["a" * 36] * 8) + ")"
+    values = KeyValues()
+    values.set_rows([("Node src-1", "Failed · " + reason)])
+    value = values.grid.itemAtPosition(0, 1).widget()
+    assert value.wordWrap() and value.text() == "Failed · " + reason
+    assert value.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    assert value.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByKeyboard
 
 
 def test_validation_names_what_is_wrong(driver):

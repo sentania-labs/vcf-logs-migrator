@@ -347,6 +347,10 @@ def conflict_group_lines(code: str, discovered: dict | None) -> list[str]:
     ]
 
 
+def is_duplicate_identity(code: str) -> bool:
+    return code.startswith(Code.COLLISION.value + ": Source groups have duplicate identities")
+
+
 def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
     """Say what is actually wrong with a refused preview."""
     if conflicts := conflicting_groups(code, discovered):
@@ -354,8 +358,10 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
             f"{b['node']} ({format_day_range(b.get('start'), b.get('end'), inclusive_end=True)})"
             for b in conflicts
         ]
+        count = len(groups)
         return (
-            f"{len(groups)} selected groups already exist on the destination: "
+            f"{count} selected group{' already exists' if count == 1 else 's already exist'}"
+            " on the destination: "
             + "; ".join(groups)
             + ". Choose dates that exclude these groups."
         )

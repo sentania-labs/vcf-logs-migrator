@@ -565,3 +565,13 @@ def test_signoff_report_formats_utc_dates_and_ranges(rig):
     assert text.count("Snapshot acknowledgment") == 1
     assert text.count("Last day covered only by sealed buckets") == 1
     assert "| Day | Source |" in text
+
+
+def test_plan_warning_for_an_unrecognized_listing_names_the_host_only(rig):
+    engine, env, _ = rig
+    env.listing_warnings = {"src-1.lab"}
+    start = env.data["source"]["buckets"][0]["start"]
+    run = engine.plan(Window(start, start + DAY), Policy(poll_seconds=0))
+    (warning,) = [w for w in run["plan"]["warnings"] if "src-1.lab" in w]
+    assert "no recognizable groups" in warning and "by hand" in warning
+    assert "first line" not in warning

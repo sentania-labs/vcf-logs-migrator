@@ -134,6 +134,11 @@ class KeyValues(QWidget):
             key_label = label(key, "muted")
             value_label = label(value, "value", wrap=True)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            value_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            value_label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             self.grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(value_label, row, 1)
 

@@ -409,7 +409,11 @@ class PlanPage(Page):
         self.ack.setChecked(state.acknowledged)
         self.ack.blockSignals(False)
         self.preview_badge.setVisible(state.preview)
-        blocked = bool(state.plan_error and state.plan_error.partition(": ")[0] in BLOCKED)
+        blocked = bool(
+            state.plan_error
+            and state.plan_error.partition(": ")[0] in BLOCKED
+            and not vm.is_duplicate_identity(state.plan_error)
+        )
         self.change_button.setVisible(blocked and not self.blocked_dismissed)
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
@@ -419,6 +423,14 @@ class PlanPage(Page):
             )
             self.overlap_rows.set_rows(
                 [
+                    (
+                        "Refused",
+                        vm.plan_error_text(
+                            state.plan_error,
+                            discovered,
+                            vm.window_from_days(*self.current_dates()),
+                        ),
+                    ),
                     (
                         "Request",
                         f"{self.start_date.date().toString('yyyy-MM-dd')} – "
