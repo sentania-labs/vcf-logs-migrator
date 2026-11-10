@@ -449,6 +449,26 @@ def test_plan_error_text_lists_only_the_selected_conflicting_groups(rig):
     )
 
 
+def test_conflict_group_lines_list_full_node_id_and_dates(rig):
+    engine, _, _ = rig
+    discovered = engine.discover()
+    first, second = discovered["source"]["buckets"][:2]
+    code = (
+        "bucket_identity_conflict: Selected groups already exist on the destination: "
+        f"{first['node']}/{first['id']} (2026-03-01 to 2026-03-01 UTC). "
+        "Choose dates that exclude these groups."
+    )
+    lines = vm.conflict_group_lines(code, discovered)
+    assert len(lines) == 1 and lines[0].startswith(f"{first['node']}/{first['id']}  ")
+    assert second["id"] not in lines[0]
+    assert (
+        vm.conflict_group_lines(
+            "bucket_identity_conflict: Source groups have duplicate", discovered
+        )
+        == []
+    )
+
+
 def test_skipped_group_with_count_loss_is_labelled_a_discrepancy(rig):
     engine, env, _ = rig
     env.data["skip_buckets"] = [env.data["source_events"][0]["bucket"]]

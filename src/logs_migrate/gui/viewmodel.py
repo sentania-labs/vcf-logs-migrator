@@ -330,23 +330,35 @@ def window_error(start: date, end_inclusive: date) -> str | None:
     return None
 
 
+def conflicting_groups(code: str, discovered: dict | None) -> list[dict]:
+    """Source groups a destination-conflict refusal names, matched by their full node/id."""
+    if not (
+        code.startswith(Code.COLLISION.value + ": Selected groups already exist") and discovered
+    ):
+        return []
+    return [b for b in discovered["source"]["buckets"] if f"{b['node']}/{b['id']} (" in code]
+
+
+def conflict_group_lines(code: str, discovered: dict | None) -> list[str]:
+    return [
+        f"{b['node']}/{b['id']}  "
+        f"{format_day_range(b.get('start'), b.get('end'), inclusive_end=True)}"
+        for b in conflicting_groups(code, discovered)
+    ]
+
+
 def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
     """Say what is actually wrong with a refused preview."""
-    if code.startswith(Code.COLLISION.value + ": Selected groups already exist") and discovered:
-        conflicts = [
-            b for b in discovered["source"]["buckets"] if f"{b['node']}/{b['id']} (" in code
+    if conflicts := conflicting_groups(code, discovered):
+        groups = [
+            f"{b['node']} ({format_day_range(b.get('start'), b.get('end'), inclusive_end=True)})"
+            for b in conflicts
         ]
-        if conflicts:
-            groups = [
-                f"{b['node']} ("
-                f"{format_day_range(b.get('start'), b.get('end'), inclusive_end=True)})"
-                for b in conflicts
-            ]
-            return (
-                f"{len(groups)} selected groups already exist on the destination: "
-                + "; ".join(groups)
-                + ". Choose dates that exclude these groups."
-            )
+        return (
+            f"{len(groups)} selected groups already exist on the destination: "
+            + "; ".join(groups)
+            + ". Choose dates that exclude these groups."
+        )
     if code.partition(": ")[0] == Code.INCOMPLETE.value and discovered and window:
         sealed = [
             b
