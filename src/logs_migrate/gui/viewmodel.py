@@ -372,6 +372,16 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         node, _, ident = key.rpartition("/")
         groups.append((f"Group {index} · {node}", "Open; may advance", "Unknown", "Open · exclude"))
         tips.append(f"Open bucket {ident} on {node}")
+    for b in plan.get("undated_excluded", []):
+        groups.append(
+            (
+                f"Group {len(groups) + 1} · {b['node']}",
+                "No dates; may hold data",
+                f"{format_bytes(b['size'])} / unknown",
+                "Unknown · exclude",
+            )
+        )
+        tips.append(f"Sealed bucket {b['id']} on {b['node']} reports no time range")
     if plan["last_fully_sealed_day"]:
         sealed_text = f"Last fully sealed day: {format_day_label(plan['last_fully_sealed_day'])}."
     else:

@@ -456,3 +456,35 @@ def test_a_9_1_1_plan_says_before_the_run_that_counts_cannot_be_verified(rig):
     assert len(warnings) == 1 and "9.1.1" in warnings[0] and "query route" in warnings[0]
     other = planned(engine)
     assert not [w for w in other["plan"]["warnings"] if "Count verification" in w]
+
+
+def test_undated_sealed_bucket_is_listed_not_fatal_and_never_copied(rig, fixture):
+    undated = "00000000-0000-0000-0000-0000000000a5"
+    fixture["source"]["buckets"].append(
+        {
+            "id": undated,
+            "node": "src-2",
+            "partition": "",
+            "status": "archived",
+            "size": 90158030,
+            "messages": 0,
+            "start": None,
+            "end": None,
+            "manifest": None,
+            "bounds_proven": False,
+            "complete": True,
+        }
+    )
+    base, _, journal = rig
+    engine = Engine(SimulatedEnvironment(fixture), journal, base.clock)
+    run = planned(engine)
+    plan = run["plan"]
+    assert undated not in {b["id"] for b in plan["selected"]}
+    assert plan["undated_excluded"] == [
+        {"id": undated, "node": "src-2", "partition": "", "size": 90158030, "created": None}
+    ]
+    assert any("src-2/" + undated in w for w in plan["warnings"])
+    # A window the undated bucket cannot be shown to touch still plans, and with no dated
+    # bucket in range the refusal is the ordinary "nothing selected", not a bucket-level error.
+    with pytest.raises(MigrationError, match=Code.INCOMPLETE):
+        engine.plan(Window(DAY, 2 * DAY), Policy(poll_seconds=0))

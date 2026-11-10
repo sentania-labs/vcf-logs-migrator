@@ -34,36 +34,62 @@ A = "11111111-1111-1111-1111-111111111111"
 B = "22222222-2222-2222-2222-222222222222"
 C = "33333333-3333-3333-3333-333333333333"
 
+D = "44444444-4444-4444-4444-444444444444"
+# Lines quoted from a real 8.18.7 `bucket-index show` (ids masked): comma separated head,
+# space separated fields inside cmd=[...], and cmd=[NULL] for buckets sealed by a restart.
+REAL_DATED = (
+    f"{{partition=, id={A}, status=archived created=2026-10-21T08:08:59.600+0000 "
+    "size=479923834 cmd=[startTime=1780543623050 endTime=1792570139600 messages=1893963 "
+    "generation=271]}"
+)
+REAL_UNDATED = (
+    f"{{partition=, id={D}, status=archived created=2026-11-07T00:01:32.162+0000 "
+    "size=90158030 cmd=[NULL]}"
+)
 LISTING = "\n".join(
     [
-        "Buckets:",
-        f"id={A}, status=archived, partition=, created=2026-07-12T19:44:57, size=104857600, "
-        "messages=874099, startTime=2026-06-01T00:00:00, endTime=2026-06-14T23:59:59",
-        f"id={B}, status=archived, partition=d82bb6e4-bcaf-305b-9b55-30924b7f9cb6, "
-        "created=1783600000000, size=20971520, messages=65207, startTime=1780000000000, "
-        "endTime=1781000000000",
-        f"id={C}, status=active, partition=, created=2026-11-01T10:00:00, size=0, messages=0",
+        REAL_DATED,
+        f"{{partition=d82bb6e4-bcaf-305b-9b55-30924b7f9cb6, id={B}, status=archived "
+        "created=2026-10-22T08:08:59.600+0000 size=20971520 cmd=[startTime=1780000000000 "
+        "endTime=1781000000000 messages=65207 generation=12]}",
+        f"{{partition=, id={C}, status=active created=2026-11-08T00:00:00.000+0000 size=0 "
+        "cmd=[NULL]}",
+        REAL_UNDATED,
         "",
     ]
 )
 
 
-def test_listing_parser_reads_dates_in_both_shapes_and_keeps_key_names_only():
+def test_listing_parser_reads_real_8187_lines_and_keeps_key_names_only():
     buckets = parse_listing(LISTING)
-    assert [b.id for b in buckets] == [A, B, C]
-    first, second, third = buckets
-    assert first.status == "archived" and first.messages == 874099 and first.size == 104857600
+    assert [b.id for b in buckets] == [A, B, C, D]
+    first, second, third, fourth = buckets
+    assert first.status == "archived" and first.partition == ""
+    assert (first.size, first.messages) == (479923834, 1893963)
+    assert (first.start, first.end) == (1780543623050, 1792570139600)
+    assert first.created == 1792570139600
+    assert second.partition == "d82bb6e4-bcaf-305b-9b55-30924b7f9cb6"
+    assert (second.start, second.end) == (1780000000000, 1781000000000)
+    assert third.status == "active" and third.start is None and third.end is None
+    assert fourth.status == "archived" and fourth.size == 90158030 and fourth.created
+    assert fourth.start is None and fourth.end is None and fourth.messages is None
+    assert "starttime" in first.keys and "generation" in first.keys
+    assert all("1893963" not in k for k in first.keys)
+
+
+def test_listing_parser_still_reads_comma_separated_dates_in_both_shapes():
     from datetime import UTC, datetime
 
     def ms(text):
         return int(datetime.fromisoformat(text).replace(tzinfo=UTC).timestamp() * 1000)
 
-    assert first.start == ms("2026-06-01T00:00:00") and first.end == ms("2026-06-14T23:59:59")
-    assert first.created == ms("2026-07-12T19:44:57") and first.partition == ""
-    assert second.start == 1780000000000 and second.end == 1781000000000
-    assert second.partition == "d82bb6e4-bcaf-305b-9b55-30924b7f9cb6"
-    assert third.status == "active" and third.start is None and third.end is None
-    assert "starttime" in first.keys and all("874099" not in k for k in first.keys)
+    line = (
+        f"id={A}, status=archived, partition=, created=2026-07-12T19:44:57, size=104857600, "
+        "messages=874099, startTime=2026-06-01T00:00:00, endTime=2026-06-14T23:59:59"
+    )
+    (bucket,) = parse_listing(line)
+    assert bucket.start == ms("2026-06-01T00:00:00") and bucket.end == ms("2026-06-14T23:59:59")
+    assert bucket.created == ms("2026-07-12T19:44:57") and bucket.messages == 874099
 
 
 @pytest.mark.parametrize(
@@ -397,7 +423,7 @@ def test_discover_builds_clusters_from_rest_and_ssh_reads(rigged):
     assert src.version == "8.18.7" and [n.id for n in src.nodes] == ["src-1.lab", "src-2.lab"]
     assert src.nodes[0].repository_available == 900 and src.identity == "a" * 64
     by_id = {b.id: b for b in src.buckets}
-    assert by_id[A].size == 5000 and by_id[A].messages == 874099 and by_id[A].bounds_proven
+    assert by_id[A].size == 5000 and by_id[A].messages == 1893963 and by_id[A].bounds_proven
     assert by_id[B].size == 20971520 and by_id[C].status == "active" and not by_id[C].complete
     assert dst.version == "9.0.2.0200" and [n.id for n in dst.nodes] == ["dst.lab"]
     assert dst.nodes[0].repository_available is None and dst.buckets == ()

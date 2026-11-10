@@ -3,7 +3,7 @@
 from copy import deepcopy
 from typing import Protocol
 
-from .errors import Code, MigrationError, require, safe_boundary
+from .errors import Accepted, Code, MigrationError, Rejection, Unrecognized, require, safe_boundary
 from .models import canonical
 
 # Apply ingest configuration before forwarders.
@@ -80,10 +80,17 @@ class ConfigMigration:
         self.env = environment
 
     def _inventory(self):
-        source, destination, rows = {}, {}, []
+        source, destination, rows, unavailable = {}, {}, [], []
         for kind in RULE_TYPES:
-            source[kind] = indexed(self.env.config_rules("source", kind))
-            destination[kind] = indexed(self.env.config_rules("destination", kind))
+            try:
+                source[kind] = indexed(self.env.config_rules("source", kind))
+                destination[kind] = indexed(self.env.config_rules("destination", kind))
+            except Unrecognized as error:
+                # One unreadable rule type must not hide the others. It is reported, and
+                # nothing of that type can be selected or written.
+                source[kind], destination[kind] = {}, {}
+                unavailable.append({"type": kind, "reason": error.code.value})
+                continue
             for name, rule in sorted(source[kind].items()):
                 other = destination[kind].get(name)
                 wanted = comparable(kind, rule)
@@ -116,14 +123,15 @@ class ConfigMigration:
                         "warnings": warnings,
                     }
                 )
-        return source, destination, rows
+        return source, destination, rows, unavailable
 
     @safe_boundary
     def compare(self):
         with self.env.exclusive():
-            source, destination, rows = self._inventory()
+            source, destination, rows, unavailable = self._inventory()
             return {
                 "rules": rows,
+                "unavailable": unavailable,
                 "destination_only": [
                     {"type": kind, "name": name}
                     for kind in RULE_TYPES
@@ -137,7 +145,7 @@ class ConfigMigration:
         require(all(isinstance(s, str) for s in selection), Code.INVALID_INPUT)
         require(len(set(selection)) == len(selection), Code.INVALID_INPUT)
         with self.env.exclusive():
-            source, destination, rows = self._inventory()
+            source, destination, rows, unavailable = self._inventory()
             require(set(selection) <= {r["selector"] for r in rows}, Code.INVALID_INPUT)
             results = []
             for row in rows:
@@ -156,10 +164,20 @@ class ConfigMigration:
                 except MigrationError as error:
                     result.update(status="failed", reason=error.code.value)
                     continue
+                written = True
                 try:
                     self.env.config_write(kind, rule, existing)
+                except Accepted:
+                    # A 2xx with an unreadable (e.g. plain text) body: the appliance took the
+                    # write. The read-back below confirms it.
+                    pass
+                except Rejection as error:
+                    # A 4xx/auth refusal means the write did not happen.
+                    written = False
+                    result.update(status="failed", reason=error.code.value)
                 except MigrationError as error:
-                    # A transport/auth error can follow an accepted write. No automatic retry.
+                    written = False
+                    # A transport error can follow an accepted write. No automatic retry.
                     uncertain = error.code not in {
                         Code.INVALID_INPUT,
                         Code.UNSUPPORTED,
@@ -169,8 +187,9 @@ class ConfigMigration:
                         status="uncertain" if uncertain else "failed", reason=error.code.value
                     )
                 except Exception:
+                    written = False
                     result.update(status="uncertain", reason=Code.UNCERTAIN.value)
-                else:
+                if written:
                     try:
                         actual = indexed(self.env.config_rules("destination", kind)).get(name)
                         require(
@@ -191,7 +210,9 @@ class ConfigMigration:
             restart = any(r["restart_required"] for r in results)
             return {
                 "rules": results,
-                "complete": all(r["status"] not in {"failed", "uncertain"} for r in results),
+                "unavailable": unavailable,
+                "complete": not unavailable
+                and all(r["status"] not in {"failed", "uncertain"} for r in results),
                 "restart_required": restart,
                 "maintenance": RESTART_NOTICE if restart else None,
             }

@@ -31,6 +31,12 @@ UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 PAIR = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)\s*[=:]\s*(.*?)(?=,\s*[A-Za-z_][A-Za-z0-9_]*\s*[=:]|\s*[\]})]*\s*$)"
 )
+# Real 8.18.7 lines: `{partition=, id=<uuid>, status=archived created=... size=...
+# cmd=[startTime=... endTime=... messages=... generation=...]}`. Only the head is comma
+# separated; the rest is space separated, and a bucket sealed by a restart carries
+# `cmd=[NULL]` with no time metadata.
+CMD_BLOCK = re.compile(r"\bcmd\s*=\s*\[([^\]]*)\]", re.IGNORECASE)
+SPACE_BEFORE_KEY = re.compile(r"(?<=[^,\s])\s+(?=[A-Za-z_][A-Za-z0-9_]*=)")
 HOST_ATTRIBUTE = re.compile(r'host\s*=\s*"([^"]+)"')
 DISTRIBUTED = re.compile(r"<distributed\b.*?</distributed>", re.DOTALL | re.IGNORECASE)
 RECENT_SECONDS = 86_400
@@ -164,12 +170,22 @@ def parse_int(value: str) -> int | None:
     return None
 
 
+def normalise_listing_line(line: str) -> str:
+    """Make a real space-separated `bucket-index` line look like the comma-separated shape."""
+
+    def unwrap(match: re.Match) -> str:
+        inner = match.group(1).strip()
+        return "" if inner.upper() in {"", "NULL"} else inner
+
+    return SPACE_BEFORE_KEY.sub(", ", CMD_BLOCK.sub(unwrap, line)).rstrip(", ")
+
+
 def parse_listing(text: str) -> list[ListedBucket]:
     """`bucket-index show` lines to buckets. Key names vary by build; values are matched by
     meaning and unknown keys are kept by name (never value) for the self-test report."""
     buckets: list[ListedBucket] = []
     for line in text.splitlines():
-        pairs = {k.lower(): v.strip() for k, v in PAIR.findall(line)}
+        pairs = {k.lower(): v.strip() for k, v in PAIR.findall(normalise_listing_line(line))}
         if not pairs:
             continue
         found = {}

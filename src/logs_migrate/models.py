@@ -107,12 +107,18 @@ class Bucket:
     def key(self) -> str:
         return f"{self.node}/{self.id}"
 
-    def selected(self, window: Window) -> bool:
-        if self.status == "active":
-            return False
-        require(
-            self.bounds_proven and self.start is not None and self.end is not None, Code.INCOMPLETE
+    @property
+    def undated(self) -> bool:
+        """A sealed bucket whose time range the appliance did not report."""
+        return self.status != "active" and not (
+            self.bounds_proven and self.start is not None and self.end is not None
         )
+
+    def selected(self, window: Window) -> bool:
+        # An undated sealed bucket cannot be shown to touch the window, so it is never
+        # selected; the plan lists it for the operator instead of failing.
+        if self.status == "active" or self.undated:
+            return False
         return self.start < window.end and self.end >= window.start
 
 

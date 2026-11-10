@@ -62,6 +62,7 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
     compatible(source, destination)
     require(destination.history_complete, Code.INCOMPLETE)
     selected = tuple(b for b in source.buckets if b.selected(window))
+    undated = tuple(b for b in source.buckets if b.undated)
     require(bool(selected), Code.INCOMPLETE)
     require(len({b.id for b in selected}) == len(selected), Code.COLLISION)
     require(
@@ -83,6 +84,17 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
         "coverage": asdict(coverage),
         "selected": [asdict(b) for b in selected],
         "active_skipped": [b.key for b in source.buckets if b.status == "active"],
+        "undated_excluded": [
+            {
+                "id": b.id,
+                "node": b.node,
+                "partition": b.partition,
+                "size": b.size,
+                "created": b.created,
+            }
+            for b in source.buckets
+            if b.undated
+        ],
         "last_fully_sealed_day": last_sealed_day(source.buckets),
         "partition_diff": partition_diff(source, destination),
         "capacity": space,
@@ -93,6 +105,15 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             "The source root password is sent to the destination for the transfer.",
             "Source retention can remove planned buckets before the run.",
         ]
+        + (
+            [
+                f"{len(undated)} sealed bucket(s) have no time range and were excluded; "
+                "the plan cannot show whether they hold data in this window: "
+                + ", ".join(f"{b.node}/{b.id}" for b in undated)
+            ]
+            if undated
+            else []
+        )
         + (
             []
             if space["fits"]

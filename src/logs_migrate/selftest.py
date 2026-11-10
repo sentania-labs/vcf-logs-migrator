@@ -135,8 +135,10 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             )
             if inventory.listing_keys:
                 detail += " · listing keys: " + ", ".join(inventory.listing_keys)
-            if sealed and len(bounded) != len(sealed):
-                raise MigrationError(Code.INCOMPLETE)
+            if len(bounded) != len(sealed):
+                # Restart-sealed buckets carry no time range. They are listed in the plan as
+                # excluded, so this is a finding to read, not a failure.
+                detail += f" · {len(sealed) - len(bounded)} sealed without dates (excluded)"
             return inventory, detail
 
         step(f"Node {host} (SSH listing, du, df, service)", node)
@@ -144,15 +146,18 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     def source_cluster():
         cluster = env.source_cluster()
         sealed = [b for b in cluster.buckets if b.status != "active"]
-        if sealed:
-            first = min(b.start for b in sealed)
-            last = max(b.end for b in sealed)
+        dated = [b for b in sealed if not b.undated]
+        if dated:
+            first = min(b.start for b in dated)
+            last = max(b.end for b in dated)
             span = f"{_fmt_day(first)} to {_fmt_day(last)}"
         else:
-            span = "no sealed buckets"
+            span = "no dated sealed buckets"
+        undated = len(sealed) - len(dated)
         return cluster, (
             f"{cluster.version} · {len(cluster.nodes)} node(s) · "
             f"{len(sealed)} sealed buckets · {span}"
+            + (f" · {undated} without dates (excluded from plans)" if undated else "")
         )
 
     source = step("Source inventory model", source_cluster, skip=None if hosts else "no members")
@@ -278,7 +283,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     step("Source ingest (cutover check)", recent)
 
     def plan():
-        sealed = [b for b in source.buckets if b.status != "active" and b.start is not None]
+        sealed = [b for b in source.buckets if not b.undated]
         if window is not None:
             requested = window
         elif sealed:
@@ -292,6 +297,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             f"covers {_fmt_day(preview['coverage']['start'])} to "
             f"{_fmt_day(preview['coverage']['end'] - 1)} · "
             f"{len(preview['active_skipped'])} active skipped · "
+            f"{len(preview['undated_excluded'])} undated excluded · "
             f"last sealed day {preview['last_fully_sealed_day'] or 'unknown'}"
         )
         if preview["capacity"]["unknown"]:
