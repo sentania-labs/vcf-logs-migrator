@@ -893,6 +893,41 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
     return [row for _, row in sorted(keyed, key=lambda item: item[0])]
 
 
+def report_headline_rows(verification: dict) -> list[tuple[str, str]]:
+    if not verification.get("complete"):
+        return [("Sent from selected groups", "Pending")]
+    sent = format_count(verification.get("expected_count"))
+    if verification.get("unmeasured_day_count") and verification.get("measured_window"):
+        return [
+            ("Sent from selected groups", sent),
+            ("Arrivals", unmeasured_arrival_sentence(verification)),
+        ]
+    return [
+        ("Expected from selected groups", sent),
+        (
+            "Arrived at destination since this run started",
+            format_count(verification.get("actual_count")),
+        ),
+    ]
+
+
+def unmeasured_arrival_sentence(result: dict) -> str:
+    window = result["measured_window"]
+    start = datetime.fromtimestamp(window["start"] / 1000, UTC).date()
+    end = datetime.fromtimestamp((window["end"] - 1) / 1000, UTC).date()
+    arrived = result.get("measured_arrival_count")
+    counted = (
+        f"{format_count(arrived)} events arrived"
+        if arrived is not None
+        else result.get("received_unavailable_reason") or "Arrivals could not be attributed"
+    )
+    return (
+        f"Arrivals were counted for the requested dates only ({start} to {end} UTC: "
+        f"{counted}); {result['unmeasured_day_count']} other days these groups touch "
+        "were not counted."
+    )
+
+
 def verification_view(
     result: dict | None,
     status: dict | None,
@@ -1023,22 +1058,11 @@ def verification_view(
         "Not imported",
     )
     if unmeasured and measured_window:
-        start = datetime.fromtimestamp(measured_window["start"] / 1000, UTC).date()
-        end = datetime.fromtimestamp((measured_window["end"] - 1) / 1000, UTC).date()
-        arrived = result.get("measured_arrival_count")
-        counted = (
-            f"{format_count(arrived)} events arrived"
-            if arrived is not None
-            else result.get("received_unavailable_reason") or "Arrivals could not be attributed"
-        )
         tiles = [
             (
                 "Sent from selected groups",
                 format_count(result.get("expected_count")) if has_counts else "Pending",
-                f"Arrivals were counted for the requested dates only ({start} to {end} UTC: "
-                f"{counted}); {unmeasured} other days these groups touch were not counted."
-                if has_counts
-                else "Not yet comparable",
+                unmeasured_arrival_sentence(result) if has_counts else "Not yet comparable",
             ),
             excluded_tile,
         ]
@@ -1342,13 +1366,7 @@ def report_view(
                 "Selected groups",
                 f"{len(plan['selected'])} sealed · {len(plan['active_skipped'])} open excluded",
             ),
-            (
-                "Expected / actual in dates",
-                f"{format_count(verification.get('expected_count'))} / "
-                f"{format_count(verification.get('actual_count'))}"
-                if verification.get("complete")
-                else "Pending",
-            ),
+            *report_headline_rows(verification),
             (
                 "Existing outside dates",
                 format_count(verification.get("preexisting_count")) + "; counted separately"

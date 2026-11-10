@@ -292,6 +292,30 @@ def test_report_view_records_the_acknowledgment(rig):
     assert vm.run_label(stored, 1).startswith("Run 1 ·")
 
 
+def test_report_view_headline_follows_the_unmeasured_days_rule(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    stored, events = journal.load(run["id"]), journal.events(run["id"])
+    stored["verification"] = {
+        "outcome": "verified_success",
+        "complete": True,
+        "expected_count": 263548,
+        "actual_count": None,
+        "measured_arrival_count": 12,
+        "unmeasured_day_count": 71,
+        "measured_window": {"start": 1709251200000, "end": 1709424000000},
+    }
+    rows = dict(vm.report_view(stored, events, engine.status(), "UTC")["rows"])
+    assert rows["Sent from selected groups"] == "263,548"
+    assert (
+        "12 events arrived" in rows["Arrivals"]
+        and "2024-03-01 to 2024-03-02 UTC" in rows["Arrivals"]
+    )
+    assert "71 other days" in rows["Arrivals"]
+    assert not any("Unavailable" in value for value in rows.values() if "/" in value)
+
+
 def test_settings_round_trip_and_bounds(tmp_path):
     path = tmp_path / "settings.ini"
     settings = Settings(

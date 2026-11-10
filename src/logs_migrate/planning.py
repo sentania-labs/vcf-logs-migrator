@@ -1,5 +1,6 @@
 """Pure planning and capacity checks. No date restriction or 90-day cap."""
 
+from collections import Counter
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 
@@ -74,7 +75,7 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             "No dated sealed groups overlap the requested dates. "
             "Check the date range and source inventory.",
         )
-    duplicate_ids = {b.id for b in selected if sum(other.id == b.id for other in selected) > 1}
+    duplicate_ids = {i for i, n in Counter(b.id for b in selected).items() if n > 1}
     if duplicate_ids:
         names = ", ".join(b.key for b in selected if b.id in duplicate_ids)
         raise MigrationError(
