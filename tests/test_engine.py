@@ -33,7 +33,7 @@ def test_api_flow_preserves_source_and_verifies_daily_counts(rig, fixture_name):
         1,
         1,
     )
-    assert result["expected_count"] == result["actual_count"] == 8
+    assert result["expected_count"] == result["actual_count"] == result["source_count"] == 6
     assert all(d["difference"] == 0 for d in result["daily"])
     assert env.data["source"] == before
     assert {t["operation"] for t in env.data["trace"]} == {
@@ -144,7 +144,7 @@ def test_baseline_ingest_is_not_counted_again_even_with_identical_new_arrivals(
     assert result["outcome"] == "verified_success"
     assert result["preexisting_count"] == 1 + old_count
     assert result["new_ingest_count"] == new_count
-    assert result["actual_count"] == 7 + old_count + new_count
+    assert result["actual_count"] == result["expected_count"] == 6
 
 
 def test_baseline_loss_is_a_discrepancy(rig):
@@ -546,3 +546,32 @@ def test_undated_sealed_bucket_is_listed_not_fatal_and_never_copied(rig, fixture
     # bucket in range the refusal is the ordinary "nothing selected", not a bucket-level error.
     with pytest.raises(MigrationError, match=Code.INCOMPLETE):
         engine.plan(Window(DAY, 2 * DAY), Policy(poll_seconds=0))
+
+
+def test_signoff_report_formats_utc_dates_and_ranges(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    engine.verify(run["id"])
+    result = journal.load(run["id"])
+    text = markdown(result, journal.events(run["id"]))
+    assert "selected groups;" in text
+    assert "UTC" in text and "Unix ms" not in text
+    assert "2026-03-01 to 2026-03-03" in text
+    block = text.split("\n\n")[2]
+    assert "Last day covered only by sealed buckets right now" in block
+    assert "Snapshot acknowledgment" in block
+    assert text.count("Snapshot acknowledgment") == 1
+    assert text.count("Last day covered only by sealed buckets") == 1
+    assert "| Day | Source |" in text
+
+
+def test_plan_warning_for_an_unrecognized_listing_names_the_host_only(rig):
+    engine, env, _ = rig
+    env.listing_warnings = {"src-1.lab"}
+    start = env.data["source"]["buckets"][0]["start"]
+    run = engine.plan(Window(start, start + DAY), Policy(poll_seconds=0))
+    (warning,) = [w for w in run["plan"]["warnings"] if "src-1.lab" in w]
+    assert "no recognizable groups" in warning and "by hand" in warning
+    assert "first line" not in warning

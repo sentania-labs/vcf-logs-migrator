@@ -62,15 +62,12 @@ def smoke(fixture: Path, executable: str) -> None:
         evidence = verified
         assert evidence["outcome"] == "verified_success"
         assert evidence["source_count"] == len(data["source_events"])
-        expected = sum(
-            len(data[key]) for key in ("source_events", "destination_events", "ingest_during_run")
-        )
-        assert evidence["actual_count"] == evidence["expected_count"] == expected
+        assert evidence["actual_count"] == evidence["expected_count"] == len(data["source_events"])
         assert invoke("status")["status"] == "completed"
         report = invoke("report", run_id, "--format", "json")
         assert report["run"]["verification"] == evidence
         assert "verified_success" in invoke("report", run_id, parse=False)
-        print(f"{fixture.name}: installed CLI verified {expected} fixture events")
+        print(f"{fixture.name}: installed CLI verified {evidence['expected_count']} fixture events")
 
 
 def config_smoke(executable: str) -> None:

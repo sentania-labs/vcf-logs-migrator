@@ -1,6 +1,8 @@
 """Plain count evidence and audit reports, never an alternate source of task status."""
 
-import json
+from datetime import UTC, date, datetime, timedelta
+
+from .models import LEGACY_RESULT_NOTE, is_legacy_result
 
 
 def report_data(run, events):
@@ -18,28 +20,84 @@ def report_data(run, events):
     }
 
 
+def _timestamp(ms):
+    return (
+        datetime.fromtimestamp(ms / 1000, UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", " UTC")
+    )
+
+
+def _day_ranges(days):
+    dates = sorted({date.fromisoformat(day) for day in days})
+    ranges = []
+    for day in dates:
+        if ranges and day == ranges[-1][1] + timedelta(days=1):
+            ranges[-1] = (ranges[-1][0], day)
+        else:
+            ranges.append((day, day))
+    return ", ".join(str(a) if a == b else f"{a} to {b}" for a, b in ranges) or "none"
+
+
 def markdown(run, events):
     plan = run["plan"]
     verification = run["verification"]
+    daily = verification.get("daily", [])
+    matched = sum(not row.get("partial") and row["difference"] == 0 for row in daily)
+    partial = sum(bool(row.get("partial")) for row in daily)
+    expected = verification.get("expected_count")
+    unmeasured = verification.get("unmeasured_day_count", 0)
+    arrived = (
+        verification.get("measured_arrival_count")
+        if unmeasured
+        else verification.get("actual_count")
+    )
+    measured_window = verification.get("measured_window")
+
+    def show(value):
+        return f"{value:,}" if value is not None else "unavailable"
+
+    if is_legacy_result(verification):
+        sent_text = "figures not shown"
+        arrival_text = LEGACY_RESULT_NOTE.rstrip(".")
+    elif unmeasured and measured_window:
+        sent_text = f"{show(expected)} events sent from selected groups"
+        arrival_text = (
+            "arrivals were counted for the requested dates only "
+            f"({_timestamp(measured_window['start'])} to {_timestamp(measured_window['end'])}, "
+            f"end exclusive: {show(arrived)} arrived); {unmeasured} other days these groups "
+            "touch were not counted; see the daily table"
+        )
+    else:
+        sent_text = f"{show(expected)} events expected"
+        arrival_text = f"{show(arrived)} arrived at destination since this run started"
     lines = [
         "# Migration count report",
+        "",
+        f"{len(plan['selected'])} selected groups; {sent_text}; "
+        f"{arrival_text}; "
+        f"{matched} fully matched days; {partial} partial days.",
+        "",
+        "- Last day covered only by sealed buckets right now: "
+        f"{plan['last_fully_sealed_day'] or 'unknown'}.",
+        "- Snapshot acknowledgment: "
+        + ("operator attested" if run["backup_ack"] else "not given")
+        + "; snapshots were not independently verified.",
         "",
         f"Run: `{run['id']}`",
         "",
         "Count evidence only. Query `status` for current API task progress.",
+        verification.get("received_unavailable_reason") or "",
+        verification.get("expected_unavailable_reason") or "",
         "",
         f"Verification: **{verification['outcome']}**. "
         f"Complete query evidence: **{verification.get('complete', False)}**.",
         "",
-        "Snapshot acknowledgment: "
-        + ("operator attested" if run["backup_ack"] else "not given")
-        + "; snapshots were not independently verified.",
-        "",
-        f"Requested dates (Unix ms): {json.dumps(plan['window'], sort_keys=True)}.",
-        f"Whole-bucket coverage (Unix ms): {json.dumps(plan['coverage'], sort_keys=True)}.",
+        f"Requested dates: {_timestamp(plan['window']['start'])} to "
+        f"{_timestamp(plan['window']['end'])} (end exclusive).",
+        f"Whole-bucket coverage: {_timestamp(plan['coverage']['start'])} to "
+        f"{_timestamp(plan['coverage']['end'])} (end exclusive).",
         f"Active buckets skipped: {len(plan['active_skipped'])}.",
-        "Last day covered only by sealed buckets right now: "
-        f"{plan['last_fully_sealed_day'] or 'unknown'}.",
         *(
             [
                 "Sealed buckets excluded for having no time range: "
@@ -56,7 +114,7 @@ def markdown(run, events):
         lines += [
             f"Covered buckets: {len(buckets['covered'])}; "
             f"selected but not received: {', '.join(buckets['not_received']) or 'none'}.",
-            f"Covered days: {', '.join(verification['covered_days']) or 'none'}.",
+            f"Covered days: {_day_ranges(verification['covered_days'])}.",
             "",
         ]
     if verification.get("reason"):

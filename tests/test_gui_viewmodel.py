@@ -185,7 +185,7 @@ def test_verification_view_states(rig):
     status = engine.status()
     result = engine.verify(run["id"])
     view = vm.verification_view(result, status, 1, False)
-    assert view["banner"][0] == "warn" and view["tiles"][0][1] == "8"  # open group excluded
+    assert view["banner"][0] == "warn" and view["tiles"][0][1] == "6"  # open group excluded
     assert vm.verification_view(result, status, 0, False)["banner"][0] == "ok"
     assert view["rows"] and all(r[3] == "Match" for r in view["rows"])
     assert (
@@ -292,6 +292,53 @@ def test_report_view_records_the_acknowledgment(rig):
     assert vm.run_label(stored, 1).startswith("Run 1 ·")
 
 
+def test_report_view_headline_follows_the_unmeasured_days_rule(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    stored, events = journal.load(run["id"]), journal.events(run["id"])
+    stored["verification"] = {
+        "outcome": "verified_success",
+        "complete": True,
+        "count_basis": "selected_groups",
+        "expected_count": 263548,
+        "actual_count": None,
+        "measured_arrival_count": 12,
+        "unmeasured_day_count": 71,
+        "measured_window": {"start": 1709251200000, "end": 1709424000000},
+    }
+    rows = dict(vm.report_view(stored, events, engine.status(), "UTC")["rows"])
+    assert rows["Sent from selected groups"] == "263,548"
+    assert (
+        "12 events arrived" in rows["Arrivals"]
+        and "2024-03-01 to 2024-03-02 UTC" in rows["Arrivals"]
+    )
+    assert "71 other days" in rows["Arrivals"]
+    assert not any("Unavailable" in value for value in rows.values() if "/" in value)
+
+
+def test_report_view_shows_the_figures_of_an_incomplete_verification(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    stored, events = journal.load(run["id"]), journal.events(run["id"])
+    stored["verification"] = {
+        "outcome": "incomplete",
+        "complete": False,
+        "reason": "incomplete_evidence",
+        "count_basis": "selected_groups",
+        "expected_count": 263548,
+        "actual_count": None,
+        "received_unavailable_reason": "Counts were not stable",
+    }
+    rows = dict(vm.report_view(stored, events, engine.status(), "UTC")["rows"])
+    assert rows["Expected from selected groups"] == "263,548"
+    assert "Sent from selected groups" not in rows
+    stored["verification"] = {"outcome": "incomplete", "complete": False}
+    rows = dict(vm.report_view(stored, events, engine.status(), "UTC")["rows"])
+    assert rows["Sent from selected groups"] == "Pending"
+
+
 def test_settings_round_trip_and_bounds(tmp_path):
     path = tmp_path / "settings.ini"
     settings = Settings(
@@ -383,12 +430,93 @@ def test_plan_error_text_distinguishes_an_empty_window(rig):
     empty = vm.window_from_days(date(2025, 1, 1), date(2025, 1, 31))
     text = vm.plan_error_text("incomplete_evidence", discovered, empty)
     assert text.startswith("No sealed history in these dates.") and "spans" in text
+    emitted = (
+        "incomplete_evidence: No dated sealed groups overlap the requested dates. "
+        "Check the date range and source inventory."
+    )
+    assert vm.plan_error_text(emitted, discovered, empty) == text
+    assert vm.plan_error_kind(emitted, discovered, empty) == "info"
     inside = vm.window_from_days(date(2026, 3, 1), date(2026, 3, 1))
     assert "unproven" in vm.plan_error_text("incomplete_evidence", discovered, inside)
     assert vm.plan_error_text("destination_busy", discovered, inside) == vm.describe_error(
         "destination_busy"
     )
+    named = (
+        "incomplete_evidence: Selected groups have no proven start and end: "
+        "node-1/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa."
+    )
+    assert vm.plan_error_text(named, discovered, inside) == vm.describe_error(named)
+    assert "node-1/aaaaaaaa" in vm.plan_error_text(named, discovered, inside)
     assert vm.describe_error("gui:custom text") == "custom text"
+
+
+def test_plan_error_text_lists_only_the_selected_conflicting_groups(rig):
+    engine, _, _ = rig
+    discovered = engine.discover()
+    first = discovered["source"]["buckets"][0]
+    code = (
+        "bucket_identity_conflict: Selected groups already exist on the destination: "
+        f"{first['node']}/{first['id']} (2026-03-01 to 2026-03-01 UTC). "
+        "Choose dates that exclude these groups."
+    )
+    text = vm.plan_error_text(code, discovered, None)
+    assert text.startswith("1 selected group already exists on the destination")
+    assert text.count(" (") == 1
+    duplicate = (
+        f"bucket_identity_conflict: Source groups have duplicate identities: "
+        f"{first['node']}/{first['id']}. Inspect the source inventory before retrying."
+    )
+    assert vm.plan_error_text(duplicate, discovered, None) == (
+        f"Source groups have duplicate identities: {first['node']}/{first['id']}. "
+        "Inspect the source inventory before retrying."
+    )
+
+
+def test_conflict_group_lines_list_full_node_id_and_dates(rig):
+    engine, _, _ = rig
+    discovered = engine.discover()
+    first, second = discovered["source"]["buckets"][:2]
+    code = (
+        "bucket_identity_conflict: Selected groups already exist on the destination: "
+        f"{first['node']}/{first['id']} (2026-03-01 to 2026-03-01 UTC). "
+        "Choose dates that exclude these groups."
+    )
+    lines = vm.conflict_group_lines(code, discovered)
+    assert len(lines) == 1 and lines[0].startswith(f"{first['node']}/{first['id']}  ")
+    assert second["id"] not in lines[0]
+    assert (
+        vm.conflict_group_lines(
+            "bucket_identity_conflict: Source groups have duplicate", discovered
+        )
+        == []
+    )
+
+
+def test_legacy_stored_result_never_shows_old_figures_under_the_new_headings(rig):
+    from logs_migrate.reporting import markdown
+
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    engine.verify(run["id"])
+    stored = journal.load(run["id"])
+    legacy = dict(stored["verification"])
+    legacy.pop("count_basis")
+    legacy.update(expected_count=940761, actual_count=263548)
+    view = vm.verification_view(legacy, engine.status(), 0, False)
+    shown = " ".join(str(part) for tile in view["tiles"] for part in tile)
+    assert "940,761" not in shown and "263,548" not in shown
+    assert "earlier version; run Verify again" in shown
+    assert view["rows"]
+    stored["verification"] = legacy
+    rows = dict(vm.report_view(stored, journal.events(run["id"]), engine.status(), "UTC")["rows"])
+    assert "940,761" not in " ".join(rows.values()) and "263,548" not in " ".join(rows.values())
+    assert "earlier version" in rows["Counts"]
+    text = markdown(stored, journal.events(run["id"]))
+    assert "940,761" not in text and "263,548" not in text and "earlier version" in text
+    fresh = vm.verification_view(engine.verify(run["id"]), engine.status(), 0, False)
+    assert fresh["tiles"][0][0] == "Expected from selected groups"
 
 
 def test_skipped_group_with_count_loss_is_labelled_a_discrepancy(rig):

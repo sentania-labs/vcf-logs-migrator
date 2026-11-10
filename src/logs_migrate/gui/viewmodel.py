@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..errors import Code
-from ..models import DAY, Window
+from ..models import DAY, LEGACY_RESULT_NOTE, Window, is_legacy_result, selected_message_count
 
 UNAVAILABLE = "Unavailable"
 PRESETS = (
@@ -296,7 +296,7 @@ def selftest_rows(result: dict) -> list[tuple[str, str]]:
             step["status"], step["status"]
         )
         detail = step.get("detail", "")
-        if step["status"] == "fail" and detail:
+        if step["status"] == "fail" and detail and detail.partition(": ")[0] in set(Code):
             detail = describe_error(detail)
         rows.append((step["name"], label + (" · " + detail if detail else "")))
     summary = result.get("summary", {})
@@ -330,9 +330,42 @@ def window_error(start: date, end_inclusive: date) -> str | None:
     return None
 
 
+def conflicting_groups(code: str, discovered: dict | None) -> list[dict]:
+    """Source groups a destination-conflict refusal names, matched by their full node/id."""
+    if not (
+        code.startswith(Code.COLLISION.value + ": Selected groups already exist") and discovered
+    ):
+        return []
+    return [b for b in discovered["source"]["buckets"] if f"{b['node']}/{b['id']} (" in code]
+
+
+def conflict_group_lines(code: str, discovered: dict | None) -> list[str]:
+    return [
+        f"{b['node']}/{b['id']}  "
+        f"{format_day_range(b.get('start'), b.get('end'), inclusive_end=True)}"
+        for b in conflicting_groups(code, discovered)
+    ]
+
+
+def is_duplicate_identity(code: str) -> bool:
+    return code.startswith(Code.COLLISION.value + ": Source groups have duplicate identities")
+
+
 def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
     """Say what is actually wrong with a refused preview."""
-    if code == Code.INCOMPLETE.value and discovered and window:
+    if conflicts := conflicting_groups(code, discovered):
+        groups = [
+            f"{b['node']} ({format_day_range(b.get('start'), b.get('end'), inclusive_end=True)})"
+            for b in conflicts
+        ]
+        count = len(groups)
+        return (
+            f"{count} selected group{' already exists' if count == 1 else 's already exist'}"
+            " on the destination: "
+            + "; ".join(groups)
+            + ". Choose dates that exclude these groups."
+        )
+    if code.partition(": ")[0] == Code.INCOMPLETE.value and discovered and window:
         sealed = [
             b
             for b in discovered["source"]["buckets"]
@@ -342,7 +375,9 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
         extent = history_extent(discovered["source"])
         if not overlapping:
             span = f" Source history spans {format_day_range(*extent)}." if extent else ""
-            return "No sealed history in these dates." + span
+            return "No sealed history in these dates." + span + " Choose another date range."
+        if ": " in code:
+            return describe_error(code)
         if not discovered["destination"].get("history_complete", True):
             return (
                 "The destination's transfer history is incomplete, so overlap cannot be ruled out."
@@ -358,7 +393,7 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
     capacity = plan["capacity"]
     diff = plan["partition_diff"]
     active = plan["active_skipped"]
-    events = sum(b["messages"] for b in selected)
+    events = selected_message_count(selected)
     size = sum(b["size"] for b in selected)
     groups = [
         (
@@ -878,6 +913,43 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
     return [row for _, row in sorted(keyed, key=lambda item: item[0])]
 
 
+def report_headline_rows(verification: dict) -> list[tuple[str, str]]:
+    if is_legacy_result(verification):
+        return [("Counts", LEGACY_RESULT_NOTE)]
+    if "expected_count" not in verification:
+        return [("Sent from selected groups", "Pending")]
+    sent = format_count(verification.get("expected_count"))
+    if verification.get("unmeasured_day_count") and verification.get("measured_window"):
+        return [
+            ("Sent from selected groups", sent),
+            ("Arrivals", unmeasured_arrival_sentence(verification)),
+        ]
+    return [
+        ("Expected from selected groups", sent),
+        (
+            "Arrived at destination since this run started",
+            format_count(verification.get("actual_count")),
+        ),
+    ]
+
+
+def unmeasured_arrival_sentence(result: dict) -> str:
+    window = result["measured_window"]
+    start = datetime.fromtimestamp(window["start"] / 1000, UTC).date()
+    end = datetime.fromtimestamp((window["end"] - 1) / 1000, UTC).date()
+    arrived = result.get("measured_arrival_count")
+    counted = (
+        f"{format_count(arrived)} events arrived"
+        if arrived is not None
+        else result.get("received_unavailable_reason") or "Arrivals could not be attributed"
+    )
+    return (
+        f"Arrivals were counted for the requested dates only ({start} to {end} UTC: "
+        f"{counted}); {result['unmeasured_day_count']} other days these groups touch "
+        "were not counted."
+    )
+
+
 def verification_view(
     result: dict | None,
     status: dict | None,
@@ -900,11 +972,11 @@ def verification_view(
             ),
             "tiles": [
                 (
-                    "Expected in included dates",
+                    "Expected from selected groups",
                     "Pending",
-                    "Selected sealed history plus destination baseline and new ingest",
+                    "Sum of the selected groups' event counts",
                 ),
-                ("Destination in included dates", "Pending", "Not yet queried"),
+                ("Arrived at destination since this run started", "Pending", "Not yet queried"),
                 (
                     "Excluded latest data",
                     f"{active_count} open group{'s' if active_count != 1 else ''}",
@@ -999,36 +1071,54 @@ def verification_view(
             + "Received partial counts are not a destination total; no success is claimed.",
         )
     complete = result.get("complete", False)
-    tiles = [
-        (
-            "Expected in included dates",
-            format_count(result.get("expected_count")) if complete else "Pending",
+    has_counts = "expected_count" in result
+    unmeasured = result.get("unmeasured_day_count", 0)
+    measured_window = result.get("measured_window")
+    excluded_tile = (
+        "Excluded latest data",
+        f"{active_count} open group{'s' if active_count != 1 else ''}",
+        "Not imported",
+    )
+    if is_legacy_result(result):
+        tiles = [("Counts", UNAVAILABLE, LEGACY_RESULT_NOTE), excluded_tile]
+    elif unmeasured and measured_window:
+        tiles = [
             (
-                f"Received groups {format_count(result.get('source_count'))} + pre-existing "
-                f"{format_count(result.get('preexisting_count'))} + new ingest "
-                f"{format_count(result.get('new_ingest_count'))}"
-                + (
-                    f"; the {len(missing)} group{'s' if len(missing) != 1 else ''} not received "
-                    "is listed below, not counted here"
-                    if missing
-                    else ""
+                "Sent from selected groups",
+                format_count(result.get("expected_count")) if has_counts else "Pending",
+                unmeasured_arrival_sentence(result) if has_counts else "Not yet comparable",
+            ),
+            excluded_tile,
+        ]
+    else:
+        tiles = [
+            (
+                "Expected from selected groups",
+                format_count(result.get("expected_count")) if has_counts else "Pending",
+                (
+                    result.get("expected_unavailable_reason")
+                    or "Sum of the selected groups' event counts"
                 )
-            )
-            if complete
-            else "Not yet comparable",
-        ),
-        (
-            "Destination in included dates",
-            format_count(result.get("actual_count")) if complete else "Pending",
-            "Complete repeated queries" if complete else "Not yet comparable",
-        ),
-        (
-            "Excluded latest data",
-            f"{active_count} open group{'s' if active_count != 1 else ''}",
-            "Not imported",
-        ),
-    ]
-    rows = daily_rows(result, run) if complete else []
+                if has_counts
+                else "Not yet comparable",
+            ),
+            (
+                "Arrived at destination since this run started",
+                format_count(result.get("actual_count")) if has_counts else "Pending",
+                (
+                    result.get("received_unavailable_reason")
+                    or (
+                        "Destination count minus the recorded baseline"
+                        if result.get("actual_count") is not None
+                        else "Not available: the counts were incomplete"
+                    )
+                )
+                if has_counts
+                else "Not yet comparable",
+            ),
+            excluded_tile,
+        ]
+    rows = daily_rows(result, run) if result.get("daily") else []
     buckets = result.get("buckets", {})
     if buckets:
         received = buckets.get("covered", [])
@@ -1309,13 +1399,7 @@ def report_view(
                 "Selected groups",
                 f"{len(plan['selected'])} sealed · {len(plan['active_skipped'])} open excluded",
             ),
-            (
-                "Expected / actual in dates",
-                f"{format_count(verification.get('expected_count'))} / "
-                f"{format_count(verification.get('actual_count'))}"
-                if verification.get("complete")
-                else "Pending",
-            ),
+            *report_headline_rows(verification),
             (
                 "Existing outside dates",
                 format_count(verification.get("preexisting_count")) + "; counted separately"

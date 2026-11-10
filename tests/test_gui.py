@@ -6,6 +6,8 @@ pytest.importorskip("PySide6")
 
 from gui_driver import FIXTURES, Driver  # noqa: E402
 
+from logs_migrate.gui import viewmodel as vm  # noqa: E402
+
 
 @pytest.fixture
 def driver():
@@ -36,12 +38,17 @@ def test_window_walks_the_workflow_off_the_ui_thread(driver):
     driver.verify()
     assert state.verification["outcome"] == "verified_success"
     assert driver.pages["verification"].daily.rowCount() >= 1
+    assert driver.pages["verification"].tiles[0][0].text() == "Expected from selected groups"
+    assert "Arrived at destination" in driver.pages["verification"].tiles[1][0].text()
     driver.export()
     assert len(state.exported) == 2 and all(
         path.startswith(str(driver.exports)) for path in state.exported
     )
     driver.plan()
-    assert state.plan_error in {"overlapping_transfer", "bucket_identity_conflict"}
+    assert state.plan_error.partition(": ")[0] in {
+        "overlapping_transfer",
+        "bucket_identity_conflict",
+    }
     assert driver.pages["plan"].stack.currentIndex() == 1
     driver.theme("dark")
     assert state.settings.theme == "dark"
@@ -393,6 +400,55 @@ def test_blocked_preview_keeps_the_date_editors_reachable(driver):
     assert "blocked" in page.error.text().lower() and page.error.isVisible()
 
 
+def test_blocked_page_shows_the_refusal_it_received(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.plan()
+    page = driver.pages["plan"]
+    assert page.stack.currentIndex() == 1
+    refused = dict(page.overlap_rows.rows())["Refused"]
+    assert refused == vm.plan_error_text(
+        driver.state.plan_error,
+        driver.state.discovered,
+        vm.window_from_days(*page.current_dates()),
+    )
+    assert "already exist" in refused or "already exists" in refused
+
+
+def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(driver):
+    driver.connect()
+    driver.plan()
+    first = driver.state.discovered["source"]["buckets"][0]
+    driver.state.plan_error = (
+        "bucket_identity_conflict: Source groups have duplicate identities: "
+        f"{first['node']}/{first['id']}. Inspect the source inventory before retrying."
+    )
+    page = driver.pages["plan"]
+    page.refresh()
+    assert page.stack.currentIndex() == 0 and not page.change_button.isVisible()
+    text = page.error.text()
+    assert "duplicate identities" in text and f"{first['node']}/{first['id']}" in text
+    assert "Inspect the source inventory" in text
+    assert "overlaps a previous import" not in page.title.text()
+
+
+def test_long_check_rows_wrap_and_take_keyboard_focus(driver):
+    from PySide6.QtCore import Qt
+
+    from logs_migrate.gui.widgets import KeyValues
+
+    reason = "8 sealed buckets have no start/end (" + ", ".join(["a" * 36] * 8) + ")"
+    values = KeyValues()
+    values.set_rows([("Node src-1", "Failed · " + reason)])
+    value = values.grid.itemAtPosition(0, 1).widget()
+    assert value.wordWrap() and value.text() == "Failed · " + reason
+    assert value.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    assert value.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByKeyboard
+
+
 def test_validation_names_what_is_wrong(driver):
     page = driver.pages["connections"]
     page.destination_host.clear()
@@ -592,3 +648,70 @@ def test_count_timeout_at_start_names_the_query_and_sends_nothing(driver):
     assert "No API request was submitted." in page.note.text()
     assert "may have reached the API" not in page.note.text()
     assert page.start_button.isEnabled()
+
+
+def test_trust_dialog_names_shared_host_before_accepting(driver, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+
+    def question(parent, title, text, *args):
+        shown.append(text)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    identities = [
+        {
+            "kind": "ssh",
+            "name": "node-b:22",
+            "fingerprint": "a" * 64,
+            "display": "node-b fingerprint",
+            "shared_with": "node-a:22",
+        },
+    ]
+    assert not driver.window._ask_trust(identities)
+    assert "node-b:22 presents the same SSH key as node-a:22" in shown[0]
+
+
+def test_connections_selftest_failure_wraps_and_accepts_keyboard_focus(driver):
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtTest import QTest
+
+    driver.connect()
+    driver.show("connections")
+    message = (
+        "The source node could not complete its inventory listing. "
+        "Check the node's disk and network access, then retry the self-test. "
+    ) * 5
+    driver.state.selftest = {
+        "steps": [{"name": "Source node", "status": "fail", "detail": "gui:" + message}],
+        "summary": {"pass": 0, "fail": 1, "skip": 0},
+        "passed": False,
+        "notes": {},
+    }
+    page = driver.pages["connections"]
+    page.refresh()
+    driver.wait(100)
+    table = page.checks
+    row = next(i for i, cells in enumerate(table.rows()) if cells[0] == "Source node")
+    item = table.item(row, 1)
+    rect = table.fontMetrics().boundingRect(
+        QRect(0, 0, table.columnWidth(1) - 12, 10000),
+        int(Qt.TextFlag.TextWordWrap),
+        item.text(),
+    )
+    assert table.wordWrap()
+    assert table.rowHeight(row) >= rect.height()
+    driver.window.resize(900, 900)
+    driver.wait(100)
+    narrow = table.fontMetrics().boundingRect(
+        QRect(0, 0, table.columnWidth(1) - 12, 10000),
+        int(Qt.TextFlag.TextWordWrap),
+        item.text(),
+    )
+    assert table.rowHeight(row) >= narrow.height()
+    assert table.focusPolicy() != Qt.FocusPolicy.NoFocus
+    table.setFocus(Qt.FocusReason.TabFocusReason)
+    table.setCurrentCell(row, 1)
+    QTest.keyClick(table, Qt.Key.Key_Down)
+    assert table.hasFocus() and table.currentRow() > row

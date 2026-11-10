@@ -10,6 +10,7 @@ from .config import ConfigMigration
 from .errors import Code, MigrationError, Rejection, require, safe_boundary
 from .models import (
     ACTIVE_ACK,
+    COUNT_BASIS,
     DAY,
     EVERYTHING_END,
     Counts,
@@ -18,6 +19,7 @@ from .models import (
     Window,
     digest,
     sealed_frontier,
+    selected_message_count,
 )
 from .planning import build_plan, partition_diff
 from .ports import SystemClock, Transfer
@@ -258,6 +260,11 @@ class Engine:
                     f"Active buckets on {', '.join(growth['nodes'])} grew by "
                     f"{growth['bytes']:,} bytes in {growth['window_seconds']} seconds."
                 )
+            plan["warnings"] += [
+                f"{host}: the bucket listing returned text but no recognizable groups. "
+                "Check the node by hand before trusting this plan."
+                for host in sorted(getattr(self.env, "listing_warnings", ()))
+            ]
             plan["partial_days"] = partial_days(source, plan)
             self._settle(destination.id)
             self._overlap(plan)
@@ -282,7 +289,12 @@ class Engine:
     def _ingest(self, policy, baseline):
         # Only arrivals beyond the destination's pre-transfer baseline count as new ingest.
         counts = self._counts(policy, "ingest", EVERYTHING, ())
-        require(counts.identity_complete and baseline.identity_complete, Code.INCOMPLETE)
+        require(
+            counts.identity_complete and baseline.identity_complete,
+            Code.INCOMPLETE,
+            "Destination ingest counts could not identify every event, so new arrivals "
+            "cannot be separated from the baseline. Retry once ingestion settles.",
+        )
         identities = Counter(dict(counts.identities)) - Counter(dict(baseline.identities))
         daily = Counter()
         for identity, count in identities.items():
@@ -549,6 +561,20 @@ class Engine:
                     "reason": error.code.value,
                     **({"detail": error.message} if hasattr(error, "message") else {}),
                 }
+            if not self.attribution and not result.get("complete"):
+                result.setdefault("expected_count", selected_message_count(run["plan"]["selected"]))
+                result.setdefault("actual_count", None)
+                if run.get("baseline") is None:
+                    result["received_unavailable_reason"] = (
+                        "No baseline was recorded, so arrivals cannot be calculated. "
+                        "See the daily comparison when available."
+                    )
+            if result.get("expected_count", 0) is None:
+                result["expected_unavailable_reason"] = (
+                    "One or more selected groups did not report an event count. "
+                    "Check the source inventory."
+                )
+            result["count_basis"] = COUNT_BASIS
             result["at"] = self.clock.now()
             run["verification"] = result
             self._audit(run, "daily_counts_verified", {"outcome": result["outcome"]})
@@ -557,7 +583,11 @@ class Engine:
     def _reconcile(self, run, destination):
         rows = self.journal.transfers(destination)
         received = {key for row in rows for key in row["received"]}
-        require(bool(received), Code.INCOMPLETE)
+        require(
+            bool(received),
+            Code.INCOMPLETE,
+            "No selected group has been received by the destination yet.",
+        )
         selected = {key for row in rows for key in row["keys"]}
         runs = {row["run"]: self.journal.load(row["run"]) for row in rows}
         source = combine(
@@ -576,8 +606,12 @@ class Engine:
             actual == self._counts(policy, "destination", EVERYTHING, ())
             and ingest == self._ingest(policy, baseline),
             Code.INCOMPLETE,
+            "Destination counts changed between two observations, so they are not stable. "
+            "Retry once ingestion settles.",
         )
         result = reconcile(source, baseline, actual, ingest)
+        result["expected_count"] = source.total
+        result["actual_count"] = actual.total - baseline.total - ingest.total
         result["buckets"] = {
             "covered": sorted(received),
             "not_received": sorted(selected - received),
@@ -598,9 +632,17 @@ class Engine:
         a fully covered day is a discrepancy.
         """
         row = next((r for r in self.journal.transfers(destination) if r["run"] == run["id"]), None)
-        require(row is not None and row["closed"], Code.INCOMPLETE)
+        require(
+            row is not None and row["closed"],
+            Code.INCOMPLETE,
+            "The destination has no closed transfer recorded for this run.",
+        )
         received = set(row["received"])
-        require(bool(received), Code.INCOMPLETE)
+        require(
+            bool(received),
+            Code.INCOMPLETE,
+            "No selected group has been received by the destination for this run.",
+        )
         require(run.get("baseline") is not None, Code.UNSUPPORTED)
         source = Counts.from_dict(run["source_counts"])
         baseline = Counts.from_dict(run["baseline"])
@@ -611,9 +653,36 @@ class Engine:
             else day_window(Window(**run["plan"]["coverage"]))
         )
         actual = self._counts(policy, "destination", days, ())
-        require(actual == self._counts(policy, "destination", days, ()), Code.INCOMPLETE)
+        require(
+            actual == self._counts(policy, "destination", days, ()),
+            Code.INCOMPLETE,
+            "Destination daily counts changed between two observations, so they are not "
+            "stable. Retry once ingestion settles.",
+        )
         ingest = Counts(True, (), (), "ingest")
         result = reconcile(source, baseline, actual, ingest)
+        # Bucket metadata supplies the selected total; daily queries cover only the
+        # recorded baseline window and cannot attribute arrivals to individual groups.
+        result["expected_count"] = selected_message_count(run["plan"]["selected"])
+        coverage_days = day_window(Window(**run["plan"]["coverage"]))
+        measured_start = max(days.start, coverage_days.start)
+        measured_end = min(days.end, coverage_days.end)
+        measured_days = max(0, measured_end - measured_start) // DAY
+        unmeasured = (coverage_days.end - coverage_days.start) // DAY - measured_days
+        other_ingest = any(d["actual"] > d["expected"] for d in result["daily"])
+        delta = actual.total - baseline.total
+        measured = None if other_ingest or delta < 0 else delta
+        result["measured_arrival_count"] = measured
+        result["measured_window"] = asdict(days)
+        result["unmeasured_day_count"] = unmeasured
+        result["actual_count"] = measured if not unmeasured else None
+        result["received_unavailable_reason"] = (
+            "Other events may have arrived during the run; see the daily comparison."
+            if other_ingest
+            else "The destination count fell below the baseline; see the daily comparison."
+            if delta < 0
+            else None
+        )
         partial = set(run.get("partial_days", []))
         for entry in result["daily"]:
             entry["partial"] = entry["day"] in partial

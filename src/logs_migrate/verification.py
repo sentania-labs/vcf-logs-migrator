@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from .errors import Code, MigrationError, require
 from .models import Counts, Policy, Verification, Window
@@ -28,7 +29,17 @@ def stable_counts(
             previous = None
         if attempt + 1 < policy.attempts:
             clock.sleep(policy.poll_seconds)
-    raise MigrationError(Code.INCOMPLETE)
+    try:
+        start = datetime.fromtimestamp(window.start / 1000, UTC).date()
+        end = datetime.fromtimestamp((window.end - 1) / 1000, UTC).date()
+        dates = f"{start} to {end} UTC"
+    except (OverflowError, OSError, ValueError):
+        dates = "all dates"
+    raise MigrationError(
+        Code.INCOMPLETE,
+        f"{scope.capitalize()} counts for {dates} did not complete twice with "
+        "matching results. Check the appliance and retry.",
+    )
 
 
 def combine(parts: list[Counts], scope: str) -> Counts:
@@ -46,9 +57,14 @@ def combine(parts: list[Counts], scope: str) -> Counts:
 
 
 def reconcile(source: Counts, baseline: Counts, actual: Counts, ingest: Counts) -> dict:
+    names = ("source", "baseline", "destination", "ingest")
+    missing = [
+        n for n, c in zip(names, (source, baseline, actual, ingest), strict=True) if not c.complete
+    ]
     require(
-        all(c.complete for c in (source, baseline, actual, ingest)),
+        not missing,
         Code.INCOMPLETE,
+        "Counts were incomplete for: " + ", ".join(missing) + ". Check the appliance and retry.",
     )
     expected = Counter(dict(source.daily)) + Counter(dict(baseline.daily))
     expected += Counter(dict(ingest.daily))

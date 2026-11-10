@@ -324,13 +324,21 @@ class MainWindow(QMainWindow):
             self.submit("selftest", "selftest")
 
     def _ask_trust(self, identities: list[dict]) -> bool:
+        from ..trust import shared_ssh_keys
+
         lines = "\n\n".join(i["display"] for i in identities)
+        shared = dict(shared_ssh_keys(identities))
+        shared.update({i["name"]: i["shared_with"] for i in identities if i.get("shared_with")})
+        warning = "".join(
+            f"\n{name} presents the same SSH key as {first}." for name, first in shared.items()
+        )
         answer = QMessageBox.question(
             self,
             "Trust appliance identities",
             "These appliance identities are not enrolled yet. Compare each fingerprint with "
             "the appliance before trusting it. Nothing has been sent to them.\n\n"
             + lines
+            + warning
             + "\n\nTrust and remember them?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,

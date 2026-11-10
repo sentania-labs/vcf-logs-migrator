@@ -5,11 +5,13 @@ from html import escape
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QBoxLayout,
     QCheckBox,
     QDateEdit,
     QGridLayout,
     QHBoxLayout,
+    QPlainTextEdit,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -207,6 +209,16 @@ class PlanPage(Page):
         evidence, evidence_layout = card("Overlap evidence")
         self.overlap_rows = KeyValues()
         evidence_layout.addWidget(self.overlap_rows)
+        self.group_ids = QPlainTextEdit()
+        self.group_ids.setReadOnly(True)
+        self.group_ids.setMaximumHeight(160)
+        self.group_ids.hide()
+        self.group_ids_toggle = button("Show group ids", "", self._toggle_group_ids)
+        self.group_ids_copy = button("Copy group ids", "", self._copy_group_ids)
+        self.group_ids_copy.hide()
+        self.group_ids_row = row(self.group_ids_toggle, self.group_ids_copy)
+        evidence_layout.addWidget(self.group_ids_row)
+        evidence_layout.addWidget(self.group_ids)
         layout.addWidget(evidence)
         next_card, next_layout = card("Next step")
         next_layout.addWidget(
@@ -230,6 +242,15 @@ class PlanPage(Page):
         layout.addWidget(next_card)
         layout.addStretch(1)
         return holder
+
+    def _toggle_group_ids(self) -> None:
+        shown = not self.group_ids.isVisible()
+        self.group_ids.setVisible(shown)
+        self.group_ids_copy.setVisible(shown)
+        self.group_ids_toggle.setText("Hide group ids" if shown else "Show group ids")
+
+    def _copy_group_ids(self) -> None:
+        QApplication.clipboard().setText(self.group_ids.toPlainText())
 
     # Operator actions ---------------------------------------------------------------------
 
@@ -388,7 +409,11 @@ class PlanPage(Page):
         self.ack.setChecked(state.acknowledged)
         self.ack.blockSignals(False)
         self.preview_badge.setVisible(state.preview)
-        blocked = state.plan_error in BLOCKED
+        blocked = bool(
+            state.plan_error
+            and state.plan_error.partition(": ")[0] in BLOCKED
+            and not vm.is_duplicate_identity(state.plan_error)
+        )
         self.change_button.setVisible(blocked and not self.blocked_dismissed)
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
@@ -398,6 +423,14 @@ class PlanPage(Page):
             )
             self.overlap_rows.set_rows(
                 [
+                    (
+                        "Refused",
+                        vm.plan_error_text(
+                            state.plan_error,
+                            discovered,
+                            vm.window_from_days(*self.current_dates()),
+                        ),
+                    ),
                     (
                         "Request",
                         f"{self.start_date.date().toString('yyyy-MM-dd')} – "
@@ -410,6 +443,11 @@ class PlanPage(Page):
                     ),
                 ]
             )
+            lines = vm.conflict_group_lines(state.plan_error, discovered)
+            self.group_ids.setPlainText("\n".join(lines))
+            self.group_ids_row.setVisible(bool(lines))
+            if not lines:
+                self.group_ids.hide()
             self.note.setText(
                 "No bypass or overlapping retry action is offered. "
                 "Choose Change dates to pick a different window."

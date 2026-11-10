@@ -411,6 +411,31 @@ def trusted(rigged):
     return env, source, destination, ssh
 
 
+def test_destination_member_failure_names_the_destination_host_not_a_source_member(
+    rigged, monkeypatch
+):
+    env, _, _, ssh, store = rigged
+    monkeypatch.setattr(LiveEnvironment, "_destination_ssh_enabled", lambda self: True)
+    for name in ("src.lab:22", "src-1.lab:22", "src-2.lab:22", "dst.lab:22"):
+        store.trust(Identity("ssh", name, "b" * 64, "ssh-ed25519"), "x ssh-ed25519 AAAA")
+    store.trust(Identity("tls", "src.lab:9543", "a" * 64))
+    store.trust(Identity("tls", "dst.lab:9543", "c" * 64))
+    with pytest.raises(MigrationError):
+        env.open()
+    assert env.notes["stage"] == "ssh dst.lab:22 (members)"
+
+
+def test_source_member_failure_names_the_source_host(rigged):
+    env, _, _, ssh, store = rigged
+    store.trust(Identity("tls", "src.lab:9543", "a" * 64))
+    store.trust(Identity("tls", "dst.lab:9543", "c" * 64))
+    store.trust(Identity("ssh", "src.lab:22", "b" * 64, "ssh-ed25519"), "x ssh-ed25519 AAAA")
+    del ssh.replies[("src.lab", ReadOperation.MEMBERS)]
+    with pytest.raises(MigrationError):
+        env.open()
+    assert env.notes["stage"] == "ssh src.lab:22 (members)"
+
+
 def test_discover_builds_clusters_from_rest_and_ssh_reads(rigged):
     env, source, destination, ssh = trusted(rigged)
     source.records += [
@@ -572,7 +597,29 @@ def test_selftest_fails_the_cutover_check_when_growth_cannot_be_observed(rigged)
     unknown = {"bytes": None, "nodes": [], "window_seconds": None}
     _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000), unknown)
     (step,) = [s for s in result.steps if s.name == "Source ingest (cutover check)"]
-    assert step.status == "fail" and step.detail == Code.INCOMPLETE.value
+    assert step.status == "fail" and "Source activity could not be measured" in step.detail
+
+
+def test_selftest_names_the_exception_class_of_an_unexpected_failure(rigged, monkeypatch):
+    def broken(self):
+        raise KeyError("secret-looking remote text")
+
+    monkeypatch.setattr(live.LiveEnvironment, "source_version", broken, raising=False)
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in result.steps if s.name == "Source API version"]
+    assert step.status == "fail"
+    assert "KeyError" in step.detail and "secret-looking" not in step.detail
+
+
+def test_selftest_failure_detail_is_plain_for_the_cli_and_named_in_the_window(rigged, monkeypatch):
+    from logs_migrate.gui import viewmodel as vm
+
+    monkeypatch.setattr(live.LiveEnvironment, "source_version", lambda self: 1 / 0, raising=False)
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in result.steps if s.name == "Source API version"]
+    assert not step.detail.startswith("gui:") and "ZeroDivisionError" in step.detail
+    rows = dict(vm.selftest_rows(result.data()))
+    assert "ZeroDivisionError" in rows["Source API version"]
 
 
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
@@ -610,6 +657,8 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
     # New ingest landed on Mar 1, a fully covered day; counts cannot attribute it, so the
     # honest answer is a discrepancy on that day, never a pass.
     assert result["outcome"] == "verified_discrepancy"
+    assert result["actual_count"] is None
+    assert "Other events" in result["received_unavailable_reason"]
     assert [d["difference"] for d in result["daily"]][:3] == [1, 0, 0]
     assert [d["partial"] for d in result["daily"]][:3] == [False, False, True]
     assert result["buckets"]["covered"] and not result["buckets"]["not_received"]
@@ -637,6 +686,9 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_success" and "2026-03-03" in result["partial_days"]
     assert not result["partial_differences"]
+    assert result["expected_count"] == 6
+    assert result["actual_count"] == result["measured_arrival_count"] == 6
+    assert result["unmeasured_day_count"] == 0
     # Nothing landed (the API said COMPLETED anyway): a discrepancy, never a pass.
     env.data["destination_events"] = [
         e for e in env.data["destination_events"] if e.get("cohort") == "baseline"
@@ -1339,6 +1391,29 @@ def test_cli_refuses_untrusted_identities_without_a_terminal(monkeypatch, capsys
     assert cli.main(["--source", "src.lab", "--destination", "dst.lab", "discover"]) == 7
 
 
+def test_cli_trust_new_notes_shared_ssh_keys_and_still_enrolls(monkeypatch, capsys, tmp_path):
+    from logs_migrate import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("LOGS_SOURCE_SSH_PASSWORD", "canary-ssh")
+    monkeypatch.setenv("LOGS_SOURCE_API_PASSWORD", "canary-api")
+    monkeypatch.setenv("LOGS_DESTINATION_API_PASSWORD", "canary-dst")
+    shared = [Identity("ssh", f"10.0.0.{n}:22", "a" * 64) for n in (20, 21, 22)]
+
+    def open_(self):
+        raise TrustRequired(shared)
+
+    monkeypatch.setattr(LiveEnvironment, "open", open_)
+    monkeypatch.setattr(LiveEnvironment, "key_line", lambda self, identity: "key-line")
+    code = cli.main(["--source", "src.lab", "--destination", "dst.lab", "--trust-new", "discover"])
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert "SSH host 10.0.0.21:22 presents the same key as 10.0.0.20:22." in err
+    assert "SSH host 10.0.0.22:22 presents the same key as 10.0.0.20:22." in err
+    assert "cloned" in err
+    assert len(json.loads(out.splitlines()[-1])["enrolled"]) == 3
+
+
 def test_cli_expect_fingerprint_enrolls_and_proceeds_only_on_a_match(monkeypatch, capsys, tmp_path):
     from logs_migrate import cli
 
@@ -1753,3 +1828,114 @@ def test_verify_keeps_the_timeout_message_for_the_operator(tmp_path):
     assert result["outcome"] == "incomplete_verification"
     assert result["reason"] == Code.CONNECTION.value
     assert result["detail"] == "destination count query from 2026-03-01 timed out"
+
+
+def test_live_verification_separates_days_not_measured(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    # The selected bucket spans three days but the request and baseline cover one.
+    env.data["source"]["buckets"][0]["end"] = parse_time("2026-03-03T12:00:00Z")
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    result = engine.verify(run["id"])
+    assert result["expected_count"] == sum(b["messages"] for b in run["plan"]["selected"])
+    assert result["unmeasured_day_count"] == 2
+    assert result["actual_count"] is None
+    assert result["measured_arrival_count"] == 2
+
+
+def test_unmeasured_days_headline_is_one_figure_in_the_window_and_the_report(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.reporting import markdown
+
+    env, engine = _live_rig(tmp_path)
+    env.data["source"]["buckets"][0]["end"] = parse_time("2026-03-03T12:00:00Z")
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    result = engine.verify(run["id"])
+    sent = sum(b["messages"] for b in run["plan"]["selected"])
+    view = vm.verification_view(result, engine.status(), 0, False)
+    assert [t[0] for t in view["tiles"]] == ["Sent from selected groups", "Excluded latest data"]
+    assert view["tiles"][0][1] == f"{sent:,}"
+    assert "requested dates only" in view["tiles"][0][2]
+    assert "2 other days these groups touch were not counted" in view["tiles"][0][2]
+    report = markdown(engine.journal.load(run["id"]), [])
+    summary = report.splitlines()[2]
+    assert f"{sent:,} events sent from selected groups" in summary
+    assert "requested dates only" in summary and "2 other days" in summary
+    assert "events expected" not in summary
+
+
+def test_unrecognized_listing_names_the_host_and_never_the_remote_text(rigged):
+    env, _, _, ssh, _ = rigged
+    banner = "Welcome token=hunter2 AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 to the appliance"
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = banner + "\nsecond line\n"
+    inventory = env.node_inventory("src-1.lab")
+    assert inventory.buckets == [] and inventory.unrecognized is True
+    assert env.listing_warnings == {"src-1.lab"}
+
+
+def test_selftest_names_the_node_with_an_unrecognized_listing(rigged):
+    env, _, _, ssh, _ = rigged
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = "Welcome to the appliance 10.0.0.9\n"
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in result.steps if s.name.startswith("Node src-1.lab")]
+    assert step.status == "pass"
+    assert "no recognizable groups" in step.detail and "check this node by hand" in step.detail
+    assert "Welcome" not in step.detail and "10.0.0.9" not in step.detail
+
+
+def test_shared_ssh_keys_include_previously_enrolled_hosts():
+    from logs_migrate.trust import shared_ssh_keys
+
+    enrolled = {"kind": "ssh", "name": "node-a:22", "fingerprint": "a" * 64}
+    identities = [
+        Identity("ssh", "node-b:22", "a" * 64),
+        Identity("ssh", "node-c:22", "b" * 64),
+        Identity("tls", "node-d:443", "a" * 64),
+    ]
+    assert shared_ssh_keys([enrolled, *identities]) == [("node-b:22", "node-a:22")]
+
+
+@pytest.mark.parametrize("count_text", ["", " messages=not-a-number"])
+def test_missing_sealed_message_count_stays_unknown(rigged, count_text):
+    env, _, _, ssh, _ = rigged
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = (
+        f"id={A}, status=archived, startTime=1780543623050, endTime=1792570139600,{count_text}"
+    )
+    inventory = env.node_inventory("src-1.lab")
+    assert inventory.buckets[0].messages is None
+    cluster = env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    assert cluster.buckets[0].messages is None
+
+
+def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.reporting import markdown
+
+    env, engine = _live_rig(tmp_path)
+    env.data["source"]["buckets"][0]["messages"] = None
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    assert run["plan"]["selected"][0]["messages"] is None
+    assert "Unavailable" in str(vm.plan_view(run, None))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    result = engine.verify(run["id"])
+    assert result["expected_count"] is None
+    assert result["actual_count"] == 6
+    assert "Unavailable" in str(vm.verification_view(result, engine.status(), 0, False, run))
+    assert "unavailable" in markdown(engine.journal.load(run["id"]), []).lower()

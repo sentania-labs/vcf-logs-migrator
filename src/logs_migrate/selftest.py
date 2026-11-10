@@ -7,6 +7,7 @@ never credentials, never raw remote text.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
@@ -66,7 +67,13 @@ class SelfTest:
 def _code(error: Exception) -> str:
     if isinstance(error, SSHFailure):
         return f"{error.code.value}: {error.message}"
-    return error.code.value if isinstance(error, MigrationError) else "operation_failed"
+    if isinstance(error, MigrationError):
+        return (
+            f"{error.code.value}: {error.message}"
+            if hasattr(error, "message")
+            else error.code.value
+        )
+    return f"{type(error).__name__}: the check could not complete. Review the connection and retry."
 
 
 def _fmt_day(ms: int) -> str:
@@ -85,6 +92,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         try:
             value, detail = action()
         except Exception as error:  # Only codes and safe diagnostics cross.
+            logging.getLogger(__name__).exception("Self-test step %r failed", name)
             report.steps.append(Step(name, "fail", _code(error)))
             return None
         report.steps.append(Step(name, "pass", detail))
@@ -137,6 +145,11 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 f"service {inventory.service} · {len(sealed)} sealed ({len(bounded)} with dates), "
                 f"{len(active)} active · {sized} sized by du · {space}"
             )
+            if inventory.unrecognized:
+                detail += (
+                    " · WARNING: the bucket listing returned text but no recognizable groups; "
+                    "check this node by hand"
+                )
             if inventory.listing_keys:
                 detail += " · listing keys: " + ", ".join(inventory.listing_keys)
             if len(bounded) != len(sealed):
@@ -165,7 +178,15 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             + (f" · {undated} without dates (excluded from plans)" if undated else "")
         )
 
-    source = step("Source inventory model", source_cluster, skip=None if hosts else "no members")
+    source = step(
+        "Source inventory model",
+        source_cluster,
+        skip=None
+        if len(inventories) == len(hosts) and hosts
+        else "Check the failed node checks above and retry."
+        if hosts
+        else "No source cluster members were found; see the members check above.",
+    )
 
     def destination_version():
         version = env.destination_version()
@@ -243,7 +264,11 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         total = sum(daily.values())
         days = sum(1 for v in daily.values() if v)
         if not complete:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                f"Counts for {label} UTC were incomplete. "
+                "Check the appliance query service and retry.",
+            )
         return daily, f"{total:,} events on {days} days ({label}) · complete"
 
     step("Source daily counts", source_counts)
@@ -253,7 +278,11 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         total = sum(daily.values())
         days = sum(1 for v in daily.values() if v)
         if not complete:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                f"Counts for {label} UTC were incomplete. "
+                "Check the appliance query service and retry.",
+            )
         return daily, f"{total:,} events on {days} days ({label}) · complete"
 
     step(
@@ -279,7 +308,10 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     def recent():
         growth = env.source_growth()
         if growth["bytes"] is None:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                "Source activity could not be measured. Check the source nodes and retry.",
+            )
         seconds = growth["window_seconds"]
         if growth["bytes"]:
             detail = (
@@ -299,7 +331,10 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         elif sealed:
             requested = Window(min(b.start for b in sealed), max(b.end for b in sealed) + 1)
         else:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                "No sealed groups have usable dates. Check source inventory before planning.",
+            )
         preview = build_plan(source, destination, requested)
         detail = (
             f"{len(preview['selected'])} buckets, "

@@ -1,8 +1,10 @@
 """Pure planning and capacity checks. No date restriction or 90-day cap."""
 
+from collections import Counter
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 
-from .errors import Code, require
+from .errors import Code, MigrationError, require
 from .models import Bucket, Cluster, Window, last_sealed_day
 
 
@@ -60,16 +62,49 @@ BACKUP_ACK = (
 
 def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
     compatible(source, destination)
-    require(destination.history_complete, Code.INCOMPLETE)
+    if not destination.history_complete:
+        raise MigrationError(
+            Code.INCOMPLETE,
+            "Destination transfer history is incomplete. Check its migration status and retry.",
+        )
     selected = tuple(b for b in source.buckets if b.selected(window))
     undated = tuple(b for b in source.buckets if b.undated)
-    require(bool(selected), Code.INCOMPLETE)
-    require(len({b.id for b in selected}) == len(selected), Code.COLLISION)
+    if not selected:
+        raise MigrationError(
+            Code.INCOMPLETE,
+            "No dated sealed groups overlap the requested dates. "
+            "Check the date range and source inventory.",
+        )
+    duplicate_ids = {i for i, n in Counter(b.id for b in selected).items() if n > 1}
+    if duplicate_ids:
+        names = ", ".join(b.key for b in selected if b.id in duplicate_ids)
+        raise MigrationError(
+            Code.COLLISION,
+            f"Source groups have duplicate identities: {names}. "
+            "Inspect the source inventory before retrying.",
+        )
+    unproven = [
+        b.key for b in selected if not (b.complete and b.start is not None and b.end is not None)
+    ]
     require(
-        all(b.complete and b.start is not None and b.end is not None for b in selected),
+        not unproven,
         Code.INCOMPLETE,
+        "Selected groups have no proven start and end: " + ", ".join(unproven) + ".",
     )
-    require(not ({b.id for b in selected} & {b.id for b in destination.buckets}), Code.COLLISION)
+
+    def describe(b):
+        start = datetime.fromtimestamp(b.start / 1000, UTC).date()
+        end = datetime.fromtimestamp(b.end / 1000, UTC).date()
+        return f"{b.key} ({start} to {end} UTC)"
+
+    conflicts = {b.id for b in selected} & {b.id for b in destination.buckets}
+    if conflicts:
+        names = ", ".join(describe(b) for b in selected if b.id in conflicts)
+        raise MigrationError(
+            Code.COLLISION,
+            f"Selected groups already exist on the destination: {names}. "
+            "Choose dates that exclude these groups.",
+        )
     coverage = Window(min(b.start for b in selected), max(b.end for b in selected) + 1)
     space = capacity(destination, selected)
     return {

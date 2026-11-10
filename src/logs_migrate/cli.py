@@ -17,7 +17,7 @@ from .models import Verification, Window, parse_time
 from .planning import BACKUP_ACK
 from .reporting import markdown, report_data
 from .security import ENVIRONMENT, Credentials, harden_process
-from .trust import TrustRequired, TrustStore
+from .trust import TrustRequired, TrustStore, shared_ssh_keys
 
 CONNECTION_ENVIRONMENT = {
     "source": "LOGS_SOURCE",
@@ -251,6 +251,24 @@ def open_live(args):
         try:
             return env.open()
         except TrustRequired as pending:
+            existing = [
+                {"kind": kind, "name": name, "fingerprint": fingerprint}
+                for kind, name, fingerprint in trust.entries()
+            ]
+            pending_names = {i.name for i in pending.identities}
+            shared = [
+                (name, first)
+                for name, first in shared_ssh_keys(existing + pending.identities)
+                if name in pending_names
+            ]
+            for name, first in shared:
+                print(f"SSH host {name} presents the same key as {first}.", file=sys.stderr)
+            if shared:
+                print(
+                    "Appliances cloned from one image commonly share a host key; confirm "
+                    "that is expected before trusting these hosts.",
+                    file=sys.stderr,
+                )
             decisions = {i.name: _accept(i, args) for i in pending.identities}
             refused = [i for i in pending.identities if decisions[i.name] == "refuse"]
             if refused:
@@ -279,7 +297,7 @@ def open_live(args):
         except MigrationError as error:
             stage = env.notes.get("stage")
             if stage:
-                print(json.dumps({"stage": stage, "error": error.code.value}), file=sys.stderr)
+                error.stage = stage
             raise
     raise MigrationError(Code.AUTH)
 
@@ -420,6 +438,7 @@ def main(argv=None):
                     "error": error.code.value,
                     "run_id": getattr(args, "run_id", None),
                     **({"message": error.message} if hasattr(error, "message") else {}),
+                    **({"stage": error.stage} if hasattr(error, "stage") else {}),
                 }
             ),
             file=sys.stderr,

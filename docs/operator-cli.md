@@ -255,6 +255,15 @@ even while its status still shows nothing.
   unselected buckets are reported as partial without deciding the outcome. When no
   requested day is fully covered (every day is partial) the outcome is
   `incomplete_verification` with reason `no_fully_covered_days`.
+- Verification's selected-group expectation is the sum of the groups' recorded message counts.
+  For live runs, the destination arrival figure is the change from the pre-transfer baseline for
+  requested UTC days, not a count attributed to individual groups. If group coverage extends beyond
+  those days, `actual_count` is unavailable; `measured_arrival_count`, `measured_window`, and
+  `unmeasured_day_count` describe the narrower observation. The daily table retains the whole-day
+  arithmetic and determines the verification verdict. If evidence shows other arrivals during the
+  run, the arrival figure is unavailable. Count comparisons do not establish event-content equality.
+  Results recorded by an earlier version lack `count_basis`; the GUI and report show no figures for
+  them and ask for Verify to be run again.
 - Daily count equality is count evidence, not proof of identical message content,
   partition routing or field extraction. A report preserves active exclusions and
   does not authorize retiring source data that was not copied.
@@ -278,8 +287,11 @@ Secrets have no argv flags. Adapter failures are reduced to fixed error codes;
 raw responses, credentials and exception strings must never enter reports or
 logs. Private journal files use restrictive permissions and writer locking.
 
-The additions are SSH failures and count-query timeouts, which carry a `message`
-(CLI error JSON and the GUI). A timeout names the query, its scope (source or
+SSH failures, count-query timeouts and the refusals of planning, verification and the
+self-test carry a `message` (CLI error JSON and the GUI) naming what to act on: the
+conflicting or unproven groups with their node, id and UTC dates, or which counts were
+incomplete. Connection failures also carry a `stage` naming the host and step in the
+CLI error JSON. A timeout names the query, its scope (source or
 destination) and its UTC interval; the same text appears as `detail` in a
 verification that could not finish its counts. The SSH message comes from a closed
 vocabulary. It names the stage that failed: TCP

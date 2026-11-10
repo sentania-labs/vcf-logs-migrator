@@ -36,11 +36,28 @@ def parse_time(value: str) -> int:
         raise MigrationError(Code.INVALID_INPUT) from None
 
 
+def selected_message_count(buckets: list[dict]) -> int | None:
+    """A total is evidence only when every selected bucket has a count."""
+    counts = [bucket.get("messages") for bucket in buckets]
+    return None if any(count is None for count in counts) else sum(counts)
+
+
 class Verification(StrEnum):
     PENDING = "verification_pending"
     SUCCESS = "verified_success"
     DISCREPANCY = "verified_discrepancy"
     INCOMPLETE = "incomplete_verification"
+
+
+COUNT_BASIS = "selected_groups"
+LEGACY_RESULT_NOTE = (
+    "This result was recorded by an earlier version; run Verify again to see "
+    "selected-group figures."
+)
+
+
+def is_legacy_result(verification: dict) -> bool:
+    return "expected_count" in verification and verification.get("count_basis") != COUNT_BASIS
 
 
 _LABEL = re.compile(r"[A-Za-z0-9._:-]{0,128}")
@@ -71,7 +88,7 @@ class Bucket:
     partition: str
     status: str
     size: int
-    messages: int
+    messages: int | None
     start: int | None
     end: int | None  # Inclusive appliance max timestamp, not window end.
     manifest: str | None
@@ -97,7 +114,9 @@ class Bucket:
         require(self.status in {"active", "archived", "inactive"}, Code.SCHEMA)
         require(_label(self.node) and _label(self.partition, empty=True), Code.SCHEMA)
         require(type(self.size) is int and self.size >= 0, Code.SCHEMA)
-        require(type(self.messages) is int and self.messages >= 0, Code.SCHEMA)
+        require(
+            self.messages is None or type(self.messages) is int and self.messages >= 0, Code.SCHEMA
+        )
         if self.manifest is not None:
             require(bool(re.fullmatch(r"[0-9a-f]{64}", self.manifest)), Code.SCHEMA)
         if self.start is not None and self.end is not None:

@@ -103,6 +103,10 @@ class Session:
         try:
             return env.open()
         except TrustRequired as pending:
+            pending.existing = [
+                {"kind": kind, "name": name, "fingerprint": fingerprint}
+                for kind, name, fingerprint in self.store.entries()
+            ]
             self.pending_trust = {
                 identity.name: (identity, env.key_line(identity)) for identity in pending.identities
             }

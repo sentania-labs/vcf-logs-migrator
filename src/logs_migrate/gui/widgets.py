@@ -134,6 +134,11 @@ class KeyValues(QWidget):
             key_label = label(key, "muted")
             value_label = label(value, "value", wrap=True)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            value_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            value_label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             self.grid.addWidget(key_label, row, 0, Qt.AlignmentFlag.AlignTop)
             self.grid.addWidget(value_label, row, 1)
 
@@ -151,19 +156,24 @@ class KeyValues(QWidget):
 class Table(QTableWidget):
     """Read-only table with Lattice headers; rows are plain tuples of strings."""
 
-    def __init__(self, headers: Sequence[str], fit: Sequence[int] = ()):
+    def __init__(self, headers: Sequence[str], fit: Sequence[int] = (), *, wrap: bool = False):
         super().__init__(0, len(headers))
+        self._wrap_rows = wrap
         self.setHorizontalHeaderLabels([h.upper() for h in headers])
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+            if wrap
+            else QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if wrap else Qt.FocusPolicy.NoFocus)
         self.setShowGrid(False)
         self.setAlternatingRowColors(False)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setWordWrap(False)
+        self.setWordWrap(wrap)
         self.setMinimumWidth(0)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -184,7 +194,10 @@ class Table(QTableWidget):
         for r, values in enumerate(rows):
             for c, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | (Qt.ItemFlag.ItemIsSelectable if self._wrap_rows else Qt.ItemFlag.NoItemFlags)
+                )
                 # Narrow windows truncate cells; the full text stays one hover away.
                 item.setToolTip(plain_tip(tips[r] if tips and tips[r] else str(value)))
                 self.setItem(r, c, item)
@@ -201,6 +214,12 @@ class Table(QTableWidget):
             )
             for r in range(self.rowCount())
         ]
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if getattr(self, "_wrap_rows", False):
+            self.resizeRowsToContents()
+            self._fit()
 
     def _fit(self) -> None:
         height = self.horizontalHeader().height() + 2

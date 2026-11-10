@@ -118,7 +118,7 @@ class OverviewPage(Page):
                     "Available history",
                     vm.format_day_range(*extent) if extent else vm.UNAVAILABLE,
                 ),
-                ("Sealed events", vm.format_count(sum(b["messages"] for b in sealed))),
+                ("Sealed events", vm.format_count(vm.selected_message_count(sealed))),
             ]
         )
         self.destination_rows.set_rows(

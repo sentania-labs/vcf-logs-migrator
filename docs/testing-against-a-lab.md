@@ -82,6 +82,11 @@ A probe that fails prints which host it was contacting, for example
 `{"stage": "tls aria-logs-1.lab.example:9543", "error": "connection_failed"}`, and
 nothing from the remote side.
 
+When several SSH hosts present the same host key (common for appliances cloned from
+one image), the CLI prints `SSH host X presents the same key as Y.` to stderr and the
+trust dialog adds the same line. Each host is still enrolled separately; confirm the
+sharing is expected.
+
 Enrolled identities live in `~/.config/vcf-logs-migrator/trusted-identities.json`
 and `known_hosts` (mode 600). `logs-migrate trust list` shows them;
 `logs-migrate trust forget ssh host:22` removes one. A changed identity is refused
@@ -254,4 +259,4 @@ recorded.
   typed, so a VIP, a node name and an IP of the same endpoint share one record. Two
   nodes with different certificates do not.
 - The source member list must be readable from the typed node's config file; if it is
-  not, the connection fails (stage `source members`) rather than planning from one node.
+  not, the connection fails (stage `ssh <host>:<port> (members)`) rather than planning from one node.

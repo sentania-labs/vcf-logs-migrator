@@ -142,6 +142,7 @@ class NodeInventory:
     buckets: list[ListedBucket]
     usage: dict[str, int] = field(default_factory=dict)
     listing_keys: tuple[str, ...] = ()
+    unrecognized: bool = False
 
 
 # Parsers --------------------------------------------------------------------------------
@@ -634,6 +635,7 @@ class LiveEnvironment:
         self.trust = trust or TrustStore()
         self.clock = clock or SystemClock()
         self.notes: dict[str, object] = {}
+        self.listing_warnings: set[str] = set()
         self.members: list[str] = []
         self.destination_members: list[str] = []
         self.source_client: Logs90 | None = None
@@ -688,7 +690,7 @@ class LiveEnvironment:
             self._check(identity, line, unknown)
         if unknown:
             raise TrustRequired(unknown)
-        self.notes["stage"] = "source members"
+        self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port} (members)"
         self.source_client = self._logs_client(tls_source, "source_api", connection.source_api_user)
         if connection.preview:
             logs = self._https(tls_destination)
@@ -702,14 +704,17 @@ class LiveEnvironment:
         self.members = self.source_members()
         for host in self.members:
             if host != connection.source_host.lower():
+                self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
                 identity, line = probe_ssh(host, connection.ssh_port)
                 self._check(identity, line, unknown)
         if self._destination_ssh_enabled():
+            self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port} (members)"
             self.destination_members = self._members(
                 tls_destination[0], "destination_ssh", connection.destination_ssh_user
             )
             for host in self.destination_members:
                 if host != tls_destination[0].lower():
+                    self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
                     identity, line = probe_ssh(host, connection.ssh_port)
                     self._check(identity, line, unknown)
         if unknown:
@@ -731,7 +736,11 @@ class LiveEnvironment:
     def _ssh(self, host: str, credential: str, username: str) -> NodeSSH:
         name = f"{host}:{self.connection.ssh_port}"
         pin = self.trust.known(Identity("ssh", name, ""))
-        require(pin is not None, Code.AUTH)
+        require(
+            pin is not None,
+            Code.AUTH,
+            f"The SSH host key for {name} is not enrolled; trust it before connecting.",
+        )
         return NodeSSH(
             host,
             username,
@@ -788,17 +797,32 @@ class LiveEnvironment:
         if cached and time.monotonic() - cached[0] < 300:
             return cached[1]
         ssh = self._ssh(host, credential, username or self.connection.source_ssh_user)
-        service = ssh.read(ReadOperation.SERVICE).strip().lower()
-        capacity, used, available = parse_space(ssh.read(ReadOperation.SPACE))
-        listing = ssh.read(ReadOperation.INVENTORY)
+
+        def read(operation, label):
+            try:
+                return ssh.read(operation)
+            except MigrationError as error:
+                detail = getattr(
+                    error, "message", "The read did not complete. Check access and retry."
+                )
+                raise MigrationError(error.code, f"{host}: {label} failed. {detail}") from None
+
+        service = read(ReadOperation.SERVICE, "service check").strip().lower()
+        capacity, used, available = parse_space(read(ReadOperation.SPACE, "disk space check"))
+        listing = read(ReadOperation.INVENTORY, "bucket listing")
         buckets = parse_listing(listing)
+        unrecognized = bool(listing.strip()) and not buckets
+        if unrecognized:
+            self.listing_warnings.add(host)
+        else:
+            self.listing_warnings.discard(host)
         if self.on_progress:
             members = self.members if credential == "source_ssh" else self.destination_members
             position = members.index(host) + 1 if host in members else 1
             self.on_progress(
                 f"node {position}/{len(members) or 1} ({host}): sizing {len(buckets):,} buckets"
             )
-        usage = parse_usage(ssh.read(ReadOperation.USAGE))
+        usage = parse_usage(read(ReadOperation.USAGE, "bucket size check"))
         keys = tuple(sorted({k for b in buckets for k in b.keys}))
         result = NodeInventory(
             host,
@@ -813,6 +837,7 @@ class LiveEnvironment:
             buckets,
             usage,
             keys,
+            unrecognized,
         )
         self._inventory_cache[cache_key] = (time.monotonic(), result)
         return result
@@ -840,7 +865,7 @@ class LiveEnvironment:
                         partition,
                         "active" if active else "archived",
                         size,
-                        0 if active else (listed.messages or 0),
+                        0 if active else listed.messages,
                         None if active else listed.start,
                         None if active else listed.end,
                         None,
@@ -993,7 +1018,11 @@ class LiveEnvironment:
             if ids != first_ids or any(
                 i not in first_usage or i not in usage or usage[i] < first_usage[i] for i in ids
             ):
-                raise MigrationError(Code.INCOMPLETE)
+                raise MigrationError(
+                    Code.INCOMPLETE,
+                    f"Active buckets or their sizes changed on {host} during the growth "
+                    "sample. Retry when the source is steady.",
+                )
             return sum(usage[i] - first_usage[i] for i in ids)
 
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
