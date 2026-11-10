@@ -570,3 +570,25 @@ def test_progress_lines_clear_when_any_progress_job_settles(driver, job):
     driver.window._settle(job)
     assert driver.window.progress_label.text() == ""
     assert driver.window.progress_lines == {}
+
+
+def test_count_timeout_at_start_names_the_query_and_sends_nothing(driver):
+    from logs_migrate.errors import QueryTimeout
+
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    env = driver.window.worker.session.env
+    message = "source count query from 2026-03-01 to 2026-03-03 timed out"
+
+    def count(scope, window, keys):
+        raise QueryTimeout(message)
+
+    env.count = count
+    driver.start()
+    assert driver.state.started_run_id is None
+    page = driver.pages["plan"]
+    assert message in page.note.text()
+    assert "No API request was submitted." in page.note.text()
+    assert "may have reached the API" not in page.note.text()
+    assert page.start_button.isEnabled()
