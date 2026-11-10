@@ -1,6 +1,8 @@
 # VCF Logs Migrator
 
-Broadcom's built-in Log Data Transfer selects at most the most recent 90 days; VCF Logs Migrator can move older history too. It is for administrators moving logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs using the destination's migration API and provides count checks, but completion alone does not prove every event arrived; this project is not supported by Broadcom.
+VCF Logs Migrator is an independent community tool, not a Broadcom product, and is not supported by Broadcom. VCF Operations' built-in log data transfer supports 90 days of logs. This tool uses the same APIs and lets you move as much history as you want and have the patience for.
+
+It moves logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs and provides count checks, but completion alone does not prove every event arrived.
 
 ## Download
 
@@ -16,7 +18,7 @@ Each platform has one download with both the desktop window and CLI; no Python i
 
 ## Before you start
 
-- Snapshot the destination before copying. The transfer has no undo. The lab guide recommends snapshots of both appliances.
+- Copying only adds data to the destination and has no undo. Decide beforehand how you would recover.
 - You need an 8.18 cluster member address, a Logs API account and password, and root SSH access to **every** 8.18 member. The workstation needs access to Logs REST on port 9543 and SSH on port 22; the destination also needs SSH access to each source member.
 - You need the destination Logs address and API account and password, with access to port 9543. Optional destination root SSH lets the plan check available storage on each destination node.
 - During copy, the source root SSH password is sent to the destination so it can pull the data. Enter passwords at a prompt, in the window, or through the private credential methods in the [lab guide](docs/testing-against-a-lab.md), never in command arguments.
@@ -80,7 +82,7 @@ The default API user is `admin` and source SSH user is `root`; other names and c
 
    Copy the actual `id` from your plan and replace `<run-id>` below. If partitions differ, resolve them before copying; see [configuration rules](docs/operator-cli.md#configuration-rules).
 
-3. **Copy.** After taking the snapshot and reviewing the plan, start the transfer. The second acknowledgment is required when open groups are excluded. Keep the quotes exactly as shown.
+3. **Copy.** After deciding how you would recover and reviewing the plan, start the transfer. `--ack-backup` records your acknowledgment before a transfer with no undo. The second acknowledgment is required when open groups are excluded. Keep the quotes exactly as shown.
 
    ```text
    logs-migrate --journal migration.sqlite copy <run-id> --ack-backup --ack-active "i understand you aren't going to copy the latest data"
@@ -112,7 +114,7 @@ Open the download as shown above. These pictures use the simulator, not a real e
 
    ![Connections page in the simulator](docs/images/gui/04-connections.png)
 
-2. On **Discovery & Plan**, choose the dates and preview. Review the selected and excluded groups, capacity, partitions and warnings. Snapshot the destination and acknowledge the prompts before starting.
+2. On **Discovery & Plan**, choose the dates and preview. Review the selected and excluded groups, capacity, partitions and warnings. Decide how you would recover and acknowledge that there is no undo before starting.
 
    ![Plan preview in the simulator](docs/images/gui/07-plan-light.png)
 
