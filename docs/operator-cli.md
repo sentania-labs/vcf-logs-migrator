@@ -263,6 +263,9 @@ even while its status still shows nothing.
   the search-level second check. A group missing or differing on the destination makes
   the outcome `verified_discrepancy`; a group whose count is unknown makes it
   `incomplete_verification`.
+  Without destination SSH there is no inventory to compare: if the group coverage
+  reaches days beyond the requested ones (`unmeasured_day_count`), a matching daily
+  comparison is `incomplete_verification`, not `verified_success`.
   The simulator supplies per-event attribution. Live counts cannot: against real
   appliances verification is per run over the UTC days touched by the requested
   window (source per-day counts against destination counts minus the baseline
@@ -351,7 +354,9 @@ and `config apply` with the selected rules.
 With an empty fixture path in Settings the window connects to real appliances: the
 Connections page takes the addresses and passwords, unknown TLS certificates and SSH
 host keys open a trust dialog with their fingerprints, and Run self-test lists the
-same read-only checks as `logs-migrate selftest`.
+same read-only checks as `logs-migrate selftest`. Test probes every configured
+endpoint's identity first, with the addresses being contacted and elapsed time on the
+page, and asks for trust before any credential is sent.
 
 Standalone downloads of this same CLI and window are described in the README.
 
