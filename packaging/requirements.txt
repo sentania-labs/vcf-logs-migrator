@@ -8,7 +8,7 @@ PySide6-Essentials==6.11.3
 tzdata==2026.6
 
 # SSH must be frozen into every download, not only available to source installs.
-paramiko==4.0.0
+paramiko==5.0.0
 
 # Retained pending the separate cryptography dependency update.
 cryptography==48.0.1
