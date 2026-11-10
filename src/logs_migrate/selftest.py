@@ -114,11 +114,15 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         return hosts, detail
 
     hosts = step("Source cluster members (SSH)", members) or []
+    from concurrent.futures import ThreadPoolExecutor
+
     inventories = []
+    pool = ThreadPoolExecutor(max_workers=max(1, len(hosts)))
+    futures = {host: pool.submit(env.node_inventory, host) for host in hosts}
     for host in hosts:
 
         def node(host=host):
-            inventory = env.node_inventory(host)
+            inventory = futures[host].result()
             inventories.append(inventory)
             sealed = [b for b in inventory.buckets if b.status != "active"]
             active = [b for b in inventory.buckets if b.status == "active"]
@@ -142,6 +146,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             return inventory, detail
 
         step(f"Node {host} (SSH listing, du, df, service)", node)
+    pool.shutdown()
 
     def source_cluster():
         cluster = env.source_cluster()
@@ -272,13 +277,18 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         step("Destination 9.1 count query probe", count_probe)
 
     def recent():
-        events = env.recent_source_events()
-        if events is None:
+        growth = env.source_growth()
+        if growth["bytes"] is None:
             raise MigrationError(Code.INCOMPLETE)
-        return events, (
-            f"{events:,} events in the last 24 hours"
-            + (" · source is still receiving events" if events else " · source looks quiet")
-        )
+        seconds = growth["window_seconds"]
+        if growth["bytes"]:
+            detail = (
+                f"active buckets on {', '.join(growth['nodes'])} grew by "
+                f"{growth['bytes']:,} bytes in {seconds} seconds"
+            )
+        else:
+            detail = f"no active bucket growth in {seconds} seconds"
+        return growth, detail
 
     step("Source ingest (cutover check)", recent)
 
@@ -298,7 +308,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             f"{_fmt_day(preview['coverage']['end'] - 1)} · "
             f"{len(preview['active_skipped'])} active skipped · "
             f"{len(preview['undated_excluded'])} undated excluded · "
-            f"last sealed day {preview['last_fully_sealed_day'] or 'unknown'}"
+            "last day covered only by sealed buckets "
+            f"{preview['last_fully_sealed_day'] or 'unknown'}"
         )
         if preview["capacity"]["unknown"]:
             detail += " · destination budget unknown"

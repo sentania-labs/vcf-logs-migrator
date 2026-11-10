@@ -115,6 +115,19 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             else []
         )
         + (
+            [
+                "Active buckets carry no dates on this appliance and may still receive "
+                "older-dated data (backfill or late agents); the last day covered only by "
+                "sealed buckets is not a guarantee. Verify reports days at or after it as "
+                "partial and a count difference on an earlier day as a discrepancy."
+            ]
+            if any(
+                b.status == "active" and not (b.bounds_proven and b.start is not None)
+                for b in source.buckets
+            )
+            else []
+        )
+        + (
             []
             if space["fits"]
             else ["Selected buckets exceed a destination node's available repository budget."]

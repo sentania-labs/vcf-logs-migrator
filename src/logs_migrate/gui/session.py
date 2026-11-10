@@ -28,6 +28,7 @@ class Session:
 
     def __init__(self):
         self.env = None
+        self.on_progress = None
         self.engine = None
         self.journal = None
         self.credentials = None
@@ -98,6 +99,7 @@ class Session:
         )
         self.store = self.store or TrustStore()
         env = LiveEnvironment(connection, self.credentials, self.store)
+        env.on_progress = self.on_progress
         try:
             return env.open()
         except TrustRequired as pending:
@@ -222,7 +224,8 @@ class Session:
             events = self.journal.events(run_id)[before:]
             kinds = {event["kind"] for event in events}
             if "api_start_requested" not in kinds or "api_start_rejected" in kinds:
-                raise LocalError("pre_start:" + vm.describe_error(error.code.value)) from None
+                reason = getattr(error, "message", None) or vm.describe_error(error.code.value)
+                raise LocalError("pre_start:" + reason) from None
             raise
 
     def status(self, *, run_id: str | None = None) -> dict:

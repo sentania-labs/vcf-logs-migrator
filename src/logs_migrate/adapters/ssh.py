@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from enum import StrEnum
 
 from ..errors import Code, MigrationError, require
@@ -69,6 +70,19 @@ class NodeSSH:
 
     def read(self, operation: ReadOperation) -> str:
         require(operation in _READS, Code.INVALID_INPUT)
+        return self._read_command(_READS[operation])
+
+    def active_usage(self, ids: list[str]) -> str:
+        # IDs come from the listing but must be validated before entering the fixed command.
+        require(
+            all(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", i) for i in ids),
+            Code.SCHEMA,
+        )
+        if not ids:
+            return ""
+        return self._read_command("du -sB1 " + " ".join(f"{STORE}/{i}" for i in ids))
+
+    def _read_command(self, command: str) -> str:
         client = None
         stage = "host"
         try:
@@ -105,8 +119,8 @@ class NodeSSH:
                 banner_timeout=self.timeout,
             )
             stage = "command"
-            log.debug("SSH authentication succeeded; command=%s", _READS[operation])
-            _, stdout, stderr = client.exec_command(_READS[operation], timeout=self.timeout)
+            log.debug("SSH authentication succeeded; command=%s", command)
+            _, stdout, stderr = client.exec_command(command, timeout=self.timeout)
             # Never print stderr; remote error text is untrusted and may contain credentials.
             output = stdout.read(16 * 1024 * 1024 + 1)
             require(len(output) <= 16 * 1024 * 1024, Code.SCHEMA)

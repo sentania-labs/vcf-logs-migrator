@@ -38,6 +38,12 @@ class MigrationError(Exception):
         super().__init__(code.value)
 
 
+class QueryTimeout(MigrationError):
+    def __init__(self, message="Request timed out"):
+        super().__init__(Code.CONNECTION)
+        self.message = message
+
+
 class Rejection(MigrationError):
     """The appliance answered with an HTTP error status: the request was received and refused."""
 

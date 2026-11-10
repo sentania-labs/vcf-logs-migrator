@@ -38,7 +38,8 @@ def markdown(run, events):
         f"Requested dates (Unix ms): {json.dumps(plan['window'], sort_keys=True)}.",
         f"Whole-bucket coverage (Unix ms): {json.dumps(plan['coverage'], sort_keys=True)}.",
         f"Active buckets skipped: {len(plan['active_skipped'])}.",
-        f"Last fully sealed day: {plan['last_fully_sealed_day'] or 'unknown'}.",
+        "Last day covered only by sealed buckets right now: "
+        f"{plan['last_fully_sealed_day'] or 'unknown'}.",
         *(
             [
                 "Sealed buckets excluded for having no time range: "
@@ -60,6 +61,8 @@ def markdown(run, events):
         ]
     if verification.get("reason"):
         lines += [f"Reason: {verification['reason']}.", ""]
+        if verification.get("detail"):
+            lines += [f"Detail: {verification['detail']}", ""]
     if "daily" in verification:
         lines += [
             "| Day | Source | Pre-existing | New ingest | Expected | Actual | Difference |",

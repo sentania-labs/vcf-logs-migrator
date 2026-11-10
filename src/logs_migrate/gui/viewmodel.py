@@ -385,10 +385,13 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         )
         tips.append(f"Sealed bucket {b['id']} on {b['node']} reports no time range")
     if plan["last_fully_sealed_day"]:
-        sealed_text = f"Last fully sealed day: {format_day_label(plan['last_fully_sealed_day'])}."
+        sealed_text = (
+            "Last day covered only by sealed buckets right now: "
+            f"{format_day_label(plan['last_fully_sealed_day'])}."
+        )
     else:
         sealed_text = (
-            "Last fully sealed day: not proven (open group bounds unknown); "
+            "Last day covered only by sealed buckets: not proven (open group bounds unknown); "
             f"sealed groups end {format_day(day_of(coverage['end'] - 1))}."
         )
     checks = [
@@ -428,17 +431,18 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
     )
     ingest = plan.get("source_ingest")
     if ingest is not None:
-        recent = ingest.get("events")
-        hours = ingest.get("window_seconds", 86400) // 3600
-        checks.append(
-            (
-                "Source ingest",
-                UNAVAILABLE
-                if recent is None
-                else f"{format_count(recent)} events in the last {hours} h"
-                + ("; source still receiving" if recent else "; source quiet"),
+        growth_bytes = ingest.get("bytes")
+        seconds = ingest.get("window_seconds")
+        if growth_bytes is None:
+            detail = UNAVAILABLE
+        elif growth_bytes:
+            detail = (
+                f"Active buckets on {', '.join(ingest['nodes'])} grew by "
+                f"{format_bytes(growth_bytes)} in {seconds} s"
             )
-        )
+        else:
+            detail = f"No active bucket growth in {seconds} s"
+        checks.append(("Source ingest", detail))
     required = capacity["required_bytes"]
     storage = [
         (
@@ -974,9 +978,15 @@ def verification_view(
         why = {
             "incomplete_evidence": "No selected group has been received yet, or the count queries "
             "did not complete and repeat consistently.",
+            "no_fully_covered_days": (
+                "No requested day is fully covered; open groups may contain "
+                "late or backfilled data."
+            ),
             "destination_busy": "The destination task is still running.",
             "topology_changed": "The destination identity changed since the plan.",
         }.get(reason or "", describe_error(reason) if reason else "")
+        if result.get("detail"):
+            why += f" {result['detail']}"
         if task in {"cancelled", "failed"}:
             why += (
                 f" The API task {task}; plan the remainder with a window that excludes "

@@ -13,12 +13,14 @@ start, cancel and config writes. Nothing stops a service or deletes a bucket.
 from __future__ import annotations
 
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..errors import Accepted, Code, MigrationError, require
+from ..errors import Accepted, Code, MigrationError, QueryTimeout, require
 from ..models import Bucket, Cluster, Counts, Node, Partition, Window
 from ..ports import History, NodeTransfer, SystemClock, Transfer
 from ..security import Credentials, Secret
@@ -39,7 +41,11 @@ CMD_BLOCK = re.compile(r"\bcmd\s*=\s*\[([^\]]*)\]", re.IGNORECASE)
 SPACE_BEFORE_KEY = re.compile(r"(?<=[^,\s])\s+(?=[A-Za-z_][A-Za-z0-9_]*=)")
 HOST_ATTRIBUTE = re.compile(r'host\s*=\s*"([^"]+)"')
 DISTRIBUTED = re.compile(r"<distributed\b.*?</distributed>", re.DOTALL | re.IGNORECASE)
-RECENT_SECONDS = 86_400
+
+
+def _date_label(ms):
+    return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%d")
+
 
 LISTING_KEYS = {
     "id": ("id", "bucketid", "bucket"),
@@ -634,6 +640,8 @@ class LiveEnvironment:
         self.destination_client: Logs90 | None = None
         self.config_env: RestConfigEnvironment | None = None
         self._pending: dict[str, str] = {}
+        self._inventory_cache = {}
+        self.on_progress = None
 
     # Identity trust ----------------------------------------------------------------------
 
@@ -775,14 +783,24 @@ class LiveEnvironment:
     def node_inventory(
         self, host: str, credential: str = "source_ssh", username: str | None = None
     ) -> NodeInventory:
+        cache_key = (host, credential, username)
+        cached = self._inventory_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < 300:
+            return cached[1]
         ssh = self._ssh(host, credential, username or self.connection.source_ssh_user)
         service = ssh.read(ReadOperation.SERVICE).strip().lower()
         capacity, used, available = parse_space(ssh.read(ReadOperation.SPACE))
         listing = ssh.read(ReadOperation.INVENTORY)
         buckets = parse_listing(listing)
+        if self.on_progress:
+            members = self.members if credential == "source_ssh" else self.destination_members
+            position = members.index(host) + 1 if host in members else 1
+            self.on_progress(
+                f"node {position}/{len(members) or 1} ({host}): sizing {len(buckets):,} buckets"
+            )
         usage = parse_usage(ssh.read(ReadOperation.USAGE))
         keys = tuple(sorted({k for b in buckets for k in b.keys}))
-        return NodeInventory(
+        result = NodeInventory(
             host,
             "running"
             if service == "active"
@@ -796,6 +814,8 @@ class LiveEnvironment:
             usage,
             keys,
         )
+        self._inventory_cache[cache_key] = (time.monotonic(), result)
+        return result
 
     def _cluster_from_nodes(
         self, ident: str, version: str, inventories: list[NodeInventory], partitions, identity: str
@@ -838,7 +858,8 @@ class LiveEnvironment:
         version = self.source_version()
         partitions = partition_models(parse_partitions(self.source_client.partitions()))
         members = self.members or self.source_members()
-        inventories = [self.node_inventory(host) for host in members]
+        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+            inventories = list(pool.map(self.node_inventory, members))
         self.notes["source_listing_keys"] = sorted({k for i in inventories for k in i.listing_keys})
         return self._cluster_from_nodes(
             cluster_id(self.source_client.identity),
@@ -863,10 +884,15 @@ class LiveEnvironment:
             members = self.destination_members or self._members(
                 host, "destination_ssh", self.connection.destination_ssh_user
             )
-            inventories = [
-                self.node_inventory(member, "destination_ssh", self.connection.destination_ssh_user)
-                for member in members
-            ]
+            with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+                inventories = list(
+                    pool.map(
+                        lambda member: self.node_inventory(
+                            member, "destination_ssh", self.connection.destination_ssh_user
+                        ),
+                        members,
+                    )
+                )
             return self._cluster_from_nodes(
                 cluster_id(self.destination_client.identity),
                 version,
@@ -921,7 +947,19 @@ class LiveEnvironment:
         )
 
     def _counts(self, client: Logs90, scope: str, window: Window) -> Counts:
-        daily, complete = client.daily_counts(window)
+        def progress(start, end):
+            if self.on_progress:
+                self.on_progress(
+                    f"Counting {scope}: {_date_label(start)} to {_date_label(end)} (UTC)"
+                )
+
+        client.count_progress = progress
+        try:
+            daily, complete = client.daily_counts(window)
+        except QueryTimeout as error:
+            raise QueryTimeout(f"{scope} {error.message}") from None
+        finally:
+            client.count_progress = None
         return Counts(complete, tuple(sorted(daily.items())), (), scope)
 
     def count(self, scope: str, window: Window, bucket_keys: tuple[str, ...]) -> Counts:
@@ -934,16 +972,38 @@ class LiveEnvironment:
             return Counts(True, (), (), "ingest")
         raise MigrationError(Code.SCHEMA)
 
-    def recent_source_events(self, seconds: int = RECENT_SECONDS) -> int | None:
-        """Events the source counted in the last `seconds`; None when the query was partial."""
-        require(self.source_client is not None, Code.STATE)
-        now = int(datetime.now(UTC).timestamp() * 1000)
-        # The server applies the timestamp bounds before binning, so the bin sum is the
-        # count inside the exact window, whatever the bins are aligned to.
-        daily, complete = self.source_client.daily_counts(Window(now - seconds * 1000, now))
-        if not complete:
-            return None
-        return sum(daily.values())
+    def source_growth(self) -> dict:
+        """Compare active directory sizes, never event timestamps or a full inventory."""
+        members = self.members or self.source_members()
+
+        def sample(host):
+            ssh = self._ssh(host, "source_ssh", self.connection.source_ssh_user)
+            listing = parse_listing(ssh.read(ReadOperation.INVENTORY))
+            ids = sorted(b.id for b in listing if b.status == "active")
+            return ids, parse_usage(ssh.active_usage(ids))
+
+        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+            before = dict(zip(members, pool.map(sample, members), strict=True))
+        sampled = time.monotonic()
+        self.clock.sleep(5)
+
+        def observe(host):
+            ids, usage = sample(host)
+            first_ids, first_usage = before[host]
+            if ids != first_ids or any(
+                i not in first_usage or i not in usage or usage[i] < first_usage[i] for i in ids
+            ):
+                raise MigrationError(Code.INCOMPLETE)
+            return sum(usage[i] - first_usage[i] for i in ids)
+
+        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+            changes = list(pool.map(observe, members))
+        elapsed = max(1, round(time.monotonic() - sampled))
+        return {
+            "bytes": sum(changes),
+            "nodes": [h for h, n in zip(members, changes, strict=False) if n],
+            "window_seconds": elapsed,
+        }
 
     def test_mover(self) -> None:
         require(self.destination_client is not None, Code.STATE)

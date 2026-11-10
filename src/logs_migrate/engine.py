@@ -25,7 +25,6 @@ from .verification import combine, reconcile, stable_counts
 
 TERMINAL = {"idle", "completed", "cancelled", "failed"}
 EVERYTHING = Window(0, EVERYTHING_END)
-INGEST_WINDOW_SECONDS = 86_400
 # A start whose outcome is uncertain (no HTTP answer) holds its window this long; after that,
 # an appliance history with no task covering the window is the evidence that nothing started.
 UNCERTAIN_RELEASE_SECONDS = 900
@@ -46,14 +45,14 @@ def _day(ms: int) -> str:
 
 
 def partial_days(source, plan: dict) -> list[str]:
-    """Covered days whose source events are not all in the selected buckets: days shared
+    """Requested days whose source events are not all in the selected buckets: days shared
     with an unselected sealed bucket, and days at or after the active tail. The tail starts
     at the first active bucket's proven start; when active bounds are unknown (the 8.18
     listing shows none) it starts at the oldest node's newest sealed bucket end.
     That is the sealed frontier. Counts on partial days are reported, never judged; a day
     before the frontier that an open bucket secretly holds late arrivals for shows up as a
     discrepancy, not a pass."""
-    coverage = day_window(Window(**plan["coverage"]))
+    coverage = day_window(Window(**plan.get("window", plan["coverage"])))
     selected = {b["node"] + "/" + b["id"] for b in plan["selected"]}
     days = []
     cursor = coverage.start
@@ -230,15 +229,11 @@ class Engine:
                 require(not coverage.overlaps(prior.window), Code.OVERLAP)
 
     def _source_ingest(self) -> dict:
-        """Whether the source is still receiving events: a cutover check that warns."""
-        reader = getattr(self.env, "recent_source_events", None)
-        events = None
-        if reader is not None:
-            try:
-                events = reader(INGEST_WINDOW_SECONDS)
-            except MigrationError:
-                events = None
-        return {"window_seconds": INGEST_WINDOW_SECONDS, "events": events}
+        try:
+            return self.env.source_growth()
+        except MigrationError:
+            pass
+        return {"bytes": None, "nodes": [], "window_seconds": None}
 
     @safe_boundary
     def discover(self):
@@ -255,18 +250,13 @@ class Engine:
             source, destination = self.env.discover()
             plan = build_plan(source, destination, window)
             plan["source_ingest"] = self._source_ingest()
-            events = plan["source_ingest"]["events"]
-            hours = INGEST_WINDOW_SECONDS // 3600
-            if events is None:
+            growth = plan["source_ingest"]
+            if growth["bytes"] is None:
+                plan["warnings"].append("Source growth could not be observed; confirm cutover.")
+            elif growth["bytes"]:
                 plan["warnings"].append(
-                    f"Source ingest in the last {hours} hours could not be observed; "
-                    "confirm cutover before relying on the last sealed day."
-                )
-            elif events:
-                plan["warnings"].append(
-                    f"The source received {events:,} events in the last {hours} hours. "
-                    "Open buckets keep growing; a later run of the same dates collects the "
-                    "tail once they seal."
+                    f"Active buckets on {', '.join(growth['nodes'])} grew by "
+                    f"{growth['bytes']:,} bytes in {growth['window_seconds']} seconds."
                 )
             plan["partial_days"] = partial_days(source, plan)
             self._settle(destination.id)
@@ -318,6 +308,10 @@ class Engine:
                 ),
                 Code.STATE,
             )
+            # Authorization always rechecks the appliances, even after a cached preview.
+            cache = getattr(self.env, "_inventory_cache", None)
+            if cache is not None:
+                cache.clear()
             source, destination = self.env.discover()
             fresh = build_plan(source, destination, Window(**run["plan"]["window"]))
             require(
@@ -346,8 +340,9 @@ class Engine:
                 run["baseline"] = asdict(self._counts(policy, "baseline", EVERYTHING, ()))
             else:
                 # Live counts are per day for the whole cluster, so the evidence is the
-                # covered days: source and destination baseline over the same days.
-                days = day_window(coverage)
+                # requested UTC days: source and destination baseline over the same days.
+                days = day_window(Window(**run["plan"]["window"]))
+                run["count_window"] = asdict(days)
                 run["source_by_bucket"] = {}
                 run["source_counts"] = asdict(self._counts(policy, "source", days, keys))
                 try:
@@ -355,7 +350,8 @@ class Engine:
                 except MigrationError as error:
                     # 9.1.1: no qualified count route. The transfer can still run; the
                     # verification will report incomplete evidence.
-                    require(error.code == Code.UNSUPPORTED, error.code)
+                    if error.code != Code.UNSUPPORTED:
+                        raise
                     run["baseline"] = None
                 run["partial_days"] = partial_days(source, fresh)
             run["backup_ack"] = True
@@ -551,6 +547,7 @@ class Engine:
                     "outcome": Verification.INCOMPLETE.value,
                     "complete": False,
                     "reason": error.code.value,
+                    **({"detail": error.message} if hasattr(error, "message") else {}),
                 }
             result["at"] = self.clock.now()
             run["verification"] = result
@@ -608,7 +605,11 @@ class Engine:
         source = Counts.from_dict(run["source_counts"])
         baseline = Counts.from_dict(run["baseline"])
         policy = Policy(**run["query_policy"])
-        days = day_window(Window(**run["plan"]["coverage"]))
+        days = (
+            Window(**run["count_window"])
+            if "count_window" in run
+            else day_window(Window(**run["plan"]["coverage"]))
+        )
         actual = self._counts(policy, "destination", days, ())
         require(actual == self._counts(policy, "destination", days, ()), Code.INCOMPLETE)
         ingest = Counts(True, (), (), "ingest")
@@ -619,12 +620,16 @@ class Engine:
         full = [d for d in result["daily"] if not d["partial"]]
         # Without a single fully covered day there is no evidence to judge; that is
         # incomplete, never success.
-        require(bool(full), Code.INCOMPLETE)
         result["outcome"] = (
-            Verification.DISCREPANCY.value
+            Verification.INCOMPLETE.value
+            if not full
+            else Verification.DISCREPANCY.value
             if any(d["difference"] != 0 for d in full)
             else Verification.SUCCESS.value
         )
+        if not full:
+            result["complete"] = False
+            result["reason"] = "no_fully_covered_days"
         result["partial_days"] = sorted(partial)
         result["partial_differences"] = any(
             d["difference"] != 0 for d in result["daily"] if d["partial"]

@@ -249,18 +249,13 @@ class SimulatedEnvironment:
             complete, tuple(sorted(daily.items())), tuple(sorted(identities.items())), scope
         )
 
-    def recent_source_events(self, seconds=86_400):
-        """Source events stamped within `seconds` of the fixture's `now_ms` (the simulated
-        clock epoch by default); `recent_events` overrides the figure, `null` means unknown."""
-        if "recent_events" in self.data:
-            value = self.data["recent_events"]
-            require(value is None or type(value) is int and value >= 0, Code.SCHEMA)
-            return value
-        now = self.data.get("now_ms", 1_793_923_200_000)
-        cutoff = now - seconds * 1000
-        return sum(
-            e.get("multiplicity", 1) for e in self.data["source_events"] if e["time"] >= cutoff
-        )
+    def source_growth(self):
+        """Growth of the source's active buckets: quiet unless the fixture's `source_growth`
+        says otherwise; a `null` byte figure means it could not be observed."""
+        growth = self.data.get("source_growth", {"bytes": 0, "nodes": [], "window_seconds": 5})
+        size = growth["bytes"]
+        require(size is None or type(size) is int and size >= 0, Code.SCHEMA)
+        return dict(growth)
 
     def test_mover(self):
         self._trace("test_mover")

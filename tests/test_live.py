@@ -315,12 +315,17 @@ class FakeSSH:
         env = self
 
         class Client:
+            def active_usage(self, ids):
+                reply = env.replies[(host, ReadOperation.USAGE)]
+                return reply.pop(0) if isinstance(reply, list) else reply
+
             def read(self, operation):
                 env.reads.append((host, operation))
                 try:
-                    return env.replies[(host, operation)]
+                    reply = env.replies[(host, operation)]
                 except KeyError:
                     raise MigrationError(Code.CONNECTION) from None
+                return reply.pop(0) if isinstance(reply, list) else reply
 
         return Client()
 
@@ -498,7 +503,7 @@ def test_start_does_not_adopt_the_previous_task_with_the_same_window(rigged):
     assert task.id == "" and task.status == "running"  # No creation time to bind it safely.
 
 
-def _run_selftest(rigged, window):
+def _run_selftest(rigged, window, growth=None):
     from logs_migrate import selftest
 
     env, source, destination, ssh = trusted(rigged)
@@ -535,6 +540,7 @@ def _run_selftest(rigged, window):
         return destination_request(method, path, body, headers)
 
     destination.request = destination_counts
+    env.source_growth = lambda: growth or {"bytes": 0, "nodes": [], "window_seconds": 5}
     return env, destination, selftest.run(env, window)
 
 
@@ -549,6 +555,24 @@ def test_selftest_reports_every_read_and_sends_nothing(rigged):
     data = result.data()
     assert data["summary"]["fail"] == 0 and "status_response_keys" in data["notes"]
     assert "canary" not in json.dumps(data)
+
+
+def test_selftest_names_active_bucket_growth_not_event_counts(rigged):
+    grew = {"bytes": 2048, "nodes": ["src-1.lab"], "window_seconds": 7}
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000), grew)
+    (step,) = [s for s in result.steps if s.name == "Source ingest (cutover check)"]
+    assert step.status == "pass"
+    assert step.detail == "active buckets on src-1.lab grew by 2,048 bytes in 7 seconds"
+    _, _, quiet = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in quiet.steps if s.name == "Source ingest (cutover check)"]
+    assert step.detail == "no active bucket growth in 5 seconds"
+
+
+def test_selftest_fails_the_cutover_check_when_growth_cannot_be_observed(rigged):
+    unknown = {"bytes": None, "nodes": [], "window_seconds": None}
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000), unknown)
+    (step,) = [s for s in result.steps if s.name == "Source ingest (cutover check)"]
+    assert step.status == "fail" and step.detail == Code.INCOMPLETE.value
 
 
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
@@ -577,7 +601,8 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
     )
     # The open bucket has no bounds, so the sealed frontier (newest sealed end, Mar 3) starts
     # the partial tail; Mar 1 and Mar 2 are fully covered days.
-    assert run["plan"]["partial_days"] == ["2026-03-03"]
+    assert run["plan"]["partial_days"][0] == "2026-03-03"
+    assert "2026-03-02" not in run["plan"]["partial_days"]
     started = engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert started["task"]["status"] == "running"
     assert engine.status()["status"] == "completed"
@@ -585,8 +610,8 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
     # New ingest landed on Mar 1, a fully covered day; counts cannot attribute it, so the
     # honest answer is a discrepancy on that day, never a pass.
     assert result["outcome"] == "verified_discrepancy"
-    assert [d["difference"] for d in result["daily"]] == [1, 0, 0]
-    assert [d["partial"] for d in result["daily"]] == [False, False, True]
+    assert [d["difference"] for d in result["daily"]][:3] == [1, 0, 0]
+    assert [d["partial"] for d in result["daily"]][:3] == [False, False, True]
     assert result["buckets"]["covered"] and not result["buckets"]["not_received"]
     assert "not attributed" in result["method"]
 
@@ -610,7 +635,7 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_success" and result["partial_days"] == ["2026-03-03"]
+    assert result["outcome"] == "verified_success" and "2026-03-03" in result["partial_days"]
     assert not result["partial_differences"]
     # Nothing landed (the API said COMPLETED anyway): a discrepancy, never a pass.
     env.data["destination_events"] = [
@@ -1442,3 +1467,289 @@ def test_recorded_90_task_list_selects_this_task_and_falls_back_only_for_unique_
     response["tasks"].append(dict(first, taskId="duplicate"))
     assert env.transfer_for(window=window, attempted_at_ms=first["taskCreateTime"]).status == "idle"
     assert env.transfer_for("missing").status == "idle"
+
+
+STORE = "/storage/core/loginsight/cidata/store/"
+
+
+def test_source_growth_compares_active_directory_sizes_only(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab"]
+    env.clock.sleep = lambda seconds: None
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [f"1000 {STORE}{C}\n", f"1300 {STORE}{C}\n"]
+    result = env.source_growth()
+    assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
+    assert result["window_seconds"] >= 1
+
+
+def test_source_growth_counts_a_node_without_active_buckets_as_idle(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab", "src-2.lab"]
+    env.clock.sleep = lambda seconds: None
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [f"1000 {STORE}{C}\n", f"1300 {STORE}{C}\n"]
+    ssh.replies[("src-2.lab", ReadOperation.INVENTORY)] = LISTING.replace(
+        "status=active", "status=archived"
+    )
+    ssh.replies[("src-2.lab", ReadOperation.USAGE)] = ""
+    result = env.source_growth()
+    assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
+
+
+def test_source_growth_never_runs_the_full_per_node_inventory(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab", "src-2.lab"]
+    env.clock.sleep = lambda seconds: None
+    for host in env.members:
+        ssh.replies[(host, ReadOperation.USAGE)] = f"1000 {STORE}{C}\n"
+    ssh.reads.clear()
+    result = env.source_growth()
+    assert result["bytes"] == 0 and result["nodes"] == []
+    assert {host for host, _ in ssh.reads} == set(env.members)
+    assert {op for _, op in ssh.reads} == {ReadOperation.INVENTORY}
+
+
+def test_source_growth_ignores_a_stale_cached_inventory(rigged, monkeypatch):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab"]
+    now = [1000.0]
+    monkeypatch.setattr(live.time, "monotonic", lambda: now[0])
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {STORE}{C}\n"
+    env.node_inventory("src-1.lab")
+    now[0] += 250
+    env.clock.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    rolled = "44444444-4444-4444-4444-444444444444"
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = LISTING.replace(C, rolled)
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
+        f"4000 {STORE}{rolled}\n",
+        f"4100 {STORE}{rolled}\n",
+    ]
+    result = env.source_growth()
+    assert result["bytes"] == 100 and result["window_seconds"] == 5
+
+
+def test_active_buckets_keep_no_dates_whatever_the_listing_reports(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    stamped = LISTING.replace(
+        f"id={C}, status=active created=2026-11-08T00:00:00.000+0000 size=0 cmd=[NULL]",
+        f"id={C}, status=active created=2026-11-08T00:00:00.000+0000 size=0 "
+        "cmd=[startTime=1780000000000 endTime=1781000000000 messages=7 generation=1]",
+    )
+    assert stamped != LISTING
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = stamped
+    inventory = env.node_inventory("src-1.lab")
+    cluster = env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    (bucket,) = [b for b in cluster.buckets if b.id == C]
+    assert bucket.status == "active"
+    assert (bucket.start, bucket.end, bucket.messages, bucket.bounds_proven) == (
+        None,
+        None,
+        0,
+        False,
+    )
+
+
+def test_source_growth_refuses_bucket_rollover(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab"]
+    env.clock.sleep = lambda seconds: None
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = [
+        LISTING,
+        LISTING.replace("status=active", "status=archived"),
+    ]
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [f"1000 {STORE}{C}\n", ""]
+    with pytest.raises(MigrationError, match=Code.INCOMPLETE):
+        env.source_growth()
+
+
+def test_live_copy_counts_requested_days_not_full_bucket_coverage(tmp_path):
+    from conftest import FIXTURES
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    source = data["source"]
+    # The masked r1 request was Mar 1-3, 2024. Extend one selected bucket to
+    # reproduce the roughly 25-month coverage in the later large-source run.
+    source["buckets"][0]["start"] = parse_time("2023-03-01T00:00:00Z")
+    source["buckets"][0]["end"] = parse_time("2025-04-01T00:00:00Z")
+    source["buckets"][1]["start"] = parse_time("2024-03-01T00:00:11.738Z")
+    source["buckets"][1]["end"] = parse_time("2024-03-02T00:00:00Z")
+    env, engine = _live_rig(tmp_path, {"source": source})
+    seen = []
+    original = env.count
+
+    def count(scope, window, keys):
+        seen.append((scope, window))
+        return original(scope, window, keys)
+
+    env.count = count
+    requested = Window(parse_time("2024-03-01T00:00:00Z"), parse_time("2024-03-03T00:00:00Z"))
+    run = engine.plan(requested, Policy(poll_seconds=0))
+    assert run["plan"]["coverage"]["start"] < requested.start
+    assert run["plan"]["coverage"]["end"] > requested.end
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    days = requested
+    assert len(seen) == 4 and all(window == days for _, window in seen)
+    engine.status()
+    before = len(seen)
+    engine.verify(run["id"])
+    assert len(seen) > before and all(window == days for _, window in seen)
+
+
+def test_count_progress_reports_every_query(rigged, capsys):
+    import sys
+
+    env, source, _, _ = trusted(rigged)
+    window = Window(0, 2 * DAY)
+    path = (
+        f"/api/v1/aggregated-events/timestamp/%3E%3D0/timestamp/%3C{2 * DAY}"
+        "?bin-width=86400000&timeout=580000"
+    )
+    source.records += [
+        session(),
+        record("GET", path, {"complete": True, "bins": []}),
+        record("GET", path, {"complete": True, "bins": []}),
+    ]
+    env.on_progress = lambda message: print(message, file=sys.stderr)
+    env._counts(env.source_client, "source", window)
+    env._counts(env.source_client, "source", window)
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 2
+    assert all("Counting source: 1970-01-01 to 1970-01-03" in line for line in lines)
+
+
+def test_count_timeout_identifies_scope_and_query_interval(rigged):
+    from logs_migrate.errors import QueryTimeout
+
+    env, source, _, _ = trusted(rigged)
+
+    def request(*args, **kwargs):
+        raise QueryTimeout()
+
+    source.request = request
+    with pytest.raises(QueryTimeout) as failure:
+        env._counts(env.source_client, "source", Window(0, DAY))
+    assert "source count query from 1970-01-01" in failure.value.message
+    assert "timed out" in failure.value.message
+
+
+def test_node_inventories_run_in_parallel_and_are_reused(rigged):
+    import threading
+
+    env, source, _, ssh = trusted(rigged)
+    barrier = threading.Barrier(2, timeout=2)
+    original = env.node_inventory
+    first = set()
+
+    def inventory(host, *args):
+        if host not in first:
+            first.add(host)
+            barrier.wait()
+        return original(host, *args)
+
+    env.node_inventory = inventory
+    source.records += [
+        session(),
+        record("GET", "/api/v1/version", {"version": "8.18.7"}),
+        record("GET", "/api/v1/partitioning", {"partitions": []}),
+        record("GET", "/api/v1/version", {"version": "8.18.7"}),
+        record("GET", "/api/v1/partitioning", {"partitions": []}),
+    ]
+    messages = []
+    env.on_progress = messages.append
+    env.source_cluster()
+    env.source_cluster()
+    assert sorted(host for host, op in ssh.reads if op == ReadOperation.USAGE) == [
+        "src-1.lab",
+        "src-2.lab",
+    ]
+    assert len(messages) == 2 and all("sizing" in message for message in messages)
+
+
+def test_plan_warns_that_undated_open_buckets_may_hold_backfill_without_dropping_the_frontier(
+    tmp_path,
+):
+    from conftest import FIXTURES
+
+    from logs_migrate.models import Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    _, engine = _live_rig(tmp_path)
+    plan = engine.plan(window, Policy(poll_seconds=0))["plan"]
+    (warning,) = [w for w in plan["warnings"] if "backfill" in w]
+    assert "older-dated data" in warning and "not a guarantee" in warning
+    assert plan["last_fully_sealed_day"] == "2026-03-01"
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    active = data["source"]["buckets"][3]
+    active.update(start=parse_time("2026-03-10T00:00:00Z"), end=None, bounds_proven=True)
+    _, engine = _live_rig(tmp_path / "dated", {"source": data["source"]})
+    dated = engine.plan(window, Policy(poll_seconds=0))["plan"]
+    assert not [w for w in dated["warnings"] if "backfill" in w]
+
+
+def test_backfilled_open_bucket_data_before_the_frontier_is_a_discrepancy_not_a_pass(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env, engine = _live_rig(tmp_path)
+    env.data["source_events"].append(
+        {
+            "id": "backfill-1",
+            "time": parse_time("2026-03-01T12:00:00Z"),
+            "bucket": "src-1/00000000-0000-0000-0000-000000000001",
+            "fields": {},
+        }
+    )
+    run = engine.plan(window, Policy(poll_seconds=0))
+    assert "2026-03-01" not in run["plan"]["partial_days"]
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e["id"] != "backfill-1"
+    ]
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+
+
+def test_baseline_count_timeout_keeps_the_scope_and_interval_in_the_error(tmp_path):
+    from logs_migrate.errors import QueryTimeout
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(window, Policy(poll_seconds=0))
+    original = env.count
+
+    def count(scope, requested, keys):
+        if scope == "baseline":
+            raise QueryTimeout("destination count query from 2026-03-01 timed out")
+        return original(scope, requested, keys)
+
+    env.count = count
+    with pytest.raises(QueryTimeout) as failure:
+        engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    assert "destination count query from 2026-03-01 timed out" in failure.value.message
+
+
+def test_verify_keeps_the_timeout_message_for_the_operator(tmp_path):
+    from logs_migrate.errors import QueryTimeout
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    original = env.count
+
+    def count(scope, requested, keys):
+        if scope == "destination":
+            raise QueryTimeout("destination count query from 2026-03-01 timed out")
+        return original(scope, requested, keys)
+
+    env.count = count
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification"
+    assert result["reason"] == Code.CONNECTION.value
+    assert result["detail"] == "destination count query from 2026-03-01 timed out"

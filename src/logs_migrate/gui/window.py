@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -39,6 +40,8 @@ from .state import AppState
 from .widgets import button, label, section
 from .worker import EngineWorker
 
+PROGRESS_JOBS = {"connect", "selftest", "plan", "start", "verify", "discover"}
+
 NAV = [
     ("overview", "Overview"),
     ("connections", "Connections"),
@@ -61,6 +64,11 @@ class MainWindow(QMainWindow):
         self.worker.done.connect(self._done)
         self.worker.failed.connect(self._failed)
         self.worker.trust_required.connect(self._trust_required)
+        self.progress_lines = {}
+        self.progress_label = QLabel()
+        self.progress_label.setAccessibleName("Operation progress")
+        self.statusBar().addWidget(self.progress_label, 1)
+        self.worker.progress.connect(self._show_progress)
         self.worker.start()
         self.pending_credentials: dict[str, str] = {}
         # Tests replace this to answer the identity dialog without a window.
@@ -252,9 +260,17 @@ class MainWindow(QMainWindow):
 
     # Engine jobs -------------------------------------------------------------------------
 
+    def _show_progress(self, message: str) -> None:
+        key = message.split(": sizing", 1)[0] if ": sizing" in message else "query"
+        self.progress_lines[key] = message
+        self.progress_label.setText("\n".join(self.progress_lines.values()))
+
     def submit(self, job: str, method: str, **kwargs) -> bool:
         accepted = self.worker.submit(job, method, **kwargs)
         if accepted:
+            if job.split(":")[0] in PROGRESS_JOBS:
+                self.progress_lines.clear()
+                self.progress_label.clear()
             self.job_generation[job] = self.generation
         return accepted
 
@@ -376,6 +392,9 @@ class MainWindow(QMainWindow):
     def _settle(self, job: str) -> bool:
         """Clear the job and say whether its result belongs to the current connection."""
         self.worker.pending.discard(job)
+        if job.split(":")[0] in PROGRESS_JOBS:
+            self.progress_lines.clear()
+            self.progress_label.clear()
         return self.job_generation.pop(job, self.generation) == self.generation
 
     def _done(self, job: str, result) -> None:

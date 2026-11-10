@@ -94,6 +94,28 @@ def test_plan_view_reports_groups_checks_and_start_gate(rig):
     assert "cannot hold" in vm.start_state(short, True, True)[1]
 
 
+@pytest.mark.parametrize(
+    ("growth", "shown", "warned"),
+    [
+        (
+            {"bytes": 3_000_000, "nodes": ["a", "b"], "window_seconds": 9},
+            "Active buckets on a, b grew by 3.0 MB in 9 s",
+            True,
+        ),
+        ({"bytes": 0, "nodes": [], "window_seconds": 5}, "No active bucket growth in 5 s", False),
+        ({"bytes": None, "nodes": [], "window_seconds": None}, "Unavailable", True),
+    ],
+)
+def test_plan_view_reports_source_growth_from_the_engine(rig, growth, shown, warned):
+    engine, env, _ = rig
+    env.data["source_growth"] = growth
+    run = planned(engine)
+    assert run["plan"]["source_ingest"] == growth
+    assert dict(vm.plan_view(run, engine.discover())["checks"])["Source ingest"] == shown
+    warnings = [w for w in run["plan"]["warnings"] if "Source growth" in w or "grew by" in w]
+    assert bool(warnings) is warned
+
+
 def test_progress_view_marks_stale_estimates_unavailable():
     status = {
         "id": "sim-1",
@@ -505,3 +527,16 @@ def test_uncertain_start_banner_states_when_the_window_frees_up():
     assert vm.format_time("2026-11-06T16:00:00+00:00", "UTC") in text
     bare = vm.progress_view(None, stale=False, last_ok=None, zone="UTC", start_uncertain=True)
     assert "for 15 minutes" in bare["banner"][2]
+
+
+def test_verification_view_names_what_timed_out():
+    result = {
+        "outcome": "incomplete_verification",
+        "complete": False,
+        "reason": "connection_failed",
+        "detail": "destination count query from 2026-03-01 timed out",
+    }
+    view = vm.verification_view(result, None, 0, False)
+    assert "destination count query from 2026-03-01 timed out" in " ".join(
+        str(part) for part in view["banner"]
+    )

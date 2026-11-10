@@ -7,7 +7,7 @@ import logging
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..adapters.ssh_errors import SSHFailure
-from ..errors import MigrationError
+from ..errors import MigrationError, QueryTimeout
 from ..trust import TrustRequired
 from .session import LocalError, Session
 
@@ -23,11 +23,13 @@ class EngineWorker(QObject):
     done = Signal(str, object)
     failed = Signal(str, str)
     trust_required = Signal(str, list)
+    progress = Signal(str)
     _queued = Signal(str, str, dict)
 
     def __init__(self):
         super().__init__()
         self.session = Session()
+        self.session.on_progress = self.progress.emit
         self.thread = QThread()
         self.thread.setObjectName("engine")
         self.moveToThread(self.thread)
@@ -71,6 +73,8 @@ class EngineWorker(QObject):
             )
         except SSHFailure as error:
             self.failed.emit(job, f"{error.code.value}: {error.message}")
+        except QueryTimeout as error:
+            self.failed.emit(job, f"gui:{error.message}")
         except MigrationError as error:
             logging.getLogger(__name__).exception("Job %s failed", job)
             self.failed.emit(job, error.code.value)
