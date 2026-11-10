@@ -494,3 +494,14 @@ def test_exported_markdown_uses_the_pages_words(rig):
         )
         == "info"
     )
+
+
+def test_uncertain_start_banner_states_when_the_window_frees_up():
+    status = {"status": "idle", "hold_until": "2026-11-06T16:00:00+00:00"}
+    view = vm.progress_view(status, stale=False, last_ok=None, zone="UTC", start_uncertain=True)
+    kind, _, text = view["banner"]
+    assert kind == "warn"
+    assert "outcome is unknown" in text and "15 minutes" in text
+    assert vm.format_time("2026-11-06T16:00:00+00:00", "UTC") in text
+    bare = vm.progress_view(None, stale=False, last_ok=None, zone="UTC", start_uncertain=True)
+    assert "for 15 minutes" in bare["banner"][2]

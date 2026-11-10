@@ -107,11 +107,10 @@ class MigrationPage(Page):
             hosts=self.app.hosts(),
             start_uncertain=uncertain,
         )
-        if state.start_error and view["state"] == "idle":
-            title = "Start outcome uncertain" if uncertain else "Migration did not start"
+        if state.start_error and view["state"] == "idle" and not uncertain:
             view["banner"] = (
-                "warn" if uncertain else "bad",
-                title,
+                "bad",
+                "Migration did not start",
                 vm.start_note(state.start_error),
             )
         if state.stale:

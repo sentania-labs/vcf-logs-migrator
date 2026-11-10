@@ -180,10 +180,11 @@ appliance's task list for a single task with exactly this run's requested window
 created no earlier than five minutes before the start attempt (a margin for clock
 difference between this machine and the appliance), and not belonging to another run.
 A match is shown with its progress and remembered for this run, and its ID can be
-used to stop it. If none is found, status reports `idle` with `start_outcome: unknown`:
-the start may not have reached the appliance, or its task is not listed yet. Run
-status again; if it still shows nothing once the 15-minute uncertain-start hold has
-passed, plan and copy again. A start that was acknowledged without a task ID is looked
+used to stop it. If none is found, status reports `idle` with `start_outcome: unknown`,
+`hold_until` (the start attempt plus 15 minutes) and a `start_hint`: the start's
+outcome is unknown and no task has appeared yet; keep checking status; if none
+appears, the window stays held until `hold_until`, after which you plan and copy
+again. The Migration page shows the same wording with the time the window frees up. A start that was acknowledged without a task ID is looked
 up the same way, but reports plain `idle` while no task matches. Explicit
 cancellation uses the currently observed **API task ID**:
 

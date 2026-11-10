@@ -1,6 +1,7 @@
 import copy
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta
 
 import pytest
 from conftest import FIXTURES, execute, planned
@@ -281,6 +282,14 @@ def test_lost_post_ack_with_no_task_found_says_the_start_is_unknown(rig):
     result = Engine(env, journal, engine.clock).status(run["id"])
     assert result["status"] == "idle" and result["id"] == ""
     assert result["start_outcome"] == "unknown"
+    attempted = datetime.fromisoformat(
+        journal.transfers(env.data["destination"]["id"])[0]["attempted_at"]
+    )
+    assert datetime.fromisoformat(result["hold_until"]) == attempted + timedelta(minutes=15)
+    assert (
+        result["hold_until"] in result["start_hint"]
+        and "plan and copy again" in result["start_hint"]
+    )
 
 
 @pytest.mark.parametrize("skew_seconds,found", [(120, True), (1200, False)])

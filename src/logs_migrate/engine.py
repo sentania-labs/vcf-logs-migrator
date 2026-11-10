@@ -3,7 +3,7 @@
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from .config import ConfigMigration
@@ -494,6 +494,20 @@ class Engine:
                 result = self._progress(Transfer("", "idle", destination=destination))
                 if not row.get("acknowledged") and not row["closed"]:
                     result["start_outcome"] = "unknown"
+                    try:
+                        hold = datetime.fromisoformat(row["attempted_at"]) + timedelta(
+                            seconds=UNCERTAIN_RELEASE_SECONDS
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        hold = None
+                    if hold is not None:
+                        result["hold_until"] = hold.isoformat()
+                    when = f" until {hold.isoformat()}" if hold else " for 15 minutes"
+                    result["start_hint"] = (
+                        "The start's outcome is unknown and no task has appeared yet. Keep "
+                        "checking status. If none appears, this window stays held"
+                        f"{when} from the start attempt; after that, plan and copy again."
+                    )
                 return result
             if not task_id:
                 self.journal.note_transfer_task(run_id, task.id)

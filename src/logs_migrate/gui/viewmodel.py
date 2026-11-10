@@ -558,6 +558,15 @@ STATE_LABEL = {
 }
 
 
+def uncertain_start_text(hold_until: str | None, zone: str) -> str:
+    held = f"until {format_time(hold_until, zone)}" if hold_until else "for 15 minutes"
+    return (
+        "The start's outcome is unknown and no task has appeared yet. Keep refreshing status. "
+        f"If none appears, this window stays held {held}, 15 minutes from the start attempt; "
+        "after that, refresh the preview on Discovery & Plan and start again."
+    )
+
+
 def progress_view(
     status: dict | None,
     *,
@@ -573,9 +582,7 @@ def progress_view(
             "banner": (
                 "warn",
                 "Start outcome uncertain · no task observed",
-                "The last Start may not have reached the API and the destination reports no "
-                "task. Refresh status; if none appears, refresh the preview on Discovery & Plan "
-                "and start again.",
+                uncertain_start_text(status.get("hold_until") if status else None, zone),
             )
             if start_uncertain
             else (
