@@ -572,7 +572,7 @@ def test_selftest_fails_the_cutover_check_when_growth_cannot_be_observed(rigged)
     unknown = {"bytes": None, "nodes": [], "window_seconds": None}
     _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000), unknown)
     (step,) = [s for s in result.steps if s.name == "Source ingest (cutover check)"]
-    assert step.status == "fail" and step.detail == Code.INCOMPLETE.value
+    assert step.status == "fail" and "Source activity could not be measured" in step.detail
 
 
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
@@ -610,6 +610,8 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
     # New ingest landed on Mar 1, a fully covered day; counts cannot attribute it, so the
     # honest answer is a discrepancy on that day, never a pass.
     assert result["outcome"] == "verified_discrepancy"
+    assert result["actual_count"] is None
+    assert "Other events" in result["received_unavailable_reason"]
     assert [d["difference"] for d in result["daily"]][:3] == [1, 0, 0]
     assert [d["partial"] for d in result["daily"]][:3] == [False, False, True]
     assert result["buckets"]["covered"] and not result["buckets"]["not_received"]
@@ -637,6 +639,9 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_success" and "2026-03-03" in result["partial_days"]
     assert not result["partial_differences"]
+    assert result["expected_count"] == 6
+    assert result["actual_count"] == result["measured_arrival_count"] == 6
+    assert result["unmeasured_day_count"] == 0
     # Nothing landed (the API said COMPLETED anyway): a discrepancy, never a pass.
     env.data["destination_events"] = [
         e for e in env.data["destination_events"] if e.get("cohort") == "baseline"
@@ -1753,3 +1758,34 @@ def test_verify_keeps_the_timeout_message_for_the_operator(tmp_path):
     assert result["outcome"] == "incomplete_verification"
     assert result["reason"] == Code.CONNECTION.value
     assert result["detail"] == "destination count query from 2026-03-01 timed out"
+
+
+def test_live_verification_separates_days_not_measured(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    # The selected bucket spans three days but the request and baseline cover one.
+    env.data["source"]["buckets"][0]["end"] = parse_time("2026-03-03T12:00:00Z")
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    result = engine.verify(run["id"])
+    assert result["expected_count"] == sum(b["messages"] for b in run["plan"]["selected"])
+    assert result["unmeasured_day_count"] == 2
+    assert result["actual_count"] is None
+    assert result["measured_arrival_count"] == 2
+
+
+def test_shared_ssh_keys_include_previously_enrolled_hosts():
+    from logs_migrate.trust import shared_ssh_keys
+
+    enrolled = {"kind": "ssh", "name": "node-a:22", "fingerprint": "a" * 64}
+    identities = [
+        Identity("ssh", "node-b:22", "a" * 64),
+        Identity("ssh", "node-c:22", "b" * 64),
+        Identity("tls", "node-d:443", "a" * 64),
+    ]
+    assert shared_ssh_keys([enrolled, *identities]) == [("node-b:22", "node-a:22")]

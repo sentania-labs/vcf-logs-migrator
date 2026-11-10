@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..adapters.ssh_errors import SSHFailure
 from ..errors import MigrationError, QueryTimeout
-from ..trust import TrustRequired
+from ..trust import TrustRequired, shared_ssh_keys
 from .session import LocalError, Session
 
 
@@ -59,6 +59,7 @@ class EngineWorker(QObject):
         try:
             result = getattr(self.session, method)(**kwargs)
         except TrustRequired as pending:
+            shared = dict(shared_ssh_keys(getattr(pending, "existing", []) + pending.identities))
             self.trust_required.emit(
                 job,
                 [
@@ -67,6 +68,7 @@ class EngineWorker(QObject):
                         "name": i.name,
                         "fingerprint": i.fingerprint,
                         "display": i.display,
+                        "shared_with": shared.get(i.name),
                     }
                     for i in pending.identities
                 ],
@@ -77,7 +79,12 @@ class EngineWorker(QObject):
             self.failed.emit(job, f"gui:{error.message}")
         except MigrationError as error:
             logging.getLogger(__name__).exception("Job %s failed", job)
-            self.failed.emit(job, error.code.value)
+            self.failed.emit(
+                job,
+                f"{error.code.value}: {error.message}"
+                if hasattr(error, "message")
+                else error.code.value,
+            )
         except LocalError as error:
             logging.getLogger(__name__).exception("Job %s failed", job)
             self.failed.emit(job, f"gui:{error}")

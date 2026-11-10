@@ -21,7 +21,7 @@ class VerificationPage(Page):
             "Excluded latest data",
         ):
             frame, value, caption = metric(title, "Pending", "")
-            self.tiles.append((value, caption))
+            self.tiles.append((frame.layout().itemAt(0).widget(), value, caption))
             frames.append(frame)
         self.body.addWidget(columns(*frames))
         daily_card, daily_layout = card("Daily reconciliation · UTC")
@@ -62,10 +62,7 @@ class VerificationPage(Page):
         if run:
             ids = [r["id"] for r in state.runs]
             number = f"Run {ids.index(run['id']) + 1}" if run["id"] in ids else "this run"
-            subtitle = (
-                f"Destination total through {number} (all received groups) · "
-                + vm.outcome_label(state.verification)
-            )
+            subtitle = f"Count evidence for {number} · " + vm.outcome_label(state.verification)
         else:
             subtitle = (
                 "Choose a run to verify"
@@ -83,9 +80,10 @@ class VerificationPage(Page):
         elif state.verify_run_id and state.verify_run_id == state.run_id:
             status, heading, text = ("info", "Verifying…", "Counting on both appliances.")
         set_banner(self.banner, heading, text, status)
-        for (value, caption), (_title, text_value, text_caption) in zip(
+        for (title_label, value, caption), (title, text_value, text_caption) in zip(
             self.tiles, view["tiles"], strict=True
         ):
+            title_label.setText(title)
             value.setText(text_value)
             caption.setText(text_caption)
         self.daily.set_rows(view["rows"] or [("No complete counts yet", "", "", "")])

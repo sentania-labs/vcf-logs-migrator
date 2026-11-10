@@ -66,7 +66,13 @@ class SelfTest:
 def _code(error: Exception) -> str:
     if isinstance(error, SSHFailure):
         return f"{error.code.value}: {error.message}"
-    return error.code.value if isinstance(error, MigrationError) else "operation_failed"
+    if isinstance(error, MigrationError):
+        return (
+            f"{error.code.value}: {error.message}"
+            if hasattr(error, "message")
+            else error.code.value
+        )
+    return "gui:The check could not complete. Review the connection and retry the self-test."
 
 
 def _fmt_day(ms: int) -> str:
@@ -165,7 +171,13 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             + (f" · {undated} without dates (excluded from plans)" if undated else "")
         )
 
-    source = step("Source inventory model", source_cluster, skip=None if hosts else "no members")
+    source = step(
+        "Source inventory model",
+        source_cluster,
+        skip=None
+        if len(inventories) == len(hosts) and hosts
+        else "Check the failed node checks above and retry.",
+    )
 
     def destination_version():
         version = env.destination_version()
@@ -243,7 +255,11 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         total = sum(daily.values())
         days = sum(1 for v in daily.values() if v)
         if not complete:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                f"Counts for {label} UTC were incomplete. "
+                "Check the appliance query service and retry.",
+            )
         return daily, f"{total:,} events on {days} days ({label}) · complete"
 
     step("Source daily counts", source_counts)
@@ -253,7 +269,11 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         total = sum(daily.values())
         days = sum(1 for v in daily.values() if v)
         if not complete:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                f"Counts for {label} UTC were incomplete. "
+                "Check the appliance query service and retry.",
+            )
         return daily, f"{total:,} events on {days} days ({label}) · complete"
 
     step(
@@ -279,7 +299,10 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     def recent():
         growth = env.source_growth()
         if growth["bytes"] is None:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                "Source activity could not be measured. Check the source nodes and retry.",
+            )
         seconds = growth["window_seconds"]
         if growth["bytes"]:
             detail = (
@@ -299,7 +322,10 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         elif sealed:
             requested = Window(min(b.start for b in sealed), max(b.end for b in sealed) + 1)
         else:
-            raise MigrationError(Code.INCOMPLETE)
+            raise MigrationError(
+                Code.INCOMPLETE,
+                "No sealed groups have usable dates. Check source inventory before planning.",
+            )
         preview = build_plan(source, destination, requested)
         detail = (
             f"{len(preview['selected'])} buckets, "

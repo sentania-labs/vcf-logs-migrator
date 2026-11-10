@@ -36,12 +36,17 @@ def test_window_walks_the_workflow_off_the_ui_thread(driver):
     driver.verify()
     assert state.verification["outcome"] == "verified_success"
     assert driver.pages["verification"].daily.rowCount() >= 1
+    assert driver.pages["verification"].tiles[0][0].text() == "Expected from selected groups"
+    assert "Arrived at destination" in driver.pages["verification"].tiles[1][0].text()
     driver.export()
     assert len(state.exported) == 2 and all(
         path.startswith(str(driver.exports)) for path in state.exported
     )
     driver.plan()
-    assert state.plan_error in {"overlapping_transfer", "bucket_identity_conflict"}
+    assert state.plan_error.partition(": ")[0] in {
+        "overlapping_transfer",
+        "bucket_identity_conflict",
+    }
     assert driver.pages["plan"].stack.currentIndex() == 1
     driver.theme("dark")
     assert state.settings.theme == "dark"
@@ -592,3 +597,26 @@ def test_count_timeout_at_start_names_the_query_and_sends_nothing(driver):
     assert "No API request was submitted." in page.note.text()
     assert "may have reached the API" not in page.note.text()
     assert page.start_button.isEnabled()
+
+
+def test_trust_dialog_names_shared_host_before_accepting(driver, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+
+    def question(parent, title, text, *args):
+        shown.append(text)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    identities = [
+        {
+            "kind": "ssh",
+            "name": "node-b:22",
+            "fingerprint": "a" * 64,
+            "display": "node-b fingerprint",
+            "shared_with": "node-a:22",
+        },
+    ]
+    assert not driver.window._ask_trust(identities)
+    assert "node-b:22 presents the same SSH key as node-a:22" in shown[0]

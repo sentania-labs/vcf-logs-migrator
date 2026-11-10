@@ -332,7 +332,20 @@ def window_error(start: date, end_inclusive: date) -> str | None:
 
 def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
     """Say what is actually wrong with a refused preview."""
-    if code == Code.INCOMPLETE.value and discovered and window:
+    if code.startswith(Code.COLLISION.value + ": ") and discovered:
+        conflicts = [b for b in discovered["source"]["buckets"] if b["id"] in code]
+        if conflicts:
+            groups = [
+                f"{b['node']} ("
+                f"{format_day_range(b.get('start'), b.get('end'), inclusive_end=True)})"
+                for b in conflicts
+            ]
+            return (
+                f"{len(groups)} selected groups already exist on the destination: "
+                + "; ".join(groups)
+                + ". Choose dates that exclude these groups."
+            )
+    if code.partition(": ")[0] == Code.INCOMPLETE.value and discovered and window:
         sealed = [
             b
             for b in discovered["source"]["buckets"]
@@ -342,7 +355,7 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
         extent = history_extent(discovered["source"])
         if not overlapping:
             span = f" Source history spans {format_day_range(*extent)}." if extent else ""
-            return "No sealed history in these dates." + span
+            return "No sealed history in these dates." + span + " Choose another date range."
         if not discovered["destination"].get("history_complete", True):
             return (
                 "The destination's transfer history is incomplete, so overlap cannot be ruled out."
@@ -900,11 +913,11 @@ def verification_view(
             ),
             "tiles": [
                 (
-                    "Expected in included dates",
+                    "Expected from selected groups",
                     "Pending",
-                    "Selected sealed history plus destination baseline and new ingest",
+                    "Sum of the selected groups' event counts",
                 ),
-                ("Destination in included dates", "Pending", "Not yet queried"),
+                ("Arrived at destination since this run started", "Pending", "Not yet queried"),
                 (
                     "Excluded latest data",
                     f"{active_count} open group{'s' if active_count != 1 else ''}",
@@ -999,28 +1012,35 @@ def verification_view(
             + "Received partial counts are not a destination total; no success is claimed.",
         )
     complete = result.get("complete", False)
+    has_counts = "expected_count" in result
+    unmeasured = result.get("unmeasured_day_count", 0)
+    measured_window = result.get("measured_window")
+    if unmeasured and measured_window:
+        start = datetime.fromtimestamp(measured_window["start"] / 1000, UTC).date()
+        end = datetime.fromtimestamp((measured_window["end"] - 1) / 1000, UTC).date()
+        arrival_label = f"Arrived on requested dates ({start} to {end} UTC)"
+        arrival_value = format_count(result.get("measured_arrival_count"))
+        arrival_note = (
+            result.get("received_unavailable_reason")
+            or f"{unmeasured} other days the groups touch were not counted. See the daily table."
+        )
+    else:
+        arrival_label = "Arrived at destination since this run started"
+        arrival_value = format_count(result.get("actual_count"))
+        arrival_note = (
+            result.get("received_unavailable_reason")
+            or "Destination count minus the recorded baseline"
+        )
     tiles = [
         (
-            "Expected in included dates",
-            format_count(result.get("expected_count")) if complete else "Pending",
-            (
-                f"Received groups {format_count(result.get('source_count'))} + pre-existing "
-                f"{format_count(result.get('preexisting_count'))} + new ingest "
-                f"{format_count(result.get('new_ingest_count'))}"
-                + (
-                    f"; the {len(missing)} group{'s' if len(missing) != 1 else ''} not received "
-                    "is listed below, not counted here"
-                    if missing
-                    else ""
-                )
-            )
-            if complete
-            else "Not yet comparable",
+            "Expected from selected groups",
+            format_count(result.get("expected_count")) if has_counts else "Pending",
+            "Sum of the selected groups' event counts" if has_counts else "Not yet comparable",
         ),
         (
-            "Destination in included dates",
-            format_count(result.get("actual_count")) if complete else "Pending",
-            "Complete repeated queries" if complete else "Not yet comparable",
+            arrival_label,
+            arrival_value if has_counts else "Pending",
+            arrival_note if has_counts else "Not yet comparable",
         ),
         (
             "Excluded latest data",
@@ -1028,7 +1048,7 @@ def verification_view(
             "Not imported",
         ),
     ]
-    rows = daily_rows(result, run) if complete else []
+    rows = daily_rows(result, run) if result.get("daily") else []
     buckets = result.get("buckets", {})
     if buckets:
         received = buckets.get("covered", [])

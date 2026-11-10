@@ -33,8 +33,10 @@ class Code(StrEnum):
 
 
 class MigrationError(Exception):
-    def __init__(self, code: Code):
+    def __init__(self, code: Code, message: str | None = None):
         self.code = code
+        if message is not None:
+            self.message = message
         super().__init__(code.value)
 
 

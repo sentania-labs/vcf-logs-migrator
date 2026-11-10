@@ -702,6 +702,7 @@ class LiveEnvironment:
         self.members = self.source_members()
         for host in self.members:
             if host != connection.source_host.lower():
+                self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
                 identity, line = probe_ssh(host, connection.ssh_port)
                 self._check(identity, line, unknown)
         if self._destination_ssh_enabled():
@@ -710,6 +711,7 @@ class LiveEnvironment:
             )
             for host in self.destination_members:
                 if host != tls_destination[0].lower():
+                    self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
                     identity, line = probe_ssh(host, connection.ssh_port)
                     self._check(identity, line, unknown)
         if unknown:
@@ -788,17 +790,33 @@ class LiveEnvironment:
         if cached and time.monotonic() - cached[0] < 300:
             return cached[1]
         ssh = self._ssh(host, credential, username or self.connection.source_ssh_user)
-        service = ssh.read(ReadOperation.SERVICE).strip().lower()
-        capacity, used, available = parse_space(ssh.read(ReadOperation.SPACE))
-        listing = ssh.read(ReadOperation.INVENTORY)
+
+        def read(operation, label):
+            try:
+                return ssh.read(operation)
+            except MigrationError as error:
+                detail = getattr(
+                    error, "message", "The read did not complete. Check access and retry."
+                )
+                raise MigrationError(error.code, f"{host}: {label} failed. {detail}") from None
+
+        service = read(ReadOperation.SERVICE, "service check").strip().lower()
+        capacity, used, available = parse_space(read(ReadOperation.SPACE, "disk space check"))
+        listing = read(ReadOperation.INVENTORY, "bucket listing")
         buckets = parse_listing(listing)
+        if listing.strip() and not buckets:
+            raise MigrationError(
+                Code.INCOMPLETE,
+                f"{host}: the bucket listing contained no recognizable groups. "
+                "Check the appliance version and listing, then retry.",
+            )
         if self.on_progress:
             members = self.members if credential == "source_ssh" else self.destination_members
             position = members.index(host) + 1 if host in members else 1
             self.on_progress(
                 f"node {position}/{len(members) or 1} ({host}): sizing {len(buckets):,} buckets"
             )
-        usage = parse_usage(ssh.read(ReadOperation.USAGE))
+        usage = parse_usage(read(ReadOperation.USAGE, "bucket size check"))
         keys = tuple(sorted({k for b in buckets for k in b.keys}))
         result = NodeInventory(
             host,

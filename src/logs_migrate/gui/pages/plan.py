@@ -388,7 +388,7 @@ class PlanPage(Page):
         self.ack.setChecked(state.acknowledged)
         self.ack.blockSignals(False)
         self.preview_badge.setVisible(state.preview)
-        blocked = state.plan_error in BLOCKED
+        blocked = bool(state.plan_error and state.plan_error.partition(": ")[0] in BLOCKED)
         self.change_button.setVisible(blocked and not self.blocked_dismissed)
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)

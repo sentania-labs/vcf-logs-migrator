@@ -32,6 +32,25 @@ class Identity:
         return f"{label} SHA256 {pairs}"
 
 
+def shared_ssh_keys(identities):
+    """Describe SSH fingerprints shared by distinct hosts."""
+    first = {}
+    shared = []
+    for identity in identities:
+        kind = identity.kind if isinstance(identity, Identity) else identity["kind"]
+        name = identity.name if isinstance(identity, Identity) else identity["name"]
+        fingerprint = (
+            identity.fingerprint if isinstance(identity, Identity) else identity["fingerprint"]
+        )
+        if kind != "ssh":
+            continue
+        if fingerprint in first and first[fingerprint] != name:
+            shared.append((name, first[fingerprint]))
+        else:
+            first[fingerprint] = name
+    return shared
+
+
 class TrustRequired(MigrationError):
     """Identities the operator has not enrolled yet. Nothing was sent to them."""
 

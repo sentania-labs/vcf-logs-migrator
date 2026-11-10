@@ -2,6 +2,7 @@
 
 from collections import Counter
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from .errors import Code, MigrationError, require
 from .models import Counts, Policy, Verification, Window
@@ -28,7 +29,17 @@ def stable_counts(
             previous = None
         if attempt + 1 < policy.attempts:
             clock.sleep(policy.poll_seconds)
-    raise MigrationError(Code.INCOMPLETE)
+    try:
+        start = datetime.fromtimestamp(window.start / 1000, UTC).date()
+        end = datetime.fromtimestamp((window.end - 1) / 1000, UTC).date()
+        dates = f"{start} to {end} UTC"
+    except (OverflowError, OSError, ValueError):
+        dates = "all dates"
+    raise MigrationError(
+        Code.INCOMPLETE,
+        f"{scope.capitalize()} counts for {dates} did not complete twice with "
+        "matching results. Check the appliance and retry.",
+    )
 
 
 def combine(parts: list[Counts], scope: str) -> Counts:

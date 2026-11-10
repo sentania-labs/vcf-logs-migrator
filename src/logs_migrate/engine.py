@@ -549,6 +549,16 @@ class Engine:
                     "reason": error.code.value,
                     **({"detail": error.message} if hasattr(error, "message") else {}),
                 }
+            if not self.attribution and not result.get("complete"):
+                result.setdefault(
+                    "expected_count", sum(b["messages"] for b in run["plan"]["selected"])
+                )
+                result.setdefault("actual_count", None)
+                if run.get("baseline") is None:
+                    result["received_unavailable_reason"] = (
+                        "No baseline was recorded, so arrivals cannot be calculated. "
+                        "See the daily comparison when available."
+                    )
             result["at"] = self.clock.now()
             run["verification"] = result
             self._audit(run, "daily_counts_verified", {"outcome": result["outcome"]})
@@ -614,6 +624,28 @@ class Engine:
         require(actual == self._counts(policy, "destination", days, ()), Code.INCOMPLETE)
         ingest = Counts(True, (), (), "ingest")
         result = reconcile(source, baseline, actual, ingest)
+        # Bucket metadata supplies the selected total; daily queries cover only the
+        # recorded baseline window and cannot attribute arrivals to individual groups.
+        result["expected_count"] = sum(b["messages"] for b in run["plan"]["selected"])
+        coverage_days = day_window(Window(**run["plan"]["coverage"]))
+        measured_start = max(days.start, coverage_days.start)
+        measured_end = min(days.end, coverage_days.end)
+        measured_days = max(0, measured_end - measured_start) // DAY
+        unmeasured = (coverage_days.end - coverage_days.start) // DAY - measured_days
+        other_ingest = any(d["actual"] > d["expected"] for d in result["daily"])
+        delta = actual.total - baseline.total
+        measured = None if other_ingest or delta < 0 else delta
+        result["measured_arrival_count"] = measured
+        result["measured_window"] = asdict(days)
+        result["unmeasured_day_count"] = unmeasured
+        result["actual_count"] = measured if not unmeasured else None
+        result["received_unavailable_reason"] = (
+            "Other events may have arrived during the run; see the daily comparison."
+            if other_ingest
+            else "The destination count fell below the baseline; see the daily comparison."
+            if delta < 0
+            else None
+        )
         partial = set(run.get("partial_days", []))
         for entry in result["daily"]:
             entry["partial"] = entry["day"] in partial

@@ -348,3 +348,11 @@ operational details; review them before sharing.
 On POSIX systems the log file is restricted to mode 0600, including an existing
 file and files created after rotation. On Windows, log files inherit the folder's
 access control list; choose a folder whose permissions restrict access to your account.
+
+Verification's selected-group expectation is the sum of the groups' recorded message counts.
+For live runs, the destination arrival figure is the change from the pre-transfer baseline for
+requested UTC days, not a count attributed to individual groups. If group coverage extends beyond
+those days, `actual_count` is unavailable; `measured_arrival_count`, `measured_window`, and
+`unmeasured_day_count` describe the narrower observation. The daily table retains the whole-day
+arithmetic and determines the verification verdict. If evidence shows other arrivals during the
+run, the arrival figure is unavailable. Count comparisons do not establish event-content equality.

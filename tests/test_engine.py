@@ -546,3 +546,18 @@ def test_undated_sealed_bucket_is_listed_not_fatal_and_never_copied(rig, fixture
     # bucket in range the refusal is the ordinary "nothing selected", not a bucket-level error.
     with pytest.raises(MigrationError, match=Code.INCOMPLETE):
         engine.plan(Window(DAY, 2 * DAY), Policy(poll_seconds=0))
+
+
+def test_signoff_report_formats_utc_dates_and_ranges(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    engine.verify(run["id"])
+    result = journal.load(run["id"])
+    text = markdown(result, journal.events(run["id"]))
+    assert "selected groups;" in text
+    assert "UTC" in text and "Unix ms" not in text
+    assert "2026-03-01 to 2026-03-03" in text
+    assert "Snapshot acknowledgment" in text
+    assert "| Day | Source |" in text
