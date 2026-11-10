@@ -24,7 +24,7 @@ Each platform has one download with both the desktop window and CLI:
 | Platform | Download | Open the window | Run the CLI |
 |---|---|---|---|
 | Windows x64 | `vcf-logs-migrator-vX.Y.Z-windows-x64.exe` | Double-click the executable | `vcf-logs-migrator-vX.Y.Z-windows-x64.exe <command>` |
-| macOS Apple silicon / Intel | `vcf-logs-migrator-vX.Y.Z-macos-arm64.dmg` / `-macos-x86_64.dmg` | Open the disk image and drag the app to Applications | `/Applications/VCF Logs Migrator.app/Contents/MacOS/logs-migrate <command>` |
+| macOS Apple silicon | `vcf-logs-migrator-vX.Y.Z-macos-arm64.dmg` | Open the disk image and drag the app to Applications | `/Applications/VCF Logs Migrator.app/Contents/MacOS/logs-migrate <command>` |
 | Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64` | Make executable, then run with `gui` | Run the executable with a command |
 
 [GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases) also

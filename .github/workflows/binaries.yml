@@ -60,10 +60,6 @@ jobs:
             os: macos-15
             suffix: .dmg
             minutes: 270
-          - platform: macos-x86_64
-            os: macos-15-intel
-            suffix: .dmg
-            minutes: 270
     runs-on: ${{ matrix.os }}
     # macOS includes two Apple notary round trips (app, then disk image), each of which has taken over an hour.
     timeout-minutes: ${{ matrix.minutes }}
@@ -99,7 +95,7 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           # Exact patch: this interpreter is frozen into every download. 3.12.10 is the
-          # latest 3.12 that actions/setup-python offers on all four runner images
+          # latest 3.12 that actions/setup-python offers on all three runner images
           # (3.12.11+ are Linux-only in the python-versions manifest).
           python-version: '3.12.10'
 

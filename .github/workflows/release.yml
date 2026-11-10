@@ -126,11 +126,11 @@ jobs:
       - name: Check the set and hash the final bytes
         working-directory: release
         run: |
-          for platform in linux-x86_64 windows-x64.exe macos-arm64.dmg macos-x86_64.dmg; do
+          for platform in linux-x86_64 windows-x64.exe macos-arm64.dmg; do
             [ -f "vcf-logs-migrator-$TAG-$platform" ] || {
               echo "::error::missing vcf-logs-migrator-$TAG-$platform"; exit 1; }
           done
-          for platform in linux-x86_64 windows-x64 macos-arm64 macos-x86_64; do
+          for platform in linux-x86_64 windows-x64 macos-arm64; do
             [ -f "notices-$platform.txt" ] || { echo "::error::missing notices for $platform"; exit 1; }
             printf '\n===== %s =====\n' "$platform" >> THIRD-PARTY-NOTICES.txt
             cat "notices-$platform.txt" >> THIRD-PARTY-NOTICES.txt
@@ -145,11 +145,15 @@ jobs:
           Standalone downloads: the desktop window and the \`logs-migrate\` CLI over one
           engine. No Python install is needed. License notices are embedded and also provided as THIRD-PARTY-NOTICES.txt.
 
+          This release improves appliance planning and configuration, renews expired sessions
+          and ties status to the correct migration, speeds up large-source inventory and
+          verification, and makes migration evidence, errors, self-tests and trust clearer.
+          Standalone downloads also include the SSH runtime.
+
           | Platform | Download | Signature |
           |---|---|---|
           | Windows x64 | vcf-logs-migrator-$TAG-windows-x64.exe | Authenticode (Azure Artifact Signing) |
           | macOS Apple silicon | vcf-logs-migrator-$TAG-macos-arm64.dmg | Developer ID, notarized and stapled |
-          | macOS Intel | vcf-logs-migrator-$TAG-macos-x86_64.dmg | Developer ID, notarized and stapled |
           | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64 | SHA256SUMS |
 
           Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\`. SmartScreen
