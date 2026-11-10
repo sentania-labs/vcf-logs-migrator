@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from PySide6.QtWidgets import QPlainTextEdit
+
 from .. import viewmodel as vm
-from ..widgets import KeyValues, Page, Table, banner, card, columns, metric, set_banner
+from ..widgets import KeyValues, Page, Table, banner, button, card, columns, metric, set_banner
 from .reports import RunSelector
 
 
@@ -13,6 +15,14 @@ class VerificationPage(Page):
         self.body.addWidget(self.runs)
         self.banner = banner("", "", "info")
         self.body.addWidget(self.banner)
+        self.group_ids_toggle = button("Show group ids", "", self._toggle_group_ids)
+        self.group_ids_toggle.hide()
+        self.group_ids = QPlainTextEdit()
+        self.group_ids.setReadOnly(True)
+        self.group_ids.setMaximumHeight(120)
+        self.group_ids.hide()
+        self.body.addWidget(self.group_ids_toggle)
+        self.body.addWidget(self.group_ids)
         self.tiles = []
         frames = []
         self.frames = frames
@@ -38,6 +48,11 @@ class VerificationPage(Page):
         self.report_button = self.add_action(
             "Open report", "primary", lambda: self.app.show_page("reports")
         )
+
+    def _toggle_group_ids(self) -> None:
+        shown = not self.group_ids.isVisible()
+        self.group_ids.setVisible(shown)
+        self.group_ids_toggle.setText("Hide group ids" if shown else "Show group ids")
 
     def verify(self) -> None:
         run_id = self.app.state.run_id
@@ -81,6 +96,11 @@ class VerificationPage(Page):
         elif state.verify_run_id and state.verify_run_id == state.run_id:
             status, heading, text = ("info", "Verifying…", "Counting on both appliances.")
         set_banner(self.banner, heading, text, status)
+        unknown = (state.verification or {}).get("bucket_check", {}).get("unknown", [])
+        self.group_ids.setPlainText("\n".join(unknown))
+        self.group_ids_toggle.setVisible(bool(unknown))
+        if not unknown:
+            self.group_ids.hide()
         for index, frame in enumerate(self.frames):
             frame.setVisible(index < len(view["tiles"]))
         for (title_label, value, caption), (title, text_value, text_caption) in zip(

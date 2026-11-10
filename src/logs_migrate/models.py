@@ -96,10 +96,14 @@ class Bucket:
     complete: bool = True
     registered: bool = True
     created: int | None = None
+    empty_proven: bool = False
 
     def __post_init__(self):
         require(
-            all(type(v) is bool for v in (self.bounds_proven, self.complete, self.registered)),
+            all(
+                type(v) is bool
+                for v in (self.bounds_proven, self.complete, self.registered, self.empty_proven)
+            ),
             Code.SCHEMA,
         )
         require(
@@ -205,10 +209,12 @@ class Cluster:
     buckets: tuple[Bucket, ...]
     identity: str
     history_complete: bool = False
+    inventory_available: bool = False
 
     def __post_init__(self):
         require(_label(self.id) and _label(self.version), Code.SCHEMA)
         require(type(self.history_complete) is bool, Code.SCHEMA)
+        require(type(self.inventory_available) is bool, Code.SCHEMA)
         require(
             bool(self.nodes) and len({n.id for n in self.nodes}) == len(self.nodes), Code.SCHEMA
         )
@@ -303,7 +309,7 @@ def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") 
     """The day before the first active data: its proven start, else the sealed frontier."""
     from datetime import timedelta
 
-    active = [b for b in buckets if b.status == "active"]
+    active = [b for b in buckets if b.status == "active" and not b.empty_proven]
     if not active:
         return None
     if any(not b.bounds_proven or b.start is None for b in active):

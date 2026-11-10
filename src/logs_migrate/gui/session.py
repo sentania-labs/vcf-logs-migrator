@@ -81,7 +81,13 @@ class Session:
         result["checks"] = self._checks(result)
         return result
 
-    def _open_live(self):
+    def probe_endpoints(self, *, connection: dict[str, str]) -> None:
+        self.disconnect()
+        self.connection = dict(connection)
+        self.credentials = Credentials({}, interactive=False)
+        self._open_live(probe_only=True)
+
+    def _open_live(self, *, probe_only=False):
         from ..adapters.live import Connection, LiveEnvironment
 
         values = self.connection
@@ -101,6 +107,9 @@ class Session:
         env = LiveEnvironment(connection, self.credentials, self.store)
         env.on_progress = self.on_progress
         try:
+            if probe_only:
+                env.probe_endpoints()
+                return env
             return env.open()
         except TrustRequired as pending:
             pending.existing = [

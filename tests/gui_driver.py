@@ -168,5 +168,9 @@ class Driver:
 
     def close(self) -> None:
         self.window.close()
+        self.window.deleteLater()
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.wait(50)
         self.directory.cleanup()

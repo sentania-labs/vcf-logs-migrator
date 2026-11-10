@@ -130,6 +130,7 @@ class ListedBucket:
     start: int | None = None
     end: int | None = None
     keys: tuple[str, ...] = ()
+    empty_proven: bool = False
 
 
 @dataclass
@@ -154,7 +155,7 @@ def parse_time(value: str) -> int | None:
         return None
     if re.fullmatch(r"-?\d+", text):
         number = int(text)
-        if number <= 0:
+        if number <= 0 or number == 2**63 - 1:
             return None
         return number if number >= 10**11 else number * 1000
     try:
@@ -218,6 +219,11 @@ def parse_listing(text: str) -> list[ListedBucket]:
             start=parse_time(found.get("start", "")),
             end=parse_time(found.get("end", "")),
             keys=tuple(sorted(pairs)),
+            empty_proven=(
+                found.get("start") == "9223372036854775807"
+                and found.get("end") == "-9223372036854775808"
+                and parse_int(found.get("messages", "")) == 0
+            ),
         )
         buckets.append(bucket)
     return buckets
@@ -665,8 +671,8 @@ class LiveEnvironment:
     def key_line(self, identity: Identity) -> str | None:
         return self._pending.get(identity.name)
 
-    def open(self) -> LiveEnvironment:
-        """Probe every identity, then build the clients. Raises TrustRequired first."""
+    def probe_endpoints(self) -> None:
+        """Check the entered endpoints without sending credentials."""
         connection = self.connection
         unknown: list[Identity] = []
         tls_source = (connection.source_host, connection.source_api_port)
@@ -674,22 +680,40 @@ class LiveEnvironment:
         # `stage` names the probe in flight so a failure can say which host, without any
         # remote text.
         self.notes["stage"] = f"tls {tls_source[0]}:{tls_source[1]}"
+        if self.on_progress:
+            self.on_progress(f"Contacting {self.notes['stage']}")
         self._check(probe_tls(*tls_source), None, unknown)
         self.notes["stage"] = f"tls {tls_destination[0]}:{tls_destination[1]}"
+        if self.on_progress:
+            self.on_progress(f"Contacting {self.notes['stage']}")
         self._check(probe_tls(*tls_destination), None, unknown)
         if connection.preview:
             ops = connection.ops_endpoint
             self.notes["stage"] = f"tls {ops[0]}:{ops[1]}"
+            if self.on_progress:
+                self.on_progress(f"Contacting {self.notes['stage']}")
             self._check(probe_tls(*ops), None, unknown)
         self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port}"
+        if self.on_progress:
+            self.on_progress(f"Contacting {self.notes['stage']}")
         identity, line = probe_ssh(connection.source_host, connection.ssh_port)
         self._check(identity, line, unknown)
-        if self._destination_ssh_enabled():
+        if not connection.preview and connection.destination_ssh_user.strip():
             self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port}"
+            if self.on_progress:
+                self.on_progress(f"Contacting {self.notes['stage']}")
             identity, line = probe_ssh(tls_destination[0], connection.ssh_port)
             self._check(identity, line, unknown)
         if unknown:
             raise TrustRequired(unknown)
+
+    def open(self) -> LiveEnvironment:
+        """Probe every identity, then build the clients. Raises TrustRequired first."""
+        self.probe_endpoints()
+        connection = self.connection
+        tls_source = (connection.source_host, connection.source_api_port)
+        tls_destination = connection.destination_endpoint
+        unknown: list[Identity] = []
         self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port} (members)"
         self.source_client = self._logs_client(tls_source, "source_api", connection.source_api_user)
         if connection.preview:
@@ -701,14 +725,20 @@ class LiveEnvironment:
                 tls_destination, "destination_api", connection.destination_api_user
             )
         # Cluster members come from the typed member's config; each needs its own SSH trust.
+        if self.on_progress:
+            self.on_progress(f"Reading cluster members from {connection.source_host}")
         self.members = self.source_members()
         for host in self.members:
             if host != connection.source_host.lower():
                 self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
+                if self.on_progress:
+                    self.on_progress(f"Contacting {self.notes['stage']}")
                 identity, line = probe_ssh(host, connection.ssh_port)
                 self._check(identity, line, unknown)
         if self._destination_ssh_enabled():
             self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port} (members)"
+            if self.on_progress:
+                self.on_progress(f"Reading cluster members from {tls_destination[0]}")
             self.destination_members = self._members(
                 tls_destination[0], "destination_ssh", connection.destination_ssh_user
             )
@@ -811,7 +841,9 @@ class LiveEnvironment:
         capacity, used, available = parse_space(read(ReadOperation.SPACE, "disk space check"))
         listing = read(ReadOperation.INVENTORY, "bucket listing")
         buckets = parse_listing(listing)
-        unrecognized = bool(listing.strip()) and not buckets
+        unrecognized = (bool(listing.strip()) and not buckets) or any(
+            UUID.search(line.lower()) and not parse_listing(line) for line in listing.splitlines()
+        )
         if unrecognized:
             self.listing_warnings.add(host)
         else:
@@ -857,7 +889,11 @@ class LiveEnvironment:
                 partition = re.sub(r"[^A-Za-z0-9._:-]", "_", partition)[:128]
                 if partition == "Default":
                     partition = ""
-                proven = not active and listed.start is not None and listed.end is not None
+                proven = (
+                    listed.start is not None
+                    and listed.end is not None
+                    and listed.start <= listed.end
+                )
                 buckets.append(
                     Bucket(
                         listed.id,
@@ -865,18 +901,29 @@ class LiveEnvironment:
                         partition,
                         "active" if active else "archived",
                         size,
-                        0 if active else listed.messages,
-                        None if active else listed.start,
-                        None if active else listed.end,
+                        listed.messages,
+                        listed.start if proven else None,
+                        listed.end if proven else None,
                         None,
                         proven,
                         not active,
                         True,
                         listed.created,
+                        active and listed.empty_proven,
                     )
                 )
         nodes = tuple(Node(i.host, i.capacity, i.used, i.available, i.service) for i in inventories)
-        return Cluster(ident, version, nodes, partitions, (), tuple(buckets), identity, True)
+        return Cluster(
+            ident,
+            version,
+            nodes,
+            partitions,
+            (),
+            tuple(buckets),
+            identity,
+            True,
+            not any(i.unrecognized for i in inventories),
+        )
 
     def source_cluster(self) -> Cluster:
         require(self.source_client is not None, Code.STATE)
@@ -894,8 +941,16 @@ class LiveEnvironment:
             self.source_client.identity,
         )
 
-    def destination_cluster(self) -> Cluster:
+    def destination_topology(self) -> tuple[str, str]:
         require(self.destination_client is not None, Code.STATE)
+        identity = self.destination_client.identity
+        return cluster_id(identity), identity
+
+    def destination_cluster(self, *, fresh: bool = False) -> Cluster:
+        require(self.destination_client is not None, Code.STATE)
+        if fresh:
+            for key in [k for k in self._inventory_cache if k[1] == "destination_ssh"]:
+                del self._inventory_cache[key]
         host, _ = self.connection.destination_endpoint
         version = self.destination_version()
         try:
@@ -968,6 +1023,7 @@ class LiveEnvironment:
                 not task.skipped,
                 task.id or "",
                 bool(task.skipped) and not task.completed,
+                task.created_at_ms,
             ),
         )
 
