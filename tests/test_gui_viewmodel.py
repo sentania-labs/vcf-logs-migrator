@@ -407,6 +407,12 @@ def test_plan_error_text_distinguishes_an_empty_window(rig):
     empty = vm.window_from_days(date(2025, 1, 1), date(2025, 1, 31))
     text = vm.plan_error_text("incomplete_evidence", discovered, empty)
     assert text.startswith("No sealed history in these dates.") and "spans" in text
+    emitted = (
+        "incomplete_evidence: No dated sealed groups overlap the requested dates. "
+        "Check the date range and source inventory."
+    )
+    assert vm.plan_error_text(emitted, discovered, empty) == text
+    assert vm.plan_error_kind(emitted, discovered, empty) == "info"
     inside = vm.window_from_days(date(2026, 3, 1), date(2026, 3, 1))
     assert "unproven" in vm.plan_error_text("incomplete_evidence", discovered, inside)
     assert vm.plan_error_text("destination_busy", discovered, inside) == vm.describe_error(

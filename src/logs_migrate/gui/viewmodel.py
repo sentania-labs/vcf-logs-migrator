@@ -347,7 +347,7 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
                 + "; ".join(groups)
                 + ". Choose dates that exclude these groups."
             )
-    if code == Code.INCOMPLETE.value and discovered and window:
+    if code.partition(": ")[0] == Code.INCOMPLETE.value and discovered and window:
         sealed = [
             b
             for b in discovered["source"]["buckets"]
@@ -358,6 +358,8 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
         if not overlapping:
             span = f" Source history spans {format_day_range(*extent)}." if extent else ""
             return "No sealed history in these dates." + span + " Choose another date range."
+        if ": " in code:
+            return describe_error(code)
         if not discovered["destination"].get("history_complete", True):
             return (
                 "The destination's transfer history is incomplete, so overlap cannot be ruled out."
