@@ -1,5 +1,6 @@
 """Thin migration API wrapper. The destination owns task state and progress."""
 
+import re
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
@@ -237,8 +238,9 @@ class Engine:
                         _day(prior.created_at_ms) if prior.created_at_ms is not None else "unknown"
                     )
                     groups = ", ".join(f"{b['node']}/{b['id']}" for b in crossing)
+                    task_label = re.sub(r"[^A-Za-z0-9._:-]", "_", prior.task_id or "")[:64]
                     detail = (
-                        f"Earlier task {prior.task_id or 'unknown'} ran {when}; "
+                        f"Earlier task {task_label or 'unknown'} ran {when}; "
                         f"its window was {_day(prior.window.start)} to "
                         f"{_day(prior.window.end - 1)} UTC. Selected groups crossing "
                         f"that window: {groups}."
@@ -631,7 +633,8 @@ class Engine:
                 if bucket_check is not None:
                     result["bucket_check"] = bucket_check
                     result["daily_outcome"] = result["outcome"]
-                    if bucket_check["unmatched"]:
+                    not_received = set(result.get("buckets", {}).get("not_received", []))
+                    if any(key not in not_received for key in bucket_check["unmatched"]):
                         result["outcome"] = Verification.DISCREPANCY.value
                     elif bucket_check["unknown"]:
                         if result["outcome"] != Verification.DISCREPANCY.value:

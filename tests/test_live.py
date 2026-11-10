@@ -1974,6 +1974,22 @@ def test_external_window_overlap_warns_only_with_destination_inventory(tmp_path)
     )
 
 
+def test_overlap_detail_never_carries_raw_remote_task_text(tmp_path):
+    from logs_migrate.models import Policy, parse_time
+    from logs_migrate.ports import History, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    _, destination = env.discover()
+    env.transfer = lambda: Transfer("", "idle", destination=destination.id)
+    hostile = "t\x1b[31m\nforged " + "x" * 200
+    env.history = lambda: (History("src", destination.id, window, (), (), True, hostile),)
+    with pytest.raises(MigrationError) as error:
+        engine.plan(window, Policy(poll_seconds=0))
+    message = error.value.message
+    assert "\x1b" not in message and "\nforged" not in message and "x" * 65 not in message
+
+
 def test_live_bucket_verification_checks_destination_counts(tmp_path):
     from dataclasses import replace
 
@@ -2144,9 +2160,11 @@ def test_a_group_the_destination_skipped_reaches_the_not_received_guidance(tmp_p
     skipped = "00000000-0000-0000-0000-000000000001"
     _, engine, run, _ = _verified_rig(tmp_path, skip=skipped)
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_discrepancy"
+    assert result["outcome"] == result["daily_outcome"]
+    assert result["reason"] == "selected_buckets_not_received"
     assert result["bucket_check"]["unmatched"] == ["src-1/" + skipped]
     view = vm.verification_view(result, engine.status(), 0, False, run)
+    assert view["outcome"] == "partial"
     tone, title, text = view["banner"]
     assert "not received" in title
     assert "covers the missing history again" in text

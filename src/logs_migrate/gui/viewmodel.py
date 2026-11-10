@@ -1161,7 +1161,7 @@ def verification_view(
             if daily_outcome == "verified_success" and not missing
             else f"Daily counts: {banner[1]}. {banner[2]}"
         )
-        if exact["unmatched"]:
+        if any(key not in missing for key in exact["unmatched"]):
             outcome = "verified_discrepancy"
         if exact["unmatched"] and missing:
             banner = (banner[0], banner[1], f"{groups} {banner[2]}")
