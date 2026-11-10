@@ -973,36 +973,28 @@ class LiveEnvironment:
         raise MigrationError(Code.SCHEMA)
 
     def source_growth(self) -> dict:
-        """Compare active directory sizes, never event timestamps or a full second inventory."""
+        """Compare active directory sizes, never event timestamps or a full inventory."""
         members = self.members or self.source_members()
-        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
-            inventories = dict(zip(members, pool.map(self.node_inventory, members), strict=True))
-        active = {
-            host: [b.id for b in inventory.buckets if b.status == "active"]
-            for host, inventory in inventories.items()
-        }
 
-        def measure(host):
+        def sample(host):
             ssh = self._ssh(host, "source_ssh", self.connection.source_ssh_user)
-            return parse_usage(ssh.active_usage(active[host]))
+            listing = parse_listing(ssh.read(ReadOperation.INVENTORY))
+            ids = sorted(b.id for b in listing if b.status == "active")
+            return ids, parse_usage(ssh.active_usage(ids))
 
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
-            before = dict(zip(members, pool.map(measure, members), strict=True))
+            before = dict(zip(members, pool.map(sample, members), strict=True))
         sampled = time.monotonic()
         self.clock.sleep(5)
 
         def observe(host):
-            ssh = self._ssh(host, "source_ssh", self.connection.source_ssh_user)
-            listing = parse_listing(ssh.read(ReadOperation.INVENTORY))
-            if set(active[host]) != {b.id for b in listing if b.status == "active"}:
-                raise MigrationError(Code.INCOMPLETE)
-            usage = measure(host)
-            ids = active[host]
-            if any(
-                i not in before[host] or i not in usage or usage[i] < before[host][i] for i in ids
+            ids, usage = sample(host)
+            first_ids, first_usage = before[host]
+            if ids != first_ids or any(
+                i not in first_usage or i not in usage or usage[i] < first_usage[i] for i in ids
             ):
                 raise MigrationError(Code.INCOMPLETE)
-            return sum(usage[i] - before[host][i] for i in ids)
+            return sum(usage[i] - first_usage[i] for i in ids)
 
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
             changes = list(pool.map(observe, members))

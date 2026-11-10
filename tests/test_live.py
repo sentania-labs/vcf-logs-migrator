@@ -322,9 +322,10 @@ class FakeSSH:
             def read(self, operation):
                 env.reads.append((host, operation))
                 try:
-                    return env.replies[(host, operation)]
+                    reply = env.replies[(host, operation)]
                 except KeyError:
                     raise MigrationError(Code.CONNECTION) from None
+                return reply.pop(0) if isinstance(reply, list) else reply
 
         return Client()
 
@@ -1468,17 +1469,14 @@ def test_recorded_90_task_list_selects_this_task_and_falls_back_only_for_unique_
     assert env.transfer_for("missing").status == "idle"
 
 
+STORE = "/storage/core/loginsight/cidata/store/"
+
+
 def test_source_growth_compares_active_directory_sizes_only(rigged):
     env, source, destination, ssh = trusted(rigged)
     env.members = ["src-1.lab"]
-    path = "/storage/core/loginsight/cidata/store/"
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"5000 {path}{A}\n1000 {path}{C}\n"
-    env.node_inventory("src-1.lab")
     env.clock.sleep = lambda seconds: None
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
-        f"1000 {path}{C}\n",
-        f"1300 {path}{C}\n",
-    ]
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [f"1000 {STORE}{C}\n", f"1300 {STORE}{C}\n"]
     result = env.source_growth()
     assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
     assert result["window_seconds"] >= 1
@@ -1487,46 +1485,43 @@ def test_source_growth_compares_active_directory_sizes_only(rigged):
 def test_source_growth_counts_a_node_without_active_buckets_as_idle(rigged):
     env, source, destination, ssh = trusted(rigged)
     env.members = ["src-1.lab", "src-2.lab"]
-    path = "/storage/core/loginsight/cidata/store/"
-    idle = LISTING.replace("status=active", "status=archived")
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {path}{C}\n"
-    ssh.replies[("src-2.lab", ReadOperation.INVENTORY)] = idle
-    env.node_inventory("src-1.lab")
-    env.node_inventory("src-2.lab")
     env.clock.sleep = lambda seconds: None
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
-        f"1000 {path}{C}\n",
-        f"1300 {path}{C}\n",
-    ]
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [f"1000 {STORE}{C}\n", f"1300 {STORE}{C}\n"]
+    ssh.replies[("src-2.lab", ReadOperation.INVENTORY)] = LISTING.replace(
+        "status=active", "status=archived"
+    )
+    ssh.replies[("src-2.lab", ReadOperation.USAGE)] = ""
     result = env.source_growth()
     assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
 
 
-def test_source_growth_inventories_every_node_when_nothing_is_cached(rigged):
+def test_source_growth_never_runs_the_full_per_node_inventory(rigged):
     env, source, destination, ssh = trusted(rigged)
     env.members = ["src-1.lab", "src-2.lab"]
-    path = "/storage/core/loginsight/cidata/store/"
-    for host in env.members:
-        ssh.replies[(host, ReadOperation.USAGE)] = f"1000 {path}{C}\n"
     env.clock.sleep = lambda seconds: None
+    for host in env.members:
+        ssh.replies[(host, ReadOperation.USAGE)] = f"1000 {STORE}{C}\n"
+    ssh.reads.clear()
     result = env.source_growth()
     assert result["bytes"] == 0 and result["nodes"] == []
-    assert {host for host, _ in ssh.reads} >= set(env.members)
+    assert {host for host, _ in ssh.reads} == set(env.members)
+    assert {op for _, op in ssh.reads} == {ReadOperation.INVENTORY}
 
 
-def test_source_growth_measures_from_a_fresh_baseline_not_the_cached_inventory(rigged, monkeypatch):
+def test_source_growth_ignores_a_stale_cached_inventory(rigged, monkeypatch):
     env, source, destination, ssh = trusted(rigged)
     env.members = ["src-1.lab"]
-    path = "/storage/core/loginsight/cidata/store/"
     now = [1000.0]
     monkeypatch.setattr(live.time, "monotonic", lambda: now[0])
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {path}{C}\n"
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {STORE}{C}\n"
     env.node_inventory("src-1.lab")
     now[0] += 250
     env.clock.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    rolled = "44444444-4444-4444-4444-444444444444"
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = LISTING.replace(C, rolled)
     ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
-        f"4000 {path}{C}\n",
-        f"4100 {path}{C}\n",
+        f"4000 {STORE}{rolled}\n",
+        f"4100 {STORE}{rolled}\n",
     ]
     result = env.source_growth()
     assert result["bytes"] == 100 and result["window_seconds"] == 5
@@ -1556,13 +1551,12 @@ def test_active_buckets_keep_no_dates_whatever_the_listing_reports(rigged):
 def test_source_growth_refuses_bucket_rollover(rigged):
     env, source, destination, ssh = trusted(rigged)
     env.members = ["src-1.lab"]
-    path = "/storage/core/loginsight/cidata/store/"
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {path}{C}\n"
-    env.node_inventory("src-1.lab")
     env.clock.sleep = lambda seconds: None
-    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = LISTING.replace(
-        "status=active", "status=archived"
-    )
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = [
+        LISTING,
+        LISTING.replace("status=active", "status=archived"),
+    ]
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [f"1000 {STORE}{C}\n", ""]
     with pytest.raises(MigrationError, match=Code.INCOMPLETE):
         env.source_growth()
 
