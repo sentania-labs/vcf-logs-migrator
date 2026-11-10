@@ -1011,7 +1011,11 @@ class LiveEnvironment:
             if ids != first_ids or any(
                 i not in first_usage or i not in usage or usage[i] < first_usage[i] for i in ids
             ):
-                raise MigrationError(Code.INCOMPLETE)
+                raise MigrationError(
+                    Code.INCOMPLETE,
+                    f"Active buckets or their sizes changed on {host} during the growth "
+                    "sample. Retry when the source is steady.",
+                )
             return sum(usage[i] - first_usage[i] for i in ids)
 
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:

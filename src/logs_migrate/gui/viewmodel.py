@@ -332,8 +332,10 @@ def window_error(start: date, end_inclusive: date) -> str | None:
 
 def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
     """Say what is actually wrong with a refused preview."""
-    if code.startswith(Code.COLLISION.value + ": ") and discovered:
-        conflicts = [b for b in discovered["source"]["buckets"] if b["id"] in code]
+    if code.startswith(Code.COLLISION.value + ": Selected groups already exist") and discovered:
+        conflicts = [
+            b for b in discovered["source"]["buckets"] if f"{b['node']}/{b['id']} (" in code
+        ]
         if conflicts:
             groups = [
                 f"{b['node']} ("

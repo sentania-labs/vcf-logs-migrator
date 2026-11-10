@@ -575,6 +575,17 @@ def test_selftest_fails_the_cutover_check_when_growth_cannot_be_observed(rigged)
     assert step.status == "fail" and "Source activity could not be measured" in step.detail
 
 
+def test_selftest_names_the_exception_class_of_an_unexpected_failure(rigged, monkeypatch):
+    def broken(self):
+        raise KeyError("secret-looking remote text")
+
+    monkeypatch.setattr(live.LiveEnvironment, "source_version", broken, raising=False)
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in result.steps if s.name == "Source API version"]
+    assert step.status == "fail"
+    assert "KeyError" in step.detail and "secret-looking" not in step.detail
+
+
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
     env, destination, result = _run_selftest(rigged, None)
     (plan,) = [s for s in result.steps if s.name == "Plan preview (no request sent)"]

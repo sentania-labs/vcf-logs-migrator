@@ -7,6 +7,7 @@ never credentials, never raw remote text.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
@@ -72,7 +73,10 @@ def _code(error: Exception) -> str:
             if hasattr(error, "message")
             else error.code.value
         )
-    return "gui:The check could not complete. Review the connection and retry the self-test."
+    return (
+        f"gui:The check could not complete ({type(error).__name__}). "
+        "Review the connection and retry the self-test."
+    )
 
 
 def _fmt_day(ms: int) -> str:
@@ -91,6 +95,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         try:
             value, detail = action()
         except Exception as error:  # Only codes and safe diagnostics cross.
+            logging.getLogger(__name__).exception("Self-test step %r failed", name)
             report.steps.append(Step(name, "fail", _code(error)))
             return None
         report.steps.append(Step(name, "pass", detail))

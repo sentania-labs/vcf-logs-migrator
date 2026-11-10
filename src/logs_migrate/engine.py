@@ -282,7 +282,12 @@ class Engine:
     def _ingest(self, policy, baseline):
         # Only arrivals beyond the destination's pre-transfer baseline count as new ingest.
         counts = self._counts(policy, "ingest", EVERYTHING, ())
-        require(counts.identity_complete and baseline.identity_complete, Code.INCOMPLETE)
+        require(
+            counts.identity_complete and baseline.identity_complete,
+            Code.INCOMPLETE,
+            "Destination ingest counts could not identify every event, so new arrivals "
+            "cannot be separated from the baseline. Retry once ingestion settles.",
+        )
         identities = Counter(dict(counts.identities)) - Counter(dict(baseline.identities))
         daily = Counter()
         for identity, count in identities.items():
@@ -567,7 +572,11 @@ class Engine:
     def _reconcile(self, run, destination):
         rows = self.journal.transfers(destination)
         received = {key for row in rows for key in row["received"]}
-        require(bool(received), Code.INCOMPLETE)
+        require(
+            bool(received),
+            Code.INCOMPLETE,
+            "No selected group has been received by the destination yet.",
+        )
         selected = {key for row in rows for key in row["keys"]}
         runs = {row["run"]: self.journal.load(row["run"]) for row in rows}
         source = combine(
@@ -586,6 +595,8 @@ class Engine:
             actual == self._counts(policy, "destination", EVERYTHING, ())
             and ingest == self._ingest(policy, baseline),
             Code.INCOMPLETE,
+            "Destination counts changed between two observations, so they are not stable. "
+            "Retry once ingestion settles.",
         )
         result = reconcile(source, baseline, actual, ingest)
         result["buckets"] = {
@@ -608,9 +619,17 @@ class Engine:
         a fully covered day is a discrepancy.
         """
         row = next((r for r in self.journal.transfers(destination) if r["run"] == run["id"]), None)
-        require(row is not None and row["closed"], Code.INCOMPLETE)
+        require(
+            row is not None and row["closed"],
+            Code.INCOMPLETE,
+            "The destination has no closed transfer recorded for this run.",
+        )
         received = set(row["received"])
-        require(bool(received), Code.INCOMPLETE)
+        require(
+            bool(received),
+            Code.INCOMPLETE,
+            "No selected group has been received by the destination for this run.",
+        )
         require(run.get("baseline") is not None, Code.UNSUPPORTED)
         source = Counts.from_dict(run["source_counts"])
         baseline = Counts.from_dict(run["baseline"])
@@ -621,7 +640,12 @@ class Engine:
             else day_window(Window(**run["plan"]["coverage"]))
         )
         actual = self._counts(policy, "destination", days, ())
-        require(actual == self._counts(policy, "destination", days, ()), Code.INCOMPLETE)
+        require(
+            actual == self._counts(policy, "destination", days, ()),
+            Code.INCOMPLETE,
+            "Destination daily counts changed between two observations, so they are not "
+            "stable. Retry once ingestion settles.",
+        )
         ingest = Counts(True, (), (), "ingest")
         result = reconcile(source, baseline, actual, ingest)
         # Bucket metadata supplies the selected total; daily queries cover only the

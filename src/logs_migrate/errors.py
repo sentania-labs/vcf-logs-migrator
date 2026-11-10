@@ -54,9 +54,9 @@ class Accepted(MigrationError):
     """The appliance answered 2xx but the body could not be read: the request took effect."""
 
 
-def require(condition: bool, code: Code) -> None:
+def require(condition: bool, code: Code, message: str | None = None) -> None:
     if not condition:
-        raise MigrationError(code)
+        raise MigrationError(code, message)
 
 
 def safe_boundary(function):

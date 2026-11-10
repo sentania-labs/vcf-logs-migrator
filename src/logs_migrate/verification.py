@@ -57,9 +57,14 @@ def combine(parts: list[Counts], scope: str) -> Counts:
 
 
 def reconcile(source: Counts, baseline: Counts, actual: Counts, ingest: Counts) -> dict:
+    names = ("source", "baseline", "destination", "ingest")
+    missing = [
+        n for n, c in zip(names, (source, baseline, actual, ingest), strict=True) if not c.complete
+    ]
     require(
-        all(c.complete for c in (source, baseline, actual, ingest)),
+        not missing,
         Code.INCOMPLETE,
+        "Counts were incomplete for: " + ", ".join(missing) + ". Check the appliance and retry.",
     )
     expected = Counter(dict(source.daily)) + Counter(dict(baseline.daily))
     expected += Counter(dict(ingest.daily))

@@ -391,6 +391,28 @@ def test_plan_error_text_distinguishes_an_empty_window(rig):
     assert vm.describe_error("gui:custom text") == "custom text"
 
 
+def test_plan_error_text_lists_only_the_selected_conflicting_groups(rig):
+    engine, _, _ = rig
+    discovered = engine.discover()
+    first = discovered["source"]["buckets"][0]
+    code = (
+        "bucket_identity_conflict: Selected groups already exist on the destination: "
+        f"{first['node']}/{first['id']} (2026-03-01 to 2026-03-01 UTC). "
+        "Choose dates that exclude these groups."
+    )
+    text = vm.plan_error_text(code, discovered, None)
+    assert text.startswith("1 selected groups already exist on the destination")
+    assert text.count(" (") == 1
+    duplicate = (
+        f"bucket_identity_conflict: Source groups have duplicate identities: "
+        f"{first['node']}/{first['id']}. Inspect the source inventory before retrying."
+    )
+    assert vm.plan_error_text(duplicate, discovered, None) == (
+        f"Source groups have duplicate identities: {first['node']}/{first['id']}. "
+        "Inspect the source inventory before retrying."
+    )
+
+
 def test_skipped_group_with_count_loss_is_labelled_a_discrepancy(rig):
     engine, env, _ = rig
     env.data["skip_buckets"] = [env.data["source_events"][0]["bucket"]]

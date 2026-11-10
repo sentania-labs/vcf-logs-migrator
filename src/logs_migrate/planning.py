@@ -82,9 +82,13 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             f"Source groups have duplicate identities: {names}. "
             "Inspect the source inventory before retrying.",
         )
+    unproven = [
+        b.key for b in selected if not (b.complete and b.start is not None and b.end is not None)
+    ]
     require(
-        all(b.complete and b.start is not None and b.end is not None for b in selected),
+        not unproven,
         Code.INCOMPLETE,
+        "Selected groups have no proven start and end: " + ", ".join(unproven) + ".",
     )
 
     def describe(b):
