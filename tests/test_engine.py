@@ -559,5 +559,9 @@ def test_signoff_report_formats_utc_dates_and_ranges(rig):
     assert "selected groups;" in text
     assert "UTC" in text and "Unix ms" not in text
     assert "2026-03-01 to 2026-03-03" in text
-    assert "Snapshot acknowledgment" in text
+    block = text.split("\n\n")[2]
+    assert "Last day covered only by sealed buckets right now" in block
+    assert "Snapshot acknowledgment" in block
+    assert text.count("Snapshot acknowledgment") == 1
+    assert text.count("Last day covered only by sealed buckets") == 1
     assert "| Day | Source |" in text

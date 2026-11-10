@@ -145,6 +145,11 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 f"service {inventory.service} · {len(sealed)} sealed ({len(bounded)} with dates), "
                 f"{len(active)} active · {sized} sized by du · {space}"
             )
+            if inventory.unrecognized:
+                detail += (
+                    " · WARNING: the bucket listing had no recognizable groups; first line: "
+                    + inventory.unrecognized
+                )
             if inventory.listing_keys:
                 detail += " · listing keys: " + ", ".join(inventory.listing_keys)
             if len(bounded) != len(sealed):
@@ -178,7 +183,9 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         source_cluster,
         skip=None
         if len(inventories) == len(hosts) and hosts
-        else "Check the failed node checks above and retry.",
+        else "Check the failed node checks above and retry."
+        if hosts
+        else "No source cluster members were found; see the members check above.",
     )
 
     def destination_version():

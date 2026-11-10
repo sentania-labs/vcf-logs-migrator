@@ -1078,7 +1078,11 @@ def verification_view(
                 format_count(result.get("actual_count")) if has_counts else "Pending",
                 (
                     result.get("received_unavailable_reason")
-                    or "Destination count minus the recorded baseline"
+                    or (
+                        "Destination count minus the recorded baseline"
+                        if result.get("actual_count") is not None
+                        else "Not available: the counts were incomplete"
+                    )
                 )
                 if has_counts
                 else "Not yet comparable",

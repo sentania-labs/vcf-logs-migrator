@@ -73,6 +73,12 @@ def markdown(run, events):
         f"{arrival_text}; "
         f"{matched} fully matched days; {partial} partial days.",
         "",
+        "- Last day covered only by sealed buckets right now: "
+        f"{plan['last_fully_sealed_day'] or 'unknown'}.",
+        "- Snapshot acknowledgment: "
+        + ("operator attested" if run["backup_ack"] else "not given")
+        + "; snapshots were not independently verified.",
+        "",
         f"Run: `{run['id']}`",
         "",
         "Count evidence only. Query `status` for current API task progress.",
@@ -81,17 +87,11 @@ def markdown(run, events):
         f"Verification: **{verification['outcome']}**. "
         f"Complete query evidence: **{verification.get('complete', False)}**.",
         "",
-        "Snapshot acknowledgment: "
-        + ("operator attested" if run["backup_ack"] else "not given")
-        + "; snapshots were not independently verified.",
-        "",
         f"Requested dates: {_timestamp(plan['window']['start'])} to "
         f"{_timestamp(plan['window']['end'])} (end exclusive).",
         f"Whole-bucket coverage: {_timestamp(plan['coverage']['start'])} to "
         f"{_timestamp(plan['coverage']['end'])} (end exclusive).",
         f"Active buckets skipped: {len(plan['active_skipped'])}.",
-        "Last day covered only by sealed buckets right now: "
-        f"{plan['last_fully_sealed_day'] or 'unknown'}.",
         *(
             [
                 "Sealed buckets excluded for having no time range: "

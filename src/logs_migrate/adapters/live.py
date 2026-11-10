@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..diagnostics import redact
 from ..errors import Accepted, Code, MigrationError, QueryTimeout, require
 from ..models import Bucket, Cluster, Counts, Node, Partition, Window
 from ..ports import History, NodeTransfer, SystemClock, Transfer
@@ -142,6 +143,15 @@ class NodeInventory:
     buckets: list[ListedBucket]
     usage: dict[str, int] = field(default_factory=dict)
     listing_keys: tuple[str, ...] = ()
+    unrecognized: str = ""
+
+
+def masked_first_line(text: str) -> str:
+    """First non-empty line of a remote listing, redacted and bounded for display."""
+    line = next((candidate for candidate in text.splitlines() if candidate.strip()), "")
+    line = redact(" ".join(line.split()))
+    line = re.sub(r"[A-Za-z0-9+/=_-]{20,}", "<masked>", line)
+    return "".join(c for c in line if c.isprintable())[:80]
 
 
 # Parsers --------------------------------------------------------------------------------
@@ -634,6 +644,7 @@ class LiveEnvironment:
         self.trust = trust or TrustStore()
         self.clock = clock or SystemClock()
         self.notes: dict[str, object] = {}
+        self.listing_warnings: dict[str, str] = {}
         self.members: list[str] = []
         self.destination_members: list[str] = []
         self.source_client: Logs90 | None = None
@@ -804,12 +815,11 @@ class LiveEnvironment:
         capacity, used, available = parse_space(read(ReadOperation.SPACE, "disk space check"))
         listing = read(ReadOperation.INVENTORY, "bucket listing")
         buckets = parse_listing(listing)
-        if listing.strip() and not buckets:
-            raise MigrationError(
-                Code.INCOMPLETE,
-                f"{host}: the bucket listing contained no recognizable groups. "
-                "Check the appliance version and listing, then retry.",
-            )
+        unrecognized = masked_first_line(listing) if listing.strip() and not buckets else ""
+        if unrecognized:
+            self.listing_warnings[host] = unrecognized
+        else:
+            self.listing_warnings.pop(host, None)
         if self.on_progress:
             members = self.members if credential == "source_ssh" else self.destination_members
             position = members.index(host) + 1 if host in members else 1
@@ -831,6 +841,7 @@ class LiveEnvironment:
             buckets,
             usage,
             keys,
+            unrecognized,
         )
         self._inventory_cache[cache_key] = (time.monotonic(), result)
         return result

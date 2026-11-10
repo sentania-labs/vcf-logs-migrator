@@ -258,6 +258,10 @@ class Engine:
                     f"Active buckets on {', '.join(growth['nodes'])} grew by "
                     f"{growth['bytes']:,} bytes in {growth['window_seconds']} seconds."
                 )
+            plan["warnings"] += [
+                f"{host}: the bucket listing had no recognizable groups; first line: {line}"
+                for host, line in sorted(getattr(self.env, "listing_warnings", {}).items())
+            ]
             plan["partial_days"] = partial_days(source, plan)
             self._settle(destination.id)
             self._overlap(plan)
