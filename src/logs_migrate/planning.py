@@ -114,6 +114,7 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             "version": destination.version,
             "identity": destination.identity,
             "nodes": [{"id": n.id} for n in destination.nodes],
+            "inventory_available": destination.inventory_available,
         },
         "window": asdict(window),
         "coverage": asdict(coverage),
@@ -157,7 +158,9 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
                 "partial and a count difference on an earlier day as a discrepancy."
             ]
             if any(
-                b.status == "active" and not (b.bounds_proven and b.start is not None)
+                b.status == "active"
+                and not b.empty_proven
+                and not (b.bounds_proven and b.start is not None)
                 for b in source.buckets
             )
             else []

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from html import escape
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QBoxLayout,
@@ -53,6 +53,9 @@ class PlanPage(Page):
     def __init__(self, app):
         super().__init__("Discovery & Plan")
         self.app = app
+        self.warning_timer = QTimer(self)
+        self.warning_timer.setSingleShot(True)
+        self.warning_timer.timeout.connect(self._size_warnings)
         self.previewed: tuple[date, date] | None = None  # Dates the current plan was built from.
         self.date_message = ""  # Inline validation of the editors.
         self.blocked_dismissed = False  # The operator asked for the editors back.
@@ -170,6 +173,14 @@ class PlanPage(Page):
         retention_card, retention_layout = card("Retention and warnings")
         self.warnings = label("", "hint", wrap=True)
         retention_layout.addWidget(self.warnings)
+        self.warning_ids = QPlainTextEdit()
+        self.warning_ids.setReadOnly(True)
+        self.warning_ids.setMaximumHeight(160)
+        self.warning_ids.hide()
+        self.warning_ids_toggle = button("Show group ids", "", self._toggle_warning_ids)
+        self.warning_ids_toggle.hide()
+        retention_layout.addWidget(self.warning_ids_toggle)
+        retention_layout.addWidget(self.warning_ids)
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -243,6 +254,18 @@ class PlanPage(Page):
         layout.addStretch(1)
         return holder
 
+    def _size_warnings(self) -> None:
+        width = self.warnings.width()
+        if width > 0:
+            height = self.warnings.heightForWidth(width)
+            if height > 0 and self.warnings.minimumHeight() != height:
+                self.warnings.setMinimumHeight(height)
+
+    def _toggle_warning_ids(self) -> None:
+        shown = not self.warning_ids.isVisible()
+        self.warning_ids.setVisible(shown)
+        self.warning_ids_toggle.setText("Hide group ids" if shown else "Show group ids")
+
     def _toggle_group_ids(self) -> None:
         shown = not self.group_ids.isVisible()
         self.group_ids.setVisible(shown)
@@ -277,6 +300,7 @@ class PlanPage(Page):
 
     def resizeEvent(self, event):  # noqa: N802 (Qt override)
         super().resizeEvent(event)
+        self.warning_timer.start(0)
         # Below 1200px the side cards stack under the window card, as the 1024x700 study shows.
         narrow = self.width() < 1200
         direction = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
@@ -547,9 +571,7 @@ class PlanPage(Page):
         self.bars["Included copy"].set_span(
             extent, view["coverage"], "~" + view["included"], "dashed"
         )
-        self.bars["Destination overlap"].set_span(
-            extent, extent, "None in selected groups", "solid"
-        )
+        self.bars["Destination overlap"].set_span(extent, extent, view["overlap_text"], "solid")
         if view["active_count"]:
             tail = (
                 (view["coverage"][1], extent[1])
@@ -580,6 +602,11 @@ class PlanPage(Page):
         self.checks.set_rows(view["checks"])
         self.storage.set_rows(view["storage"])
         self.warnings.setText("\n".join(view["warnings"]))
+        self.warning_ids.setPlainText("\n".join(view["overlap_ids"]))
+        self.warning_ids_toggle.setVisible(bool(view["overlap_ids"]))
+        if not view["overlap_ids"]:
+            self.warning_ids.hide()
+        self.warning_timer.start(0)
         self.ack.setVisible(view["needs_ack"] and self._preview_is_current())
         self._update_actions()
 

@@ -89,6 +89,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         if skip:
             report.steps.append(Step(name, "skip", skip))
             return None
+        if getattr(env, "on_progress", None):
+            env.on_progress(f"Self-test: {name}")
         try:
             value, detail = action()
         except Exception as error:  # Only codes and safe diagnostics cross.

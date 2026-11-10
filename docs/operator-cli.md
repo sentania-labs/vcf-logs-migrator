@@ -31,11 +31,13 @@ buckets are always excluded. A sealed bucket the appliance lists with no time ra
 selected: the plan lists it by node and id as excluded, and the operator decides.
 `last_fully_sealed_day` is the last day covered only by sealed buckets right now,
 not a guarantee: it is the day before the first active bucket's proven start
-(America/Chicago). A live 8.18 listing shows no dates for active buckets, so there it
-is the day before the oldest node's newest sealed bucket end; it is unknown when a
-node with an active bucket has no sealed bucket to go by. Active buckets with no
-dates can still receive older-dated data (backfill or late agents); the preview
-warns about that, and such days show as differences at verify.
+(America/Chicago). An 8.18 listing gives dates for active buckets; an empty active
+bucket (no events, sentinel dates) is ignored. When an active bucket has no usable
+dates, it is the day before the oldest node's newest sealed bucket end, and unknown
+when a node with an active bucket has no sealed bucket to go by. Active buckets can
+still receive older-dated data (backfill or late agents); the preview warns about
+that and lists `open_bucket_days`, the requested days shared with an open bucket whose
+dates are known. Such days show as differences at verify.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to
@@ -226,6 +228,12 @@ even while its status still shows nothing.
   the journal for each destination; external transfer history must also be known.
   Adjacent windows selecting the same whole bucket are refused too, especially on
   9.1.1 where destination bucket IDs disappear. A run starts at most once.
+  A finished transfer started elsewhere (the product UI, say) with no received list
+  covered whole buckets in its window. When the destination's bucket inventory was read
+  (destination SSH), the exact id check decides and a selected bucket crossing that
+  window is only a plan warning; without the inventory the plan is refused with
+  `overlapping_transfer`. Either way the message names the earlier task, when it ran,
+  its window and the selected groups crossing it.
 - A plan is checked against fresh inventory and the planned source and destination
   identities before start. `verify` re-checks the destination identity and reports
   incomplete verification if it changed; source retention after a completed transfer
@@ -248,6 +256,16 @@ even while its status still shows nothing.
   received bucket reconciles the outcome is `incomplete_verification` (exit 6):
   the counts are evidence, not a success for the requested dates. A count
   difference stays `verified_discrepancy` (exit 5).
+  With destination SSH, verify also re-reads the destination bucket inventory after the
+  task and compares each selected group by id and message count with the source. The
+  result carries `bucket_check` (groups and events matched, unmatched and unknown
+  groups) and `daily_outcome`; the report leads with it and treats the daily counts as
+  the search-level second check. A group missing or differing on the destination makes
+  the outcome `verified_discrepancy`; a group whose count is unknown makes it
+  `incomplete_verification`.
+  Without destination SSH there is no inventory to compare: if the group coverage
+  reaches days beyond the requested ones (`unmeasured_day_count`), a matching daily
+  comparison is `incomplete_verification`, not `verified_success`.
   The simulator supplies per-event attribution. Live counts cannot: against real
   appliances verification is per run over the UTC days touched by the requested
   window (source per-day counts against destination counts minus the baseline
@@ -336,7 +354,9 @@ and `config apply` with the selected rules.
 With an empty fixture path in Settings the window connects to real appliances: the
 Connections page takes the addresses and passwords, unknown TLS certificates and SSH
 host keys open a trust dialog with their fingerprints, and Run self-test lists the
-same read-only checks as `logs-migrate selftest`.
+same read-only checks as `logs-migrate selftest`. Test probes every configured
+endpoint's identity first, with the addresses being contacted and elapsed time on the
+page, and asks for trust before any credential is sent.
 
 Standalone downloads of this same CLI and window are described in the README.
 

@@ -71,12 +71,27 @@ def markdown(run, events):
     else:
         sent_text = f"{show(expected)} events expected"
         arrival_text = f"{show(arrived)} arrived at destination since this run started"
+    exact = verification.get("bucket_check")
+    if exact:
+        headline = (
+            f"{exact['matched_groups']} of {exact['total_groups']} groups registered "
+            f"on the destination with matching counts; {show(exact['matched_events'])} "
+            f"of {show(exact['total_events'])} events. Search-level check: {arrival_text}."
+        )
+    else:
+        share = (
+            f" ({min(100, arrived * 100 / expected):.1f}% of selected events counted)"
+            if expected and arrived is not None
+            else " (verified share unavailable)"
+        )
+        headline = (
+            f"{len(plan['selected'])} selected groups; {sent_text}; "
+            f"{arrival_text}{share}; {matched} fully matched days; {partial} partial days."
+        )
     lines = [
         "# Migration count report",
         "",
-        f"{len(plan['selected'])} selected groups; {sent_text}; "
-        f"{arrival_text}; "
-        f"{matched} fully matched days; {partial} partial days.",
+        headline,
         "",
         "- Last day covered only by sealed buckets right now: "
         f"{plan['last_fully_sealed_day'] or 'unknown'}.",
@@ -98,6 +113,7 @@ def markdown(run, events):
         f"Whole-bucket coverage: {_timestamp(plan['coverage']['start'])} to "
         f"{_timestamp(plan['coverage']['end'])} (end exclusive).",
         f"Active buckets skipped: {len(plan['active_skipped'])}.",
+        *plan.get("warnings", []),
         *(
             [
                 "Sealed buckets excluded for having no time range: "
