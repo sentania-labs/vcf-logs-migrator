@@ -727,3 +727,29 @@ def test_live_trust_is_requested_before_credentials(driver, monkeypatch):
     assert len(asked) == 1 and store.enrolled and len(attempts) == 2
     assert "password" in page.validation.lower()
     assert not driver.state.connected
+
+
+def test_probing_endpoints_releases_an_open_connection_first(monkeypatch):
+    from logs_migrate.gui.session import Session
+    from logs_migrate.security import Credentials
+
+    class Client:
+        cleared = False
+
+        def clear_token(self):
+            self.cleared = True
+
+    class Env:
+        source_client = Client()
+        destination_client = Client()
+
+    session = Session()
+    session.env = Env()
+    session.credentials = Credentials({"source_api": "secret"}, interactive=False)
+    held = session.credentials
+    monkeypatch.setattr(Session, "_open_live", lambda self, *, probe_only=False: None)
+    session.probe_endpoints(connection={"source_host": "s", "destination": "d"})
+    assert session.env is None
+    assert Env.source_client.cleared and Env.destination_client.cleared
+    assert session.credentials is not held
+    assert not held.snapshot()

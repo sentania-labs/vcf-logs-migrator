@@ -82,6 +82,7 @@ class Session:
         return result
 
     def probe_endpoints(self, *, connection: dict[str, str]) -> None:
+        self.disconnect()
         self.connection = dict(connection)
         self.credentials = Credentials({}, interactive=False)
         self._open_live(probe_only=True)

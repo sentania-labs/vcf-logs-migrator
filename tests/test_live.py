@@ -2037,3 +2037,32 @@ def test_empty_active_sentinel_does_not_hide_dated_open_groups():
     dated = Bucket(A, "a", "", "active", 0, 5, 5 * DAY, 6 * DAY, None, True, False)
     empty = Bucket(B, "a", "", "active", 0, 0, None, None, None, False, False, empty_proven=True)
     assert last_sealed_day((dated, empty), zone="UTC") == "1970-01-05"
+
+
+def test_plan_lists_the_requested_days_an_open_bucket_with_recorded_dates_shares(tmp_path):
+    from conftest import FIXTURES
+
+    from logs_migrate.models import Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-04T00:00:00Z"))
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+
+    def days(label, start, end):
+        source = json.loads(json.dumps(data["source"]))
+        source["buckets"][3].update(
+            start=parse_time(start), end=parse_time(end), bounds_proven=True
+        )
+        _, engine = _live_rig(tmp_path / label, {"source": source})
+        return engine.plan(window, Policy(poll_seconds=0))["plan"]["open_bucket_days"]
+
+    assert days("before", "2026-02-20T00:00:00Z", "2026-06-08T00:00:00Z") == [
+        "2026-03-01",
+        "2026-03-02",
+        "2026-03-03",
+    ]
+    assert days("inside", "2026-03-02T12:00:00Z", "2026-06-08T00:00:00Z") == [
+        "2026-03-02",
+        "2026-03-03",
+    ]
+    assert days("after", "2026-03-04T00:00:00Z", "2026-06-08T00:00:00Z") == []
+    assert days("ended", "2026-01-01T00:00:00Z", "2026-02-28T23:59:59Z") == []
