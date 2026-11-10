@@ -156,8 +156,8 @@ logs-migrate --journal ~/migration/lab.sqlite plan \
 The JSON names the run id, the selected sealed buckets (whole buckets; coverage can
 extend past the dates), active buckets skipped, the last day covered only by sealed buckets, the
 partition comparison, the storage check and the warnings. `partial_days` lists the
-covered days that share events with open or unselected buckets; their counts are
-expected to differ at verification.
+requested days at or after the sealed frontier and days shared with unselected
+buckets; their counts are expected to differ at verification.
 
 ## Step 5: start the transfer (writes to the destination)
 
@@ -171,8 +171,8 @@ logs-migrate --journal ~/migration/lab.sqlite copy RUN_ID \
 
 Before the POST the tool re-reads both inventories, refuses if anything changed,
 checks every source node's SSH login, calls `POST /api/v2/data-migrations/test`,
-records the per-day source counts and the destination baseline over the covered
-days (two agreeing complete observations each, 30 s apart), writes the selection to
+records the per-day source counts and the destination baseline over the requested
+UTC days (two agreeing complete observations each, 30 s apart), writes the selection to
 the journal, and only then sends `POST /api/v2/data-migrations` once. Correct output
 is the task as the API reports it (`"status": "running"`).
 

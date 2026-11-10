@@ -249,10 +249,12 @@ even while its status still shows nothing.
   the counts are evidence, not a success for the requested dates. A count
   difference stays `verified_discrepancy` (exit 5).
   The simulator supplies per-event attribution. Live counts cannot: against real
-  appliances verification is per run over the UTC days touched by the requested window (source per-day counts
-  against destination counts minus the baseline recorded at start), new ingest is
-  not attributed, and days shared with open or unselected buckets are reported as
-  partial without deciding the outcome.
+  appliances verification is per run over the UTC days touched by the requested
+  window (source per-day counts against destination counts minus the baseline
+  recorded at start), new ingest is not attributed, and days shared with open or
+  unselected buckets are reported as partial without deciding the outcome. When no
+  requested day is fully covered (every day is partial) the outcome is
+  `incomplete_verification` with reason `no_fully_covered_days`.
 - Daily count equality is count evidence, not proof of identical message content,
   partition routing or field extraction. A report preserves active exclusions and
   does not authorize retiring source data that was not copied.
@@ -276,8 +278,11 @@ Secrets have no argv flags. Adapter failures are reduced to fixed error codes;
 raw responses, credentials and exception strings must never enter reports or
 logs. Private journal files use restrictive permissions and writer locking.
 
-The one addition is SSH failures, which carry a `message` from a closed
-vocabulary (CLI error JSON and the GUI). It names the stage that failed: TCP
+The additions are SSH failures and count-query timeouts, which carry a `message`
+(CLI error JSON and the GUI). A timeout names the query, its scope (source or
+destination) and its UTC interval; the same text appears as `detail` in a
+verification that could not finish its counts. The SSH message comes from a closed
+vocabulary. It names the stage that failed: TCP
 reachability, handshake, algorithm negotiation, host-key trust, authentication
 or remote command. Only recognized library diagnostics and numeric exit statuses
 are retained; other exception text and remote stderr are suppressed. Host-key
@@ -285,6 +290,11 @@ and authentication failures use `authentication_failed`; the other stages use
 `connection_failed`. All exit 7. No SSH algorithm policy was weakened.
 
 `selftest` exits 0 when every read-only check passed and 1 otherwise.
+
+On a large source the per-node SSH inventory (bucket listing and `du`) is the slow
+step. Nodes are read in parallel, the CLI prints a per-node progress line and each
+count query to stderr, and an inventory read within the last five minutes is reused
+by later steps; `copy` always re-reads the appliances before it starts.
 
 The optional 9.0 fixup implementation is retained in `_set_aside_fixup.py`, marked
 set aside and not instantiable or exposed in CLI help/commands. Reintroduction
