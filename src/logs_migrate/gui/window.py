@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QListWidget,
@@ -120,6 +122,9 @@ class MainWindow(QMainWindow):
         self.theme_combo.addItems([f"Theme: {t.title()}" for t in THEMES])
         self.theme_combo.currentIndexChanged.connect(self._theme_changed)
         layout.addWidget(self.theme_combo)
+        self.details_button = button("Show details", "", self.show_details)
+        self.details_button.hide()
+        layout.addWidget(self.details_button)
         layout.addWidget(button("Settings", "", lambda: self.show_page("settings")))
         return header
 
@@ -201,6 +206,13 @@ class MainWindow(QMainWindow):
     def apply_settings(self, settings: Settings, *, reload_page: bool = True) -> None:
         previous = self.state.settings
         self.state.settings = settings
+        if previous.debug_logging != settings.debug_logging:
+            from ..diagnostics import configure
+
+            try:
+                configure(enabled=settings.debug_logging)
+            except OSError:
+                pass
         theme.apply_theme(QApplication.instance(), settings.theme)
         self.timer.setInterval(settings.refresh_seconds * 1000)
         self.save_settings()
@@ -456,6 +468,8 @@ class MainWindow(QMainWindow):
         state = self.state
         if not self._settle(job):
             return
+        self.last_error = f"{job}: {code}"
+        self.details_button.show()
         if job in {"connect", "trust"}:
             self.pending_credentials = {}
         if job == "connect":
@@ -497,6 +511,29 @@ class MainWindow(QMainWindow):
         elif job.startswith("report:"):
             state.report = None
         self.refresh_all()
+
+    def show_details(self) -> None:
+        from ..diagnostics import log_path
+
+        path = log_path()
+        box = QMessageBox(self)
+        box.setWindowTitle("Troubleshooting details")
+        box.setText(getattr(self, "last_error", "No error recorded"))
+        if path and path.exists():
+            box.setDetailedText(path.read_text(encoding="utf-8", errors="replace"))
+            folder = box.addButton("Open log folder", QMessageBox.ButtonRole.ActionRole)
+            save = box.addButton("Save log", QMessageBox.ButtonRole.ActionRole)
+        else:
+            box.setInformativeText("Enable detailed troubleshooting logging in Settings and retry.")
+            folder = save = None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if path and box.clickedButton() == folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent.resolve())))
+        elif path and box.clickedButton() == save:
+            target, _ = QFileDialog.getSaveFileName(self, "Save troubleshooting log", path.name)
+            if target and Path(target).resolve() != path.resolve():
+                shutil.copyfile(path, target)
 
     def closeEvent(self, event):  # noqa: N802 (Qt override)
         self.timer.stop()

@@ -10,9 +10,11 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import logging
 import re
 import socket
 import ssl
+import time
 import urllib.parse
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -21,6 +23,39 @@ from typing import Protocol
 from ..errors import Accepted, Code, MigrationError, Rejection, require, safe_boundary
 from ..models import DAY, Window
 from ..security import Secret
+
+log = logging.getLogger(__name__)
+
+
+def _safe_error_body(raw: bytes):
+    """Keep JSON structure and numeric codes, suppress untrusted text values."""
+
+    def safe(value):
+        if isinstance(value, dict):
+            # Keys are untrusted too: only retain identifier-shaped field names.
+            return {
+                key: (
+                    "<redacted>"
+                    if re.search(
+                        r"(?i)password|passwd|token|session|cookie|authorization|secret|private.?key",
+                        key,
+                    )
+                    else safe(item)
+                )
+                for key, item in value.items()
+                if isinstance(key, str) and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9-]{0,63}", key)
+            }
+        if isinstance(value, list):
+            return [safe(item) for item in value[:100]]
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return "<redacted>"
+
+    try:
+        return safe(json.loads(raw))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return "<unstructured body redacted>"
+
 
 MAX_BODY = 16 * 1024 * 1024
 COUNT_CHUNK_DAYS = 30  # One aggregated-events query returns at most 100 bins (newest first).
@@ -49,6 +84,7 @@ def peer_certificate_sha256(host: str, port: int, timeout: float = 15) -> str:
             with context.wrap_socket(raw, server_hostname=host) as tls:
                 return hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
     except Exception:
+        log.exception("TLS certificate probe failed")
         raise MigrationError(Code.CONNECTION) from None
 
 
@@ -122,6 +158,8 @@ class HTTPS:
             and "\n" not in path,
             Code.INVALID_INPUT,
         )
+        started = time.monotonic()
+        log.debug("REST %s %s", method, path)
         connection = http.client.HTTPSConnection(
             self.host, self.port, timeout=timeout or self.timeout, context=self.context
         )
@@ -140,6 +178,23 @@ class HTTPS:
                 headers={"Content-Type": "application/json", **(headers or {})},
             )
             response = connection.getresponse()
+            log.debug(
+                "REST %s %s status=%s elapsed=%.3fs",
+                method,
+                path,
+                response.status,
+                time.monotonic() - started,
+            )
+            if response.status >= 400 and log.isEnabledFor(logging.DEBUG):
+                try:
+                    raw_error = response.read(MAX_BODY + 1)
+                    log.debug(
+                        "REST error body (%d bytes): %s",
+                        len(raw_error),
+                        _safe_error_body(raw_error),
+                    )
+                except Exception:
+                    log.exception("Could not read REST error body")
             if response.status in {401, 403}:
                 raise Rejection(Code.AUTH)
             if not 200 <= response.status < 300:  # No credential redirects.
@@ -163,6 +218,7 @@ class HTTPS:
         except MigrationError:
             raise
         except Exception:
+            log.exception("REST request failed")
             raise MigrationError(Code.CONNECTION) from None
         finally:
             connection.close()
@@ -252,7 +308,13 @@ class Logs90:
         require(
             isinstance(response, dict) and isinstance(response.get("sessionId"), str), Code.SCHEMA
         )
+        self.clear_token()
         self.token = Secret(response["sessionId"])
+
+    def clear_token(self):
+        if self.token is not None:
+            self.token.release()
+            self.token = None
 
     def headers(self):
         if self.token is None:
@@ -266,7 +328,7 @@ class Logs90:
             return self.transport.request(method, path, body, self.headers(), **extra)
         except MigrationError as error:
             if error.code == Code.AUTH and method == "GET":
-                self.token = None
+                self.clear_token()
                 return self.transport.request(method, path, body, self.headers(), **extra)
             # Never replay a POST, PUT or DELETE after an uncertain response.
             raise
@@ -376,7 +438,9 @@ class Logs911(Logs90):
                 {"serviceKeys": ["ops-li"]},
                 {"Authorization": "OpsToken " + self.ops_token.reveal()},
             )
-            self.token = Secret(self.decode_exchange(response))
+            token = self.decode_exchange(response)
+            self.clear_token()
+            self.token = Secret(token)
         except MigrationError:
             raise
         except Exception:

@@ -278,8 +278,8 @@ fixture checks used by CI.
 the `gui` extra first). The flags prefill the simulator fixture and private journal; both
 are also editable on the Settings page, together with theme, display timezone, status
 refresh interval, verification retry budget, count query interval and the report export
-folder. Settings persist in `settings.ini` under the user's configuration directory.
-Credentials entered on the Connections page stay in session memory and never reach the
+folder, plus the troubleshooting log switch below. Settings persist in `settings.ini`
+under the user's configuration directory. Credentials entered on the Connections page stay in session memory and never reach the
 journal, the settings file or exports.
 
 The window is a presentation layer over the commands above: Discovery & Plan runs
@@ -294,3 +294,24 @@ host keys open a trust dialog with their fingerprints, and Run self-test lists t
 same read-only checks as `logs-migrate selftest`.
 
 Standalone downloads of this same CLI and window are described in the README.
+
+## Troubleshooting logs
+
+Detailed logging is disabled by default. Add `--debug-log` to any command to create a
+timestamped log under the client configuration directory, or use
+`--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
+stderr and enables a log when used alone. The default location keeps the 10 most recent
+logs, each capped at 5 MiB plus 2 backups; files you choose with `--debug-log=` are never
+pruned. The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
+applies to subsequent operations. After an error, **Show details** appears in the header:
+use it to inspect the log, open its folder, or save a copy.
+
+The log includes request paths and status, timing, SSH transport negotiation, commands,
+and exception traces. JSON error response bodies retain field names and numeric values;
+untrusted text values are redacted because they can contain secrets. Passwords, tokens,
+and other known credentials are filtered, but logs still contain appliance addresses and
+operational details; review them before sharing.
+
+On POSIX systems the log file is restricted to mode 0600, including an existing
+file and files created after rotation. On Windows, log files inherit the folder's
+access control list; choose a folder whose permissions restrict access to your account.

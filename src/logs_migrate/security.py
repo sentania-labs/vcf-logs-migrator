@@ -25,14 +25,22 @@ def harden_process():
 
 
 class Secret:
-    __slots__ = ("_value",)
+    __slots__ = ("_value", "__weakref__")
 
     def __init__(self, value: str):
         require(isinstance(value, str) and bool(value), Code.AUTH)
+        from .diagnostics import register_secret
+
         self._value = value
+        register_secret(self)
 
     def reveal(self) -> str:
         return self._value
+
+    def release(self) -> None:
+        from .diagnostics import unregister_secret
+
+        unregister_secret(self)
 
     def __repr__(self):
         return "Secret(<redacted>)"
@@ -123,4 +131,6 @@ class Credentials:
 
     def clear(self):
         # Python cannot guarantee cryptographic erasure of previously allocated strings.
+        for secret in self._values.values():
+            secret.release()
         self._values.clear()

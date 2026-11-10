@@ -139,6 +139,16 @@ user's config directory.
 Credentials come from the GUI, environment variables, a private file or a prompt;
 never from command arguments, logs or reports.
 
+### Troubleshooting logs
+
+Detailed logging is off by default. Run `logs-migrate --debug-log status` to write a
+credential-redacted log under the client configuration directory (it keeps the 10 most
+recent logs, each capped at 5 MiB plus 2 backups), or
+`--debug-log=/path/to/log` to choose a file; add `-v` to echo it to stderr. In the
+desktop app, tick **Enable detailed troubleshooting log** in Settings, retry, then use
+**Show details**. Logs contain appliance addresses, so review before sharing. Details:
+[operator troubleshooting](docs/operator-cli.md#troubleshooting-logs).
+
 ## Desktop GUI
 
 `logs-migrate gui` opens a PySide6 window over the same engine: Overview, Connections,
@@ -147,9 +157,9 @@ with the shared [Lattice](https://github.com/sentania-labs/lattice) tokens in li
 dark. The GUI holds no migration logic; every number it shows is an engine or API
 observation, and estimates read Unavailable when the API gives no counters. Engine
 calls run on a worker thread so the window stays responsive. Settings (theme, display
-timezone, status refresh, verification budget, report folder, simulator fixture and
-journal file) are editable in the window and stored in an INI file under the user's
-config directory; credentials stay in session memory only.
+timezone, status refresh, verification budget, report folder, simulator fixture,
+journal file and troubleshooting log) are editable in the window and stored in an INI
+file under the user's config directory; credentials stay in session memory only.
 
 ```sh
 python -m pip install '.[gui]'

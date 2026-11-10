@@ -3,12 +3,21 @@ from pathlib import Path
 
 import pytest
 
+from logs_migrate import diagnostics
 from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
 from logs_migrate.engine import Engine
 from logs_migrate.journal import Journal
 from logs_migrate.models import ACTIVE_ACK, Policy, Window, parse_time
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def isolated_secret_registry():
+    """Secrets registered by one test must not redact another test's log output."""
+    diagnostics._secrets.clear()
+    yield
+    diagnostics._secrets.clear()
 
 
 @pytest.fixture
