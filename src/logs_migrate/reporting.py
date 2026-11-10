@@ -56,18 +56,20 @@ def markdown(run, events):
         return f"{value:,}" if value is not None else "unavailable"
 
     if unmeasured and measured_window:
+        sent_text = f"{show(expected)} events sent from selected groups"
         arrival_text = (
-            f"{show(arrived)} arrived on requested dates "
-            f"{_timestamp(measured_window['start'])} to {_timestamp(measured_window['end'])} "
-            f"(end exclusive); {unmeasured} other days the groups touch were not counted; "
-            "see the daily table"
+            "arrivals were counted for the requested dates only "
+            f"({_timestamp(measured_window['start'])} to {_timestamp(measured_window['end'])}, "
+            f"end exclusive: {show(arrived)} arrived); {unmeasured} other days these groups "
+            "touch were not counted; see the daily table"
         )
     else:
+        sent_text = f"{show(expected)} events expected"
         arrival_text = f"{show(arrived)} arrived at destination since this run started"
     lines = [
         "# Migration count report",
         "",
-        f"{len(plan['selected'])} selected groups; {show(expected)} events expected; "
+        f"{len(plan['selected'])} selected groups; {sent_text}; "
         f"{arrival_text}; "
         f"{matched} fully matched days; {partial} partial days.",
         "",

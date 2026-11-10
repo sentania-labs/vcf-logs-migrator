@@ -33,7 +33,7 @@ def test_api_flow_preserves_source_and_verifies_daily_counts(rig, fixture_name):
         1,
         1,
     )
-    assert result["expected_count"] == result["actual_count"] == 8
+    assert result["expected_count"] == result["actual_count"] == result["source_count"] == 6
     assert all(d["difference"] == 0 for d in result["daily"])
     assert env.data["source"] == before
     assert {t["operation"] for t in env.data["trace"]} == {
@@ -144,7 +144,7 @@ def test_baseline_ingest_is_not_counted_again_even_with_identical_new_arrivals(
     assert result["outcome"] == "verified_success"
     assert result["preexisting_count"] == 1 + old_count
     assert result["new_ingest_count"] == new_count
-    assert result["actual_count"] == 7 + old_count + new_count
+    assert result["actual_count"] == result["expected_count"] == 6
 
 
 def test_baseline_loss_is_a_discrepancy(rig):

@@ -263,16 +263,12 @@ def open_live(args):
             ]
             for name, first in shared:
                 print(f"SSH host {name} presents the same key as {first}.", file=sys.stderr)
-            shared_names = {name for name, _ in shared}
-            expected = {_normalise(value) for value in args.expect_fingerprint}
-            if args.trust_new and any(
-                i.name in shared_names and i.fingerprint not in expected for i in pending.identities
-            ):
+            if shared:
                 print(
-                    "Check the shared key, then use --expect-fingerprint to accept it.",
+                    "Appliances cloned from one image commonly share a host key; confirm "
+                    "that is expected before trusting these hosts.",
                     file=sys.stderr,
                 )
-                raise MigrationError(Code.AUTH) from None
             decisions = {i.name: _accept(i, args) for i in pending.identities}
             refused = [i for i in pending.identities if decisions[i.name] == "refuse"]
             if refused:

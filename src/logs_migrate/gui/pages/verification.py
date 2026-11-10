@@ -15,6 +15,7 @@ class VerificationPage(Page):
         self.body.addWidget(self.banner)
         self.tiles = []
         frames = []
+        self.frames = frames
         for title in (
             "Expected in included dates",
             "Destination in included dates",
@@ -80,8 +81,10 @@ class VerificationPage(Page):
         elif state.verify_run_id and state.verify_run_id == state.run_id:
             status, heading, text = ("info", "Verifying…", "Counting on both appliances.")
         set_banner(self.banner, heading, text, status)
+        for index, frame in enumerate(self.frames):
+            frame.setVisible(index < len(view["tiles"]))
         for (title_label, value, caption), (title, text_value, text_caption) in zip(
-            self.tiles, view["tiles"], strict=True
+            self.tiles, view["tiles"], strict=False
         ):
             title_label.setText(title)
             value.setText(text_value)

@@ -73,10 +73,7 @@ def _code(error: Exception) -> str:
             if hasattr(error, "message")
             else error.code.value
         )
-    return (
-        f"gui:The check could not complete ({type(error).__name__}). "
-        "Review the connection and retry the self-test."
-    )
+    return f"{type(error).__name__}: the check could not complete. Review the connection and retry."
 
 
 def _fmt_day(ms: int) -> str:

@@ -586,6 +586,17 @@ def test_selftest_names_the_exception_class_of_an_unexpected_failure(rigged, mon
     assert "KeyError" in step.detail and "secret-looking" not in step.detail
 
 
+def test_selftest_failure_detail_is_plain_for_the_cli_and_named_in_the_window(rigged, monkeypatch):
+    from logs_migrate.gui import viewmodel as vm
+
+    monkeypatch.setattr(live.LiveEnvironment, "source_version", lambda self: 1 / 0, raising=False)
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in result.steps if s.name == "Source API version"]
+    assert not step.detail.startswith("gui:") and "ZeroDivisionError" in step.detail
+    rows = dict(vm.selftest_rows(result.data()))
+    assert "ZeroDivisionError" in rows["Source API version"]
+
+
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
     env, destination, result = _run_selftest(rigged, None)
     (plan,) = [s for s in result.steps if s.name == "Plan preview (no request sent)"]
@@ -1355,6 +1366,29 @@ def test_cli_refuses_untrusted_identities_without_a_terminal(monkeypatch, capsys
     assert cli.main(["--source", "src.lab", "--destination", "dst.lab", "discover"]) == 7
 
 
+def test_cli_trust_new_notes_shared_ssh_keys_and_still_enrolls(monkeypatch, capsys, tmp_path):
+    from logs_migrate import cli
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("LOGS_SOURCE_SSH_PASSWORD", "canary-ssh")
+    monkeypatch.setenv("LOGS_SOURCE_API_PASSWORD", "canary-api")
+    monkeypatch.setenv("LOGS_DESTINATION_API_PASSWORD", "canary-dst")
+    shared = [Identity("ssh", f"10.0.0.{n}:22", "a" * 64) for n in (20, 21, 22)]
+
+    def open_(self):
+        raise TrustRequired(shared)
+
+    monkeypatch.setattr(LiveEnvironment, "open", open_)
+    monkeypatch.setattr(LiveEnvironment, "key_line", lambda self, identity: "key-line")
+    code = cli.main(["--source", "src.lab", "--destination", "dst.lab", "--trust-new", "discover"])
+    out, err = capsys.readouterr()
+    assert code == 0
+    assert "SSH host 10.0.0.21:22 presents the same key as 10.0.0.20:22." in err
+    assert "SSH host 10.0.0.22:22 presents the same key as 10.0.0.20:22." in err
+    assert "cloned" in err
+    assert len(json.loads(out.splitlines()[-1])["enrolled"]) == 3
+
+
 def test_cli_expect_fingerprint_enrolls_and_proceeds_only_on_a_match(monkeypatch, capsys, tmp_path):
     from logs_migrate import cli
 
@@ -1788,6 +1822,33 @@ def test_live_verification_separates_days_not_measured(tmp_path):
     assert result["unmeasured_day_count"] == 2
     assert result["actual_count"] is None
     assert result["measured_arrival_count"] == 2
+
+
+def test_unmeasured_days_headline_is_one_figure_in_the_window_and_the_report(tmp_path):
+    from logs_migrate.gui import viewmodel as vm
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.reporting import markdown
+
+    env, engine = _live_rig(tmp_path)
+    env.data["source"]["buckets"][0]["end"] = parse_time("2026-03-03T12:00:00Z")
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    result = engine.verify(run["id"])
+    sent = sum(b["messages"] for b in run["plan"]["selected"])
+    view = vm.verification_view(result, engine.status(), 0, False)
+    assert [t[0] for t in view["tiles"]] == ["Sent from selected groups", "Excluded latest data"]
+    assert view["tiles"][0][1] == f"{sent:,}"
+    assert "requested dates only" in view["tiles"][0][2]
+    assert "2 other days these groups touch were not counted" in view["tiles"][0][2]
+    report = markdown(engine.journal.load(run["id"]), [])
+    summary = report.splitlines()[2]
+    assert f"{sent:,} events sent from selected groups" in summary
+    assert "requested dates only" in summary and "2 other days" in summary
+    assert "events expected" not in summary
 
 
 def test_shared_ssh_keys_include_previously_enrolled_hosts():

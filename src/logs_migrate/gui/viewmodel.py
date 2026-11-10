@@ -296,7 +296,7 @@ def selftest_rows(result: dict) -> list[tuple[str, str]]:
             step["status"], step["status"]
         )
         detail = step.get("detail", "")
-        if step["status"] == "fail" and detail:
+        if step["status"] == "fail" and detail and detail.partition(": ")[0] in set(Code):
             detail = describe_error(detail)
         rows.append((step["name"], label + (" · " + detail if detail else "")))
     summary = result.get("summary", {})
@@ -1017,39 +1017,50 @@ def verification_view(
     has_counts = "expected_count" in result
     unmeasured = result.get("unmeasured_day_count", 0)
     measured_window = result.get("measured_window")
+    excluded_tile = (
+        "Excluded latest data",
+        f"{active_count} open group{'s' if active_count != 1 else ''}",
+        "Not imported",
+    )
     if unmeasured and measured_window:
         start = datetime.fromtimestamp(measured_window["start"] / 1000, UTC).date()
         end = datetime.fromtimestamp((measured_window["end"] - 1) / 1000, UTC).date()
-        arrival_label = f"Arrived on requested dates ({start} to {end} UTC)"
-        arrival_value = format_count(result.get("measured_arrival_count"))
-        arrival_note = (
-            result.get("received_unavailable_reason")
-            or f"{unmeasured} other days the groups touch were not counted. See the daily table."
+        arrived = result.get("measured_arrival_count")
+        counted = (
+            f"{format_count(arrived)} events arrived"
+            if arrived is not None
+            else result.get("received_unavailable_reason") or "Arrivals could not be attributed"
         )
+        tiles = [
+            (
+                "Sent from selected groups",
+                format_count(result.get("expected_count")) if has_counts else "Pending",
+                f"Arrivals were counted for the requested dates only ({start} to {end} UTC: "
+                f"{counted}); {unmeasured} other days these groups touch were not counted."
+                if has_counts
+                else "Not yet comparable",
+            ),
+            excluded_tile,
+        ]
     else:
-        arrival_label = "Arrived at destination since this run started"
-        arrival_value = format_count(result.get("actual_count"))
-        arrival_note = (
-            result.get("received_unavailable_reason")
-            or "Destination count minus the recorded baseline"
-        )
-    tiles = [
-        (
-            "Expected from selected groups",
-            format_count(result.get("expected_count")) if has_counts else "Pending",
-            "Sum of the selected groups' event counts" if has_counts else "Not yet comparable",
-        ),
-        (
-            arrival_label,
-            arrival_value if has_counts else "Pending",
-            arrival_note if has_counts else "Not yet comparable",
-        ),
-        (
-            "Excluded latest data",
-            f"{active_count} open group{'s' if active_count != 1 else ''}",
-            "Not imported",
-        ),
-    ]
+        tiles = [
+            (
+                "Expected from selected groups",
+                format_count(result.get("expected_count")) if has_counts else "Pending",
+                "Sum of the selected groups' event counts" if has_counts else "Not yet comparable",
+            ),
+            (
+                "Arrived at destination since this run started",
+                format_count(result.get("actual_count")) if has_counts else "Pending",
+                (
+                    result.get("received_unavailable_reason")
+                    or "Destination count minus the recorded baseline"
+                )
+                if has_counts
+                else "Not yet comparable",
+            ),
+            excluded_tile,
+        ]
     rows = daily_rows(result, run) if result.get("daily") else []
     buckets = result.get("buckets", {})
     if buckets:

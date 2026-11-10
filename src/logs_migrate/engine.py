@@ -599,6 +599,8 @@ class Engine:
             "Retry once ingestion settles.",
         )
         result = reconcile(source, baseline, actual, ingest)
+        result["expected_count"] = source.total
+        result["actual_count"] = actual.total - baseline.total - ingest.total
         result["buckets"] = {
             "covered": sorted(received),
             "not_received": sorted(selected - received),

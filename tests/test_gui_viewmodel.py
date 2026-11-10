@@ -185,7 +185,7 @@ def test_verification_view_states(rig):
     status = engine.status()
     result = engine.verify(run["id"])
     view = vm.verification_view(result, status, 1, False)
-    assert view["banner"][0] == "warn" and view["tiles"][0][1] == "8"  # open group excluded
+    assert view["banner"][0] == "warn" and view["tiles"][0][1] == "6"  # open group excluded
     assert vm.verification_view(result, status, 0, False)["banner"][0] == "ok"
     assert view["rows"] and all(r[3] == "Match" for r in view["rows"])
     assert (
