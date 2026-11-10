@@ -12,7 +12,8 @@ from logs_migrate.models import ACTIVE_ACK
 
 
 @pytest.mark.parametrize("fixture", ["sealed-populated.fixture", "sealed-911.fixture"])
-def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture):
+@pytest.mark.parametrize("compat_flags", [[], ["--ack-backup"]])
+def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture, compat_flags):
     base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(FIXTURES / fixture)]
     assert main([*base, "partitions"]) == 0
     assert json.loads(capsys.readouterr().out)["missing"] == []
@@ -21,7 +22,7 @@ def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture):
         == 0
     )
     run = json.loads(capsys.readouterr().out)
-    assert main([*base, "copy", run["id"], "--ack-backup", "--ack-active", ACTIVE_ACK]) == 0
+    assert main([*base, "copy", run["id"], *compat_flags, "--ack-active", ACTIVE_ACK]) == 0
     assert json.loads(capsys.readouterr().out)["task"]["status"] == "running"
     api_only = [
         "--fixture",
@@ -42,7 +43,9 @@ def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture):
     offline = ["--journal", str(tmp_path / "j.sqlite"), "report", run["id"]]
     assert main([*offline, "--format", "json"]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["run"]["backup_ack"] and report["run"]["backup_verified"] is False
+    assert report["run"]["active_ack"] is True
+    assert "backup" not in json.dumps(report).lower()
+    assert "snapshot" not in json.dumps(report).lower()
     assert main(offline) == 0
     assert "verified_success" in capsys.readouterr().out
 
@@ -113,3 +116,12 @@ def test_connection_fault_exits_as_operation_failed_not_missing_prerequisite(tmp
     code = main(["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture), "discover"])
     assert code == 7
     assert json.loads(capsys.readouterr().err)["error"] == "connection_failed"
+
+
+def test_copy_help_hides_legacy_backup_flag(capsys):
+    with pytest.raises(SystemExit) as result:
+        main(["copy", "--help"])
+    assert result.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--ack-backup" not in help_text
+    assert "--ack-active" in help_text

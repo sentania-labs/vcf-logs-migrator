@@ -4,7 +4,6 @@ from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
 from .. import viewmodel as vm
 from ..widgets import KeyValues, Page, button, card, columns, label, row
-from . import SNAPSHOT
 
 
 class OverviewPage(Page):
@@ -44,10 +43,7 @@ class OverviewPage(Page):
                 button("Connect environments", "primary", lambda: self.app.show_page("connections"))
             )
         )
-        before, before_layout = card("Before you begin")
-        before_layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         layout.addWidget(connect)
-        layout.addWidget(before)
         layout.addStretch(1)
         return holder
 
@@ -81,7 +77,6 @@ class OverviewPage(Page):
         )
         plan_layout.addStretch(1)
         layout.addWidget(columns(config, plan))
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         return holder
 
     def refresh(self) -> None:

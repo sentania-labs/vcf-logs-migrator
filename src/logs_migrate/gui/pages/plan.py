@@ -33,7 +33,6 @@ from ..widgets import (
     row,
     set_banner,
 )
-from . import SNAPSHOT
 
 # Both codes mean the selection is already on the destination; neither is retried.
 BLOCKED = {"overlapping_transfer", "bucket_identity_conflict"}
@@ -197,7 +196,6 @@ class PlanPage(Page):
         self.split_holder = QWidget()
         self.split_holder.setLayout(self.split)
         layout.addWidget(self.split_holder)
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         self.ack = QCheckBox("I understand you aren't going to copy the latest data.")
         self.ack.setAccessibleName("Latest-data acknowledgment")
         self.ack.stateChanged.connect(self._ack_changed)
@@ -557,7 +555,7 @@ class PlanPage(Page):
             "Discovery & Plan",
             view["subtitle"]
             if not state.acknowledged or not view["needs_ack"]
-            else "Ready · snapshots reminded · latest-data exclusion acknowledged",
+            else "Ready · latest-data exclusion acknowledged",
         )
         extent = view["extent"] or view["coverage"]
         for widget, text in zip(self.axis_labels, vm.axis_labels(extent), strict=True):

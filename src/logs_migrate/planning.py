@@ -54,12 +54,6 @@ def capacity(destination: Cluster, buckets: tuple[Bucket, ...]) -> dict:
     }
 
 
-BACKUP_ACK = (
-    "No undo: migrated data stays on the destination. Snapshot the destination before "
-    "continuing (snapshotting the source too is optional)."
-)
-
-
 def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
     compatible(source, destination)
     if not destination.history_complete:
@@ -135,7 +129,6 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
         "partition_diff": partition_diff(source, destination),
         "capacity": space,
         "warnings": [
-            BACKUP_ACK,
             "Active buckets are skipped; newest data is not copied.",
             "Whole buckets can extend beyond the requested date range.",
             "The source root password is sent to the destination for the transfer.",

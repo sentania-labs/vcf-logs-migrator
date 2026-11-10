@@ -9,7 +9,7 @@ from conftest import FIXTURES, execute, planned
 from logs_migrate.adapters.simulated import SimulatedEnvironment
 from logs_migrate.engine import Engine
 from logs_migrate.errors import Code, MigrationError
-from logs_migrate.models import ACTIVE_ACK, DAY, Counts, Policy, Window
+from logs_migrate.models import DAY, Counts, Policy, Window
 from logs_migrate.ports import Transfer
 from logs_migrate.reporting import markdown
 from logs_migrate.verification import reconcile, stable_counts
@@ -325,12 +325,11 @@ def test_stop_does_not_relabel_a_completed_task(rig):
     assert not any(t["operation"] == "cancel" for t in env.data["trace"])
 
 
-@pytest.mark.parametrize("backup,active", [(False, ACTIVE_ACK), (True, "")])
-def test_required_attestations_precede_api_post(rig, backup, active):
+def test_active_acknowledgment_precedes_api_post(rig):
     engine, env, _ = rig
     run = planned(engine)
     with pytest.raises(MigrationError) as error:
-        engine.run(run["id"], backup_ack=backup, active_ack=active)
+        engine.run(run["id"])
     assert error.value.code == Code.ACK
     assert not env.data["trace"]
 
@@ -561,8 +560,8 @@ def test_signoff_report_formats_utc_dates_and_ranges(rig):
     assert "2026-03-01 to 2026-03-03" in text
     block = text.split("\n\n")[2]
     assert "Last day covered only by sealed buckets right now" in block
-    assert "Snapshot acknowledgment" in block
-    assert text.count("Snapshot acknowledgment") == 1
+    assert "snapshot" not in text.lower()
+    assert "backup" not in text.lower()
     assert text.count("Last day covered only by sealed buckets") == 1
     assert "| Day | Source |" in text
 

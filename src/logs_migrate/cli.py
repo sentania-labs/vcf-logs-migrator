@@ -14,7 +14,6 @@ from .engine import Engine
 from .errors import Code, MigrationError, require
 from .journal import Journal
 from .models import Verification, Window, parse_time
-from .planning import BACKUP_ACK
 from .reporting import markdown, report_data
 from .security import ENVIRONMENT, Credentials, harden_process
 from .trust import TrustRequired, TrustStore, shared_ssh_keys
@@ -170,7 +169,7 @@ def parser():
     plan.add_argument("--until", required=True, help="Exclusive end, ISO 8601 with timezone")
     copy = sub.add_parser("copy", help="Start the API task once; status monitors it")
     copy.add_argument("run_id", type=uuid_arg)
-    copy.add_argument("--ack-backup", action="store_true", help=BACKUP_ACK)
+    copy.add_argument("--ack-backup", action="store_true", help=argparse.SUPPRESS)
     copy.add_argument(
         "--ack-active", default="", help="Exact acknowledgment that latest data is skipped"
     )
@@ -409,7 +408,7 @@ def main(argv=None):
         elif args.command == "plan":
             result = engine.plan(Window(parse_time(args.since), parse_time(args.until)))
         elif args.command == "copy":
-            result = engine.run(args.run_id, backup_ack=args.ack_backup, active_ack=args.ack_active)
+            result = engine.run(args.run_id, active_ack=args.ack_active)
         elif args.command == "status":
             result = engine.status(args.run_id)
         elif args.command == "stop":

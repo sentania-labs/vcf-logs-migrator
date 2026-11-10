@@ -43,7 +43,7 @@ def planned(engine):
 
 
 def execute(engine, run):
-    return engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    return engine.run(run["id"], active_ack=ACTIVE_ACK)
 
 
 def verified(engine):

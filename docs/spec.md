@@ -10,7 +10,7 @@ comparison and a plain report. Local task/recovery states, close/reconcile,
 plan-hash gates and tail reruns described below are not shipped. Fixup is set aside
 and hidden; forwarding, partition, masking and filter rule migration is covered in
 [`operator-cli.md`](operator-cli.md). Only data
-protection guards and required backup/active-data attestations remain. The API is
+protection guards and the required active-data acknowledgment remain. The API is
 the sole authority for task progress, with local sent-bucket and count evidence.
 
 Basis: [`research-guide.md`](research-guide.md), [`lab-runs.md`](lab-runs.md),
@@ -179,8 +179,7 @@ checks permit it.
 1. Revalidate inventory, capacity, partitions, credentials and overlap
    against the immutable plan. Missing source buckets or changed inventory
    stop the run; never trust a local checkpoint alone.
-2. Require explicit backup/snapshot acknowledgment and the active-data
-   acknowledgment. Do not claim snapshots exist without evidence.
+2. Require the active-data acknowledgment when open groups are excluded.
 3. Test with `POST /api/v2/data-migrations/test`, then start with
    `POST /api/v2/data-migrations`: source host, credentials,
    `bucketStartTimeMillis` and `bucketEndTimeMillis`. Both services stay
@@ -280,8 +279,6 @@ mid-way (start the service if the tool stopped it).
 - `fixup` requires per-node stop consent, stops at most one destination node
   at a time and starts it again in a `finally`. Verify stops and starts;
   persist recovery state rather than assuming they worked.
-- Require explicit backup/snapshot acknowledgment before execution.
-  Snapshots are the operator's job; no vCenter integration in v1.
 - No secrets in command lines, logs, reports, diagnostics or error messages.
 - `--dry-run` prints proposed operations without running them or exposing
   credentials.

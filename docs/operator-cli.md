@@ -56,15 +56,11 @@ growth is only an observation for that interval, not a 24-hour event count. Open
 buckets can contain late or backfilled data. `partial_days` lists the requested days
 at or after the sealed frontier and days shared with unselected buckets.
 
-**No undo: migrated data stays on the destination. Snapshot the destination before
-continuing (snapshotting the source too is optional).** `--ack-backup` records the
-operator's attestation, not proof that a snapshot exists. Active exclusions require
-the exact acknowledgment below.
+If the plan excludes open groups, use the exact acknowledgment below.
 
 ```sh
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture copy RUN_UUID \
-  --ack-backup \
   --ack-active "i understand you aren't going to copy the latest data"
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture status
@@ -346,7 +342,7 @@ under the user's configuration directory. Credentials entered on the Connections
 journal, the settings file or exports.
 
 The window is a presentation layer over the commands above: Discovery & Plan runs
-`plan`, Start runs `copy` with the snapshot and latest-data acknowledgments, Migration
+`plan`, Start runs `copy` with the latest-data acknowledgment, Migration
 polls `status`, Cancel runs `stop` for the observed task ID, Verification runs `verify`
 and Reports writes the `report` Markdown and JSON. Configuration runs `config compare`
 and `config apply` with the selected rules.
@@ -366,7 +362,7 @@ Detailed logging is disabled by default. Add `--debug-log` to any command to cre
 timestamped log under the client configuration directory, or use
 `--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
 stderr and enables a log when used alone. The default location keeps the 10 most recent
-logs, each capped at 5 MiB plus 2 backups; files you choose with `--debug-log=` are never
+logs, each capped at 5 MiB plus 2 rotated files; files you choose with `--debug-log=` are never
 pruned. The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
 applies to subsequent operations. After an error, **Show details** appears in the header:
 use it to inspect the log, open its folder, or save a copy.

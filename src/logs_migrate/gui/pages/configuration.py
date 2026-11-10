@@ -5,7 +5,6 @@ from PySide6.QtWidgets import QCheckBox, QProgressBar, QStackedWidget, QVBoxLayo
 
 from .. import viewmodel as vm
 from ..widgets import Page, Table, banner, button, card, columns, label, row, set_banner
-from . import SNAPSHOT
 
 
 class ConfigurationPage(Page):
@@ -104,7 +103,6 @@ class ConfigurationPage(Page):
         )
         self.filter_warning.hide()
         layout.addWidget(self.filter_warning)
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         return holder
 
     def _results_view(self) -> QWidget:
@@ -140,7 +138,6 @@ class ConfigurationPage(Page):
             )
         )
         layout.addWidget(next_card)
-        layout.addWidget(label(SNAPSHOT, "hint", wrap=True, rich=True))
         return holder
 
     def _showing_results(self) -> bool:
