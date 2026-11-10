@@ -278,8 +278,8 @@ fixture checks used by CI.
 the `gui` extra first). The flags prefill the simulator fixture and private journal; both
 are also editable on the Settings page, together with theme, display timezone, status
 refresh interval, verification retry budget, count query interval and the report export
-folder, plus the troubleshooting log switch below. Settings persist in `settings.ini` under the user's configuration directory.
-Credentials entered on the Connections page stay in session memory and never reach the
+folder, plus the troubleshooting log switch below. Settings persist in `settings.ini`
+under the user's configuration directory. Credentials entered on the Connections page stay in session memory and never reach the
 journal, the settings file or exports.
 
 The window is a presentation layer over the commands above: Discovery & Plan runs
@@ -302,8 +302,7 @@ timestamped log under the client configuration directory, or use
 `--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
 stderr and enables a log when used alone. The default location keeps the 10 most recent
 logs, each capped at 5 MiB plus 2 backups; files you choose with `--debug-log=` are never
-pruned.
-The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
+pruned. The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
 applies to subsequent operations. After an error, **Show details** appears in the header:
 use it to inspect the log, open its folder, or save a copy.
 

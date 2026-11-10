@@ -158,8 +158,8 @@ dark. The GUI holds no migration logic; every number it shows is an engine or AP
 observation, and estimates read Unavailable when the API gives no counters. Engine
 calls run on a worker thread so the window stays responsive. Settings (theme, display
 timezone, status refresh, verification budget, report folder, simulator fixture,
-journal file and troubleshooting log) are editable in the window and stored in an INI file under the user's
-config directory; credentials stay in session memory only.
+journal file and troubleshooting log) are editable in the window and stored in an INI
+file under the user's config directory; credentials stay in session memory only.
 
 ```sh
 python -m pip install '.[gui]'
