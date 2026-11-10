@@ -717,6 +717,7 @@ class LiveEnvironment:
                 identity, line = probe_ssh(host, connection.ssh_port)
                 self._check(identity, line, unknown)
         if self._destination_ssh_enabled():
+            self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port} (members)"
             self.destination_members = self._members(
                 tls_destination[0], "destination_ssh", connection.destination_ssh_user
             )

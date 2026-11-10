@@ -347,7 +347,7 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
                 + "; ".join(groups)
                 + ". Choose dates that exclude these groups."
             )
-    if code.partition(": ")[0] == Code.INCOMPLETE.value and discovered and window:
+    if code == Code.INCOMPLETE.value and discovered and window:
         sealed = [
             b
             for b in discovered["source"]["buckets"]

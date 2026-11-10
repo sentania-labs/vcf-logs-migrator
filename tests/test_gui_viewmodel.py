@@ -412,6 +412,12 @@ def test_plan_error_text_distinguishes_an_empty_window(rig):
     assert vm.plan_error_text("destination_busy", discovered, inside) == vm.describe_error(
         "destination_busy"
     )
+    named = (
+        "incomplete_evidence: Selected groups have no proven start and end: "
+        "node-1/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa."
+    )
+    assert vm.plan_error_text(named, discovered, inside) == vm.describe_error(named)
+    assert "node-1/aaaaaaaa" in vm.plan_error_text(named, discovered, inside)
     assert vm.describe_error("gui:custom text") == "custom text"
 
 

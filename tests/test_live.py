@@ -411,6 +411,20 @@ def trusted(rigged):
     return env, source, destination, ssh
 
 
+def test_destination_member_failure_names_the_destination_host_not_a_source_member(
+    rigged, monkeypatch
+):
+    env, _, _, ssh, store = rigged
+    monkeypatch.setattr(LiveEnvironment, "_destination_ssh_enabled", lambda self: True)
+    for name in ("src.lab:22", "src-1.lab:22", "src-2.lab:22", "dst.lab:22"):
+        store.trust(Identity("ssh", name, "b" * 64, "ssh-ed25519"), "x ssh-ed25519 AAAA")
+    store.trust(Identity("tls", "src.lab:9543", "a" * 64))
+    store.trust(Identity("tls", "dst.lab:9543", "c" * 64))
+    with pytest.raises(MigrationError):
+        env.open()
+    assert env.notes["stage"] == "ssh dst.lab:22 (members)"
+
+
 def test_discover_builds_clusters_from_rest_and_ssh_reads(rigged):
     env, source, destination, ssh = trusted(rigged)
     source.records += [
