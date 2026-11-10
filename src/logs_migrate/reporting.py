@@ -4,12 +4,47 @@ from datetime import UTC, date, datetime, timedelta
 
 from .models import LEGACY_RESULT_NOTE, is_legacy_result
 
+# Older journals contain this product prompt. Match it exactly so appliance evidence
+# mentioning a snapshot or backup for some unrelated reason is not discarded.
+_RETIRED_WARNING = (
+    "No undo: migrated data stays on the destination. Snapshot the destination before "
+    "continuing (snapshotting the source too is optional)."
+)
+
+
+def display_run(run):
+    """Project a saved run for display without changing its original evidence or hash."""
+    return {
+        **{
+            key: value for key, value in run.items() if key not in {"backup_ack", "backup_verified"}
+        },
+        "plan": {
+            **run["plan"],
+            "warnings": [w for w in run["plan"]["warnings"] if w != _RETIRED_WARNING],
+        },
+    }
+
+
+def display_events(events):
+    """Omit only the retired acknowledgment detail; keep the audit event itself."""
+    return [
+        {
+            **event,
+            "details": {
+                key: value for key, value in event["details"].items() if key != "snapshot_verified"
+            },
+        }
+        if event["kind"] == "transfer_authorized"
+        else event
+        for event in events
+    ]
+
 
 def report_data(run, events):
     return {
         "schema_version": 2,
-        "run": run,
-        "events": events,
+        "run": display_run(run),
+        "events": display_events(events),
         "qualification": (
             "Count evidence from the appliances' own query APIs; counts do not prove "
             "identical event content."

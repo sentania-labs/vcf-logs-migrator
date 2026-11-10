@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from ..errors import Code
 from ..models import DAY, LEGACY_RESULT_NOTE, Window, is_legacy_result, selected_message_count
+from ..reporting import display_run
 
 UNAVAILABLE = "Unavailable"
 PRESETS = (
@@ -387,7 +388,7 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
 
 
 def plan_view(run: dict, discovered: dict | None) -> dict:
-    plan = run["plan"]
+    plan = display_run(run)["plan"]
     selected = plan["selected"]
     coverage = plan["coverage"]
     capacity = plan["capacity"]

@@ -13,7 +13,7 @@ from ..journal import Journal
 from ..models import ACTIVE_ACK, Policy, Window
 from ..planning import compatible
 from ..ports import Transfer
-from ..reporting import report_data
+from ..reporting import display_events, display_run, report_data
 from ..security import Credentials
 from ..trust import TrustRequired, TrustStore
 from . import viewmodel as vm
@@ -247,12 +247,12 @@ class Session:
 
     def runs(self) -> list[dict]:
         require(self.journal is not None, Code.STATE)
-        return self.journal.runs()
+        return [display_run(run) for run in self.journal.runs()]
 
     def report(self, *, run_id: str) -> dict:
         require(self.journal is not None, Code.STATE)
         run, events = self.journal.load(run_id), self.journal.events(run_id)
-        return {"run": run, "events": events}
+        return {"run": display_run(run), "events": display_events(events)}
 
     def export(
         self,
@@ -265,10 +265,11 @@ class Session:
         index: int | None = None,
         config_result: dict | None = None,
     ) -> list[str]:
-        """Markdown in the pages' own words; JSON stays the engine's machine record."""
+        """Export presentation data; never persist the filtered representation."""
         require(self.journal is not None, Code.STATE)
         require(bool(formats), Code.INVALID_INPUT)
-        run, events = self.journal.load(run_id), self.journal.events(run_id)
+        report = self.report(run_id=run_id)
+        run, events = report["run"], report["events"]
         target = Path(folder).expanduser()
         written = []
         try:
