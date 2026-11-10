@@ -300,6 +300,7 @@ def test_report_view_headline_follows_the_unmeasured_days_rule(rig):
     stored["verification"] = {
         "outcome": "verified_success",
         "complete": True,
+        "count_basis": "selected_groups",
         "expected_count": 263548,
         "actual_count": None,
         "measured_arrival_count": 12,
@@ -467,6 +468,33 @@ def test_conflict_group_lines_list_full_node_id_and_dates(rig):
         )
         == []
     )
+
+
+def test_legacy_stored_result_never_shows_old_figures_under_the_new_headings(rig):
+    from logs_migrate.reporting import markdown
+
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    engine.status()
+    engine.verify(run["id"])
+    stored = journal.load(run["id"])
+    legacy = dict(stored["verification"])
+    legacy.pop("count_basis")
+    legacy.update(expected_count=940761, actual_count=263548)
+    view = vm.verification_view(legacy, engine.status(), 0, False)
+    shown = " ".join(str(part) for tile in view["tiles"] for part in tile)
+    assert "940,761" not in shown and "263,548" not in shown
+    assert "earlier version; run Verify again" in shown
+    assert view["rows"]
+    stored["verification"] = legacy
+    rows = dict(vm.report_view(stored, journal.events(run["id"]), engine.status(), "UTC")["rows"])
+    assert "940,761" not in " ".join(rows.values()) and "263,548" not in " ".join(rows.values())
+    assert "earlier version" in rows["Counts"]
+    text = markdown(stored, journal.events(run["id"]))
+    assert "940,761" not in text and "263,548" not in text and "earlier version" in text
+    fresh = vm.verification_view(engine.verify(run["id"]), engine.status(), 0, False)
+    assert fresh["tiles"][0][0] == "Expected from selected groups"
 
 
 def test_skipped_group_with_count_loss_is_labelled_a_discrepancy(rig):

@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..errors import Code
-from ..models import DAY, Window
+from ..models import DAY, LEGACY_RESULT_NOTE, Window, is_legacy_result
 
 UNAVAILABLE = "Unavailable"
 PRESETS = (
@@ -910,6 +910,8 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
 def report_headline_rows(verification: dict) -> list[tuple[str, str]]:
     if not verification.get("complete"):
         return [("Sent from selected groups", "Pending")]
+    if is_legacy_result(verification):
+        return [("Counts", LEGACY_RESULT_NOTE)]
     sent = format_count(verification.get("expected_count"))
     if verification.get("unmeasured_day_count") and verification.get("measured_window"):
         return [
@@ -1071,7 +1073,9 @@ def verification_view(
         f"{active_count} open group{'s' if active_count != 1 else ''}",
         "Not imported",
     )
-    if unmeasured and measured_window:
+    if is_legacy_result(result):
+        tiles = [("Counts", UNAVAILABLE, LEGACY_RESULT_NOTE), excluded_tile]
+    elif unmeasured and measured_window:
         tiles = [
             (
                 "Sent from selected groups",

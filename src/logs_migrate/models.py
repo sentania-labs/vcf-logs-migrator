@@ -43,6 +43,17 @@ class Verification(StrEnum):
     INCOMPLETE = "incomplete_verification"
 
 
+COUNT_BASIS = "selected_groups"
+LEGACY_RESULT_NOTE = (
+    "This result was recorded by an earlier version; run Verify again to see "
+    "selected-group figures."
+)
+
+
+def is_legacy_result(verification: dict) -> bool:
+    return "expected_count" in verification and verification.get("count_basis") != COUNT_BASIS
+
+
 _LABEL = re.compile(r"[A-Za-z0-9._:-]{0,128}")
 
 

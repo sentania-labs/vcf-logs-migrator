@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime, timedelta
 
+from .models import LEGACY_RESULT_NOTE, is_legacy_result
+
 
 def report_data(run, events):
     return {
@@ -55,7 +57,10 @@ def markdown(run, events):
     def show(value):
         return f"{value:,}" if value is not None else "unavailable"
 
-    if unmeasured and measured_window:
+    if is_legacy_result(verification):
+        sent_text = "figures not shown"
+        arrival_text = LEGACY_RESULT_NOTE.rstrip(".")
+    elif unmeasured and measured_window:
         sent_text = f"{show(expected)} events sent from selected groups"
         arrival_text = (
             "arrivals were counted for the requested dates only "

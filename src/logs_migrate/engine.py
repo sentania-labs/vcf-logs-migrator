@@ -10,6 +10,7 @@ from .config import ConfigMigration
 from .errors import Code, MigrationError, Rejection, require, safe_boundary
 from .models import (
     ACTIVE_ACK,
+    COUNT_BASIS,
     DAY,
     EVERYTHING_END,
     Counts,
@@ -568,6 +569,7 @@ class Engine:
                         "No baseline was recorded, so arrivals cannot be calculated. "
                         "See the daily comparison when available."
                     )
+            result["count_basis"] = COUNT_BASIS
             result["at"] = self.clock.now()
             run["verification"] = result
             self._audit(run, "daily_counts_verified", {"outcome": result["outcome"]})
