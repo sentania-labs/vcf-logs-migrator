@@ -698,7 +698,7 @@ class LiveEnvironment:
             self.on_progress(f"Contacting {self.notes['stage']}")
         identity, line = probe_ssh(connection.source_host, connection.ssh_port)
         self._check(identity, line, unknown)
-        if self._destination_ssh_enabled():
+        if not connection.preview and connection.destination_ssh_user.strip():
             self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port}"
             if self.on_progress:
                 self.on_progress(f"Contacting {self.notes['stage']}")
@@ -940,6 +940,11 @@ class LiveEnvironment:
             partitions,
             self.source_client.identity,
         )
+
+    def destination_topology(self) -> tuple[str, str]:
+        require(self.destination_client is not None, Code.STATE)
+        identity = self.destination_client.identity
+        return cluster_id(identity), identity
 
     def destination_cluster(self, *, fresh: bool = False) -> Cluster:
         require(self.destination_client is not None, Code.STATE)

@@ -2184,3 +2184,34 @@ def test_matching_groups_with_a_daily_difference_show_the_difference_in_the_bann
     tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
     assert title == "Selected groups checked" and tone == "bad"
     assert text.startswith("3 of 3 groups registered") and "Daily counts differ" in text
+
+
+def test_verify_reads_the_destination_inventory_once(tmp_path):
+    env, engine, run, _ = _verified_rig(tmp_path)
+    original = env.destination_cluster
+    reads = []
+    env.destination_cluster = lambda fresh=False: reads.append(fresh) or original(fresh=fresh)
+    assert engine.verify(run["id"])["outcome"] == "verified_success"
+    assert reads == [True]
+
+
+def test_verify_refuses_a_changed_destination_before_settling_or_listing(tmp_path):
+    env, engine, run, _ = _verified_rig(tmp_path)
+    destination_id = run["plan"]["destination"]["id"]
+    before = engine.journal.transfers(destination_id)
+    listed = []
+    env.destination_topology = lambda: (destination_id, "another-identity")
+    env.destination_cluster = lambda fresh=False: listed.append(fresh)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification" and result["reason"] == "topology_changed"
+    assert listed == [] and engine.journal.transfers(destination_id) == before
+
+
+def test_probe_asks_about_the_destination_ssh_identity_before_any_credential(rigged):
+    from dataclasses import replace
+
+    env, _, _, _, _ = rigged
+    env.connection = replace(env.connection, destination_ssh_user="root")
+    with pytest.raises(TrustRequired) as asked:
+        env.probe_endpoints()
+    assert "dst.lab:22" in {i.name for i in asked.value.identities}

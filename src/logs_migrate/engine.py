@@ -579,12 +579,11 @@ class Engine:
             require("baseline" in run and "source_by_bucket" in run, Code.STATE)
             try:
                 planned = run["plan"]["destination"]
-                destination = self.env.destination_cluster()
                 require(
-                    destination.id == planned["id"] and destination.identity == planned["identity"],
+                    self.env.destination_topology() == (planned["id"], planned["identity"]),
                     Code.TOPOLOGY,
                 )
-                task = self._settle(destination.id)
+                task = self._settle(planned["id"])
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
                 # Re-read after the transfer is terminal; never compare a cached listing.
