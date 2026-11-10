@@ -278,6 +278,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
 
     def recent():
         growth = env.source_growth()
+        if growth["bytes"] is None:
+            raise MigrationError(Code.INCOMPLETE)
         seconds = growth["window_seconds"]
         if growth["bytes"]:
             detail = (

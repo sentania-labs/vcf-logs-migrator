@@ -118,8 +118,8 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             [
                 "Active buckets carry no dates on this appliance and may still receive "
                 "older-dated data (backfill or late agents); the last day covered only by "
-                "sealed buckets is not a guarantee, and days those buckets hold will show "
-                "as partial at verify."
+                "sealed buckets is not a guarantee. Verify reports days at or after it as "
+                "partial and a count difference on an earlier day as a discrepancy."
             ]
             if any(
                 b.status == "active" and not (b.bounds_proven and b.start is not None)

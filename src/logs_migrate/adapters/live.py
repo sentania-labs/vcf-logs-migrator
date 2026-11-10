@@ -832,7 +832,7 @@ class LiveEnvironment:
                 partition = re.sub(r"[^A-Za-z0-9._:-]", "_", partition)[:128]
                 if partition == "Default":
                     partition = ""
-                proven = listed.start is not None and listed.end is not None
+                proven = not active and listed.start is not None and listed.end is not None
                 buckets.append(
                     Bucket(
                         listed.id,
@@ -840,9 +840,9 @@ class LiveEnvironment:
                         partition,
                         "active" if active else "archived",
                         size,
-                        listed.messages or 0,
-                        listed.start,
-                        listed.end,
+                        0 if active else (listed.messages or 0),
+                        None if active else listed.start,
+                        None if active else listed.end,
                         None,
                         proven,
                         not active,
@@ -976,24 +976,33 @@ class LiveEnvironment:
         """Compare active directory sizes, never event timestamps or a full second inventory."""
         members = self.members or self.source_members()
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
-            first = dict(zip(members, pool.map(self.node_inventory, members), strict=True))
-        sampled = min(self._inventory_cache[(host, "source_ssh", None)][0] for host in members)
+            inventories = dict(zip(members, pool.map(self.node_inventory, members), strict=True))
+        active = {
+            host: [b.id for b in inventory.buckets if b.status == "active"]
+            for host, inventory in inventories.items()
+        }
+
+        def measure(host):
+            ssh = self._ssh(host, "source_ssh", self.connection.source_ssh_user)
+            return parse_usage(ssh.active_usage(active[host]))
+
+        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+            before = dict(zip(members, pool.map(measure, members), strict=True))
+        sampled = time.monotonic()
         self.clock.sleep(5)
 
         def observe(host):
             ssh = self._ssh(host, "source_ssh", self.connection.source_ssh_user)
-            active = [b.id for b in first[host].buckets if b.status == "active"]
             listing = parse_listing(ssh.read(ReadOperation.INVENTORY))
-            current = [b.id for b in listing if b.status == "active"]
-            if set(active) != set(current):
+            if set(active[host]) != {b.id for b in listing if b.status == "active"}:
                 raise MigrationError(Code.INCOMPLETE)
-            if not active:
-                return 0
-            usage = parse_usage(ssh.active_usage(current))
-            before = first[host].usage
-            if any(i not in before or i not in usage or usage[i] < before[i] for i in active):
+            usage = measure(host)
+            ids = active[host]
+            if any(
+                i not in before[host] or i not in usage or usage[i] < before[host][i] for i in ids
+            ):
                 raise MigrationError(Code.INCOMPLETE)
-            return sum(usage[i] - before[i] for i in active)
+            return sum(usage[i] - before[host][i] for i in ids)
 
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
             changes = list(pool.map(observe, members))

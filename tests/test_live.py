@@ -316,7 +316,8 @@ class FakeSSH:
 
         class Client:
             def active_usage(self, ids):
-                return env.replies[(host, ReadOperation.USAGE)]
+                reply = env.replies[(host, ReadOperation.USAGE)]
+                return reply.pop(0) if isinstance(reply, list) else reply
 
             def read(self, operation):
                 env.reads.append((host, operation))
@@ -564,6 +565,13 @@ def test_selftest_names_active_bucket_growth_not_event_counts(rigged):
     _, _, quiet = _run_selftest(rigged, Window(1780000000000, 1782000000000))
     (step,) = [s for s in quiet.steps if s.name == "Source ingest (cutover check)"]
     assert step.detail == "no active bucket growth in 5 seconds"
+
+
+def test_selftest_fails_the_cutover_check_when_growth_cannot_be_observed(rigged):
+    unknown = {"bytes": None, "nodes": [], "window_seconds": None}
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000), unknown)
+    (step,) = [s for s in result.steps if s.name == "Source ingest (cutover check)"]
+    assert step.status == "fail" and step.detail == Code.INCOMPLETE.value
 
 
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
@@ -1467,7 +1475,10 @@ def test_source_growth_compares_active_directory_sizes_only(rigged):
     ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"5000 {path}{A}\n1000 {path}{C}\n"
     env.node_inventory("src-1.lab")
     env.clock.sleep = lambda seconds: None
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"99999 {path}{A}\n1300 {path}{C}\n"
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
+        f"1000 {path}{C}\n",
+        f"1300 {path}{C}\n",
+    ]
     result = env.source_growth()
     assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
     assert result["window_seconds"] >= 1
@@ -1483,7 +1494,10 @@ def test_source_growth_counts_a_node_without_active_buckets_as_idle(rigged):
     env.node_inventory("src-1.lab")
     env.node_inventory("src-2.lab")
     env.clock.sleep = lambda seconds: None
-    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1300 {path}{C}\n"
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
+        f"1000 {path}{C}\n",
+        f"1300 {path}{C}\n",
+    ]
     result = env.source_growth()
     assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
 
@@ -1498,6 +1512,45 @@ def test_source_growth_inventories_every_node_when_nothing_is_cached(rigged):
     result = env.source_growth()
     assert result["bytes"] == 0 and result["nodes"] == []
     assert {host for host, _ in ssh.reads} >= set(env.members)
+
+
+def test_source_growth_measures_from_a_fresh_baseline_not_the_cached_inventory(rigged, monkeypatch):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab"]
+    path = "/storage/core/loginsight/cidata/store/"
+    now = [1000.0]
+    monkeypatch.setattr(live.time, "monotonic", lambda: now[0])
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {path}{C}\n"
+    env.node_inventory("src-1.lab")
+    now[0] += 250
+    env.clock.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = [
+        f"4000 {path}{C}\n",
+        f"4100 {path}{C}\n",
+    ]
+    result = env.source_growth()
+    assert result["bytes"] == 100 and result["window_seconds"] == 5
+
+
+def test_active_buckets_keep_no_dates_whatever_the_listing_reports(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    stamped = LISTING.replace(
+        f"id={C}, status=active created=2026-11-08T00:00:00.000+0000 size=0 cmd=[NULL]",
+        f"id={C}, status=active created=2026-11-08T00:00:00.000+0000 size=0 "
+        "cmd=[startTime=1780000000000 endTime=1781000000000 messages=7 generation=1]",
+    )
+    assert stamped != LISTING
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = stamped
+    inventory = env.node_inventory("src-1.lab")
+    cluster = env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    (bucket,) = [b for b in cluster.buckets if b.id == C]
+    assert bucket.status == "active"
+    assert (bucket.start, bucket.end, bucket.messages, bucket.bounds_proven) == (
+        None,
+        None,
+        0,
+        False,
+    )
 
 
 def test_source_growth_refuses_bucket_rollover(rigged):
