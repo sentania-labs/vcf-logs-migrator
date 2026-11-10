@@ -16,6 +16,7 @@ from .models import (
     Policy,
     Verification,
     Window,
+    day_window,
     digest,
     sealed_frontier,
 )
@@ -34,11 +35,6 @@ START_CLOCK_SLACK_MS = 300_000
 
 def _ids(keys):
     return {key.rsplit("/", 1)[-1] for key in keys}
-
-
-def day_window(window: Window) -> Window:
-    """The whole UTC days a window touches; count queries are compared per day."""
-    return Window(window.start // DAY * DAY, ((window.end - 1) // DAY + 1) * DAY)
 
 
 def _day(ms: int) -> str:
@@ -461,7 +457,12 @@ class Engine:
                 bool(task.id)
                 and task.destination == destination
                 and task.id not in others
-                and (task.id == task_id if task_id else finder is not None or task.window == window)
+                and (
+                    task.id == task_id
+                    if task_id
+                    else finder is not None
+                    or (task.window is not None and day_window(task.window) == day_window(window))
+                )
             )
             if not found:
                 result = self._progress(Transfer("", "idle", destination=destination))

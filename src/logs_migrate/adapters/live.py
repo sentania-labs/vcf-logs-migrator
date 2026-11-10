@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..errors import Accepted, Code, MigrationError, require
-from ..models import Bucket, Cluster, Counts, Node, Partition, Window
+from ..models import Bucket, Cluster, Counts, Node, Partition, Window, day_window
 from ..ports import History, NodeTransfer, SystemClock, Transfer
 from ..security import Credentials, Secret
 from ..trust import Identity, TrustRequired, TrustStore, config_dir, probe_ssh, probe_tls
@@ -1005,7 +1005,8 @@ class LiveEnvironment:
                 task.id == task_id
                 if task_id
                 else window is not None
-                and task.window == window
+                and task.window is not None
+                and day_window(task.window) == day_window(window)
                 and attempted_at_ms is not None
                 and task.created_at_ms is not None
                 and task.created_at_ms >= attempted_at_ms
