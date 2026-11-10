@@ -184,9 +184,10 @@ used to stop it. If none is found, status reports `idle` with `start_outcome: un
 `hold_until` (the start attempt plus 15 minutes) and a `start_hint`: the start's
 outcome is unknown and no task has appeared yet; keep checking status; if none
 appears, the window stays held until `hold_until`, after which you plan and copy
-again. The Migration page shows the same wording with the time the window frees up. A start that was acknowledged without a task ID is looked
-up the same way, but reports plain `idle` while no task matches. Explicit
-cancellation uses the currently observed **API task ID**:
+again. The Migration page shows the same wording with the time the window frees up.
+A start that was acknowledged without a task ID is looked up the same way, but
+reports plain `idle` while no task matches. Explicit cancellation uses the
+currently observed **API task ID**:
 
 ```sh
 logs-migrate --journal /private/migration/run.sqlite \
