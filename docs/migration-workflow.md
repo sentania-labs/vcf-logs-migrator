@@ -12,8 +12,7 @@ appliance evidence, which is separate from this engine's test results.
 2. Preview a date interval. Review selected whole sealed buckets, their coverage,
    active exclusions, the last fully sealed day when known and required versus
    available destination repository space per node.
-3. Snapshot the destination before continuing; snapshotting the source is
-   optional. The CLI records an operator attestation, not snapshot verification.
+3. Acknowledge that open groups will not be copied when the plan excludes them.
 4. Start the API transfer once. The API moves data directly between appliances;
    the wrapper never copies files, stops the source or deletes destination data.
 5. Query API status for task/per-node progress, elapsed time, relative rate and

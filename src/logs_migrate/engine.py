@@ -274,8 +274,6 @@ class Engine:
                 "created_at": self.clock.now(),
                 "plan": plan,
                 "plan_hash": digest(plan),
-                "backup_ack": False,
-                "backup_verified": False,
                 "active_ack": False,
                 "query_policy": asdict(policy or Policy()),
                 "verification": {"outcome": Verification.PENDING.value, "complete": False},
@@ -308,10 +306,10 @@ class Engine:
 
     @safe_boundary
     def run(self, run_id, *, backup_ack=False, active_ack=""):
+        # Retained as an ignored keyword for callers of older versions.
         with self._exclusive():
             run = self.journal.load(run_id)
             require(run.get("schema_version") == 2, Code.SCHEMA)
-            require(backup_ack, Code.ACK)
             require(not run["plan"]["active_skipped"] or active_ack == ACTIVE_ACK, Code.ACK)
             require(
                 all(
@@ -366,9 +364,8 @@ class Engine:
                         raise
                     run["baseline"] = None
                 run["partial_days"] = partial_days(source, fresh)
-            run["backup_ack"] = True
             run["active_ack"] = active_ack == ACTIVE_ACK
-            self._audit(run, "transfer_authorized", {"snapshot_verified": False})
+            self._audit(run, "transfer_authorized")
             # Protect against duplicate sends even if the POST response is lost. This is an
             # overlap record, not a locally maintained task state or a destination-wide lock.
             self.journal.record_transfer(run)

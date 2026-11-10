@@ -221,9 +221,7 @@ class Session:
     def start(self, *, run_id: str, acknowledged: bool) -> dict:
         before = len(self.journal.events(run_id))
         try:
-            return self._engine().run(
-                run_id, backup_ack=True, active_ack=ACTIVE_ACK if acknowledged else ""
-            )
+            return self._engine().run(run_id, active_ack=ACTIVE_ACK if acknowledged else "")
         except MigrationError as error:
             events = self.journal.events(run_id)[before:]
             kinds = {event["kind"] for event in events}

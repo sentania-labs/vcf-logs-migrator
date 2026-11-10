@@ -2,7 +2,7 @@
 
 VCF Logs Migrator is an independent community tool. It isn't a Broadcom product and Broadcom doesn't support it. The log data transfer built into VCF Operations covers 90 days of logs. This tool uses the same APIs, but you can move as much history as you want and have the patience for.
 
-It moves logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs and compares event counts afterward. A finished transfer doesn't prove every event arrived, so look at the checks.
+It moves logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs for the destination to ingest. You can compare event counts afterward. A finished transfer doesn't prove every event arrived, so look at the checks.
 
 ## Download
 
@@ -18,11 +18,10 @@ Each download has both a desktop window and a command-line interface (CLI). You 
 
 ## Before you start
 
-- A copy only adds data to the destination, and there's no undo. Work out how you'd recover before you start.
 - On the source, you need the address of one 8.18 cluster member, a Logs API account and password, and root SSH access to **every** 8.18 member. Your workstation has to reach the source Logs API on port 9543 and each source member over SSH on port 22. The destination needs SSH access to each source member too.
 - On the destination, you need the Logs address, an API account and password, and access to port 9543. If you also give it root SSH access, the plan can check free storage on each destination node.
 - During the copy, the source root SSH password goes to the destination so it can pull the data. Type passwords at a prompt or in the window. For automation, use the private credential methods in the [lab guide](docs/testing-against-a-lab.md), and never put a password in a command argument.
-- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks. Its advice is sized for a lab, so scale it to your environment.
+- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
 
 ## Walk through a migration with the CLI
 
@@ -90,10 +89,10 @@ The API user defaults to `admin` and the source SSH user to `root`. The [lab gui
 
    Take the `id` from your plan and use it in place of `<run-id>` below. If the partitions differ, sort that out before copying. See [configuration rules](docs/operator-cli.md#configuration-rules).
 
-3. **Copy.** Once you've read the plan and settled your recovery plan, start the transfer. `--ack-backup` records that you know there's no undo. If the plan leaves out open groups, you also have to acknowledge that their data won't be copied. Keep the quotes exactly as shown.
+3. **Copy.** Once you've read the plan, start the transfer. If the plan leaves out open groups, you have to acknowledge that their data won't be copied. Keep the quotes exactly as shown.
 
    ```text
-   logs-migrate --journal migration.sqlite copy <run-id> --ack-backup --ack-active "i understand you aren't going to copy the latest data"
+   logs-migrate --journal migration.sqlite copy <run-id> --ack-active "i understand you aren't going to copy the latest data"
    {"run_id": "<run-id>", "task": {"id": "<task-id>", "status": "running", "progress": 0.0, ...}, ...}
    ```
 
@@ -112,7 +111,7 @@ The API user defaults to `admin` and the source SSH user to `root`. The [lab gui
    5 selected groups; 342,837 events sent from selected groups; arrivals were counted for the requested dates only (... 24,286 arrived); 71 other days these groups touch were not counted; ... 1 fully matched days; 1 partial days.
    ```
 
-The example report compares whole selected groups against a narrower requested date window, which is why the arrival count is much smaller than the events sent. The [CLI operator guide](docs/operator-cli.md) explains incomplete checks, errors and reports. For a longer walkthrough against lab appliances, see [Testing against a lab](docs/testing-against-a-lab.md).
+The example report counts whole selected groups on the source, but only the requested dates on the destination. Those totals cover different date ranges. The [CLI operator guide](docs/operator-cli.md) explains incomplete checks, errors and reports. For a longer walkthrough against lab appliances, see [Testing against a lab](docs/testing-against-a-lab.md).
 
 ## Use the window
 
@@ -122,7 +121,7 @@ Open the download as shown above. These pictures come from the simulator, not a 
 
    ![Connections page in the simulator](docs/images/gui/04-connections.png)
 
-2. On **Discovery & Plan**, pick your dates and preview the plan. Go through the selected and excluded groups, capacity, partitions and warnings. Before you start, make sure you know how you'd recover, and acknowledge that there's no undo.
+2. On **Discovery & Plan**, pick your dates and preview the plan. Go through the selected and excluded groups, capacity, partitions and warnings.
 
    ![Plan preview in the simulator](docs/images/gui/07-plan-light.png)
 
@@ -141,7 +140,7 @@ Open the download as shown above. These pictures come from the simulator, not a 
 ## What to expect
 
 - A bucket is a group of logs stored by the source. The tool copies whole closed buckets, so coverage can run past the dates you asked for. Open buckets are skipped, so you may need another run once they close to pick up the newest data. Some open data may never close, so keep the source around according to your retention plan.
-- Days that share a bucket with open or unselected data are partial, and their counts can differ. Those days need a look. On 9.0, migrated events land in the destination's Default partition. Matching counts don't show that event contents or partition placement match.
+- A day is partial when some of its logs are in open or unselected buckets. Its counts can differ, so check those days. On 9.0, migrated events land in the destination's Default partition. Matching counts don't show that event contents or partition placement match.
 - Plan on minutes per step against a large source. In one evaluation with about 4,300 source buckets, planning took 206 seconds and starting the transfer took 200 seconds. The transfer itself took about 146 seconds and verification took 117 seconds. Your times will depend on inventory, data, network and appliance load.
 - The tool never stops or writes to the source. It never deletes source buckets or anything on the destination, and copying only adds data. The destination applies its own retention and disk limits, so check free space first.
 - You can compare and copy forwarding, partition, masking and filter rules separately with `config compare` and `config apply`, or on the window's **Configuration** page. Only the rules you select are applied, and each one overwrites any destination rule with the same name. See [configuration rules](docs/operator-cli.md#configuration-rules).
@@ -174,4 +173,4 @@ For development, install Python 3.11+ and run `python -m pip install '.[dev,gui,
 
 The files under `scripts/` are old research prototypes, and the CLI doesn't use them. Some stop the source, use insecure transport or delete data, so don't follow them as production instructions.
 
-MIT licensed. Passing simulator tests and lab results don't mean the tool is ready for your production environment.
+MIT licensed. Passing simulator tests and lab checks doesn't mean the tool is ready for your production environment.

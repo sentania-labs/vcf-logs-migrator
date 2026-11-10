@@ -77,10 +77,7 @@ What it means in practice:
    does).
 3. Analysts use two UIs until the 8.18 data is older than anyone cares about.
    There is no cross-cluster search; this is the price.
-4. Shrink the cost: a read-only 8.18 node needs CPU only for queries. Snapshot
-   first, then drop the VM to the smallest size that still boots the service
-   (not done here).
-5. Retire when the oldest required day has passed. Delete the VM, DNS, and the
+4. Retire when the oldest required day has passed. Delete the VM, DNS, and the
    8.18 license entry.
 
 Why this is the default answer: zero data movement, zero format risk, and the
@@ -237,7 +234,7 @@ Tools (in `scripts/`):
 - `scripts/count-events.py`: per-day and per-month event counts over the REST API,
   for the before and after comparison. Writes JSON with `LI_OUT`.
 
-Runbook, as run:
+Historical lab transcript (not a procedure for the shipped tool):
 
 ```
 # 0. snapshots (vCenter), then reset the target (lab only)
@@ -409,7 +406,7 @@ python3 scripts/replay.py --src <8.18 node> --dst <9 node> \
 - **You can keep 8.18 running:** Path A. Nothing to build, nothing to break.
   Add Path C for the handful of sources that must be searchable in one place.
 - **8.18 must go and the data must stay queryable in 9, fields and all:**
-  Path B, bucket by bucket, copy mode, from a snapshot of the source, after
+  Path B, bucket by bucket, copy mode, after
   the official 90-day transfer has done the recent part. One bucket per
   `/storage/core` check. Budget about 10 s per 100 MB bucket on a quiet
   network. The 9 side must stop for registration (validation 2026-11-06); the 8.18 side stops only while its

@@ -590,8 +590,7 @@ def start_state(
         )
     return (
         True,
-        "Start records the snapshot reminder as acknowledged and submits the displayed window; "
-        "there is no undo.",
+        "Start submits the displayed window to the destination API.",
     )
 
 

@@ -52,7 +52,6 @@ def smoke(fixture: Path, executable: str) -> None:
         copied = invoke(
             "copy",
             run_id,
-            "--ack-backup",
             "--ack-active",
             ACTIVE_ACK,
         )

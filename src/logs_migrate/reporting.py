@@ -80,9 +80,6 @@ def markdown(run, events):
         "",
         "- Last day covered only by sealed buckets right now: "
         f"{plan['last_fully_sealed_day'] or 'unknown'}.",
-        "- Snapshot acknowledgment: "
-        + ("operator attested" if run["backup_ack"] else "not given")
-        + "; snapshots were not independently verified.",
         "",
         f"Run: `{run['id']}`",
         "",
