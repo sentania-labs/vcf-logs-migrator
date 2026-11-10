@@ -317,6 +317,28 @@ def test_report_view_headline_follows_the_unmeasured_days_rule(rig):
     assert not any("Unavailable" in value for value in rows.values() if "/" in value)
 
 
+def test_report_view_shows_the_figures_of_an_incomplete_verification(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    stored, events = journal.load(run["id"]), journal.events(run["id"])
+    stored["verification"] = {
+        "outcome": "incomplete",
+        "complete": False,
+        "reason": "incomplete_evidence",
+        "count_basis": "selected_groups",
+        "expected_count": 263548,
+        "actual_count": None,
+        "received_unavailable_reason": "Counts were not stable",
+    }
+    rows = dict(vm.report_view(stored, events, engine.status(), "UTC")["rows"])
+    assert rows["Expected from selected groups"] == "263,548"
+    assert "Sent from selected groups" not in rows
+    stored["verification"] = {"outcome": "incomplete", "complete": False}
+    rows = dict(vm.report_view(stored, events, engine.status(), "UTC")["rows"])
+    assert rows["Sent from selected groups"] == "Pending"
+
+
 def test_settings_round_trip_and_bounds(tmp_path):
     path = tmp_path / "settings.ini"
     settings = Settings(

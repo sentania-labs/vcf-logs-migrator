@@ -914,10 +914,10 @@ def daily_rows(result: dict, run: dict | None) -> list[tuple[str, str, str, str]
 
 
 def report_headline_rows(verification: dict) -> list[tuple[str, str]]:
-    if not verification.get("complete"):
-        return [("Sent from selected groups", "Pending")]
     if is_legacy_result(verification):
         return [("Counts", LEGACY_RESULT_NOTE)]
+    if "expected_count" not in verification:
+        return [("Sent from selected groups", "Pending")]
     sent = format_count(verification.get("expected_count"))
     if verification.get("unmeasured_day_count") and verification.get("measured_window"):
         return [
