@@ -11,4 +11,4 @@ tzdata==2026.6
 paramiko==4.0.0
 
 # Retained pending the separate cryptography dependency update.
-cryptography==48.0.1
+cryptography==50.0.0
