@@ -14,7 +14,7 @@ preview; see the end). Every step before "Start the transfer" is read-only.
 | 9.0 Logs address, `host[:port]` | Default port 9543. |
 | 9.0 Logs API user and password | data-migrations test/start/status/cancel, partitions, counts, config rules. |
 | 9.0 root SSH (optional) | Adds each destination node's repository budget and bucket inventory to the plan. Without it, the API's own 95% disk stop is the only storage guard and the plan says so. |
-| A workstation with Python 3.11+ | `python -m pip install '.[ssh]'` (add `gui` for the window). |
+| A workstation with the [download](../README.md#download), or Python 3.11+ | The download needs no Python; run it wherever these commands say `logs-migrate`. From source: `python -m pip install '.[ssh]'` (add `gui` for the window). |
 | Snapshots of both appliances | The transfer has no undo. |
 
 Secrets never go on the command line. Give them one of three ways:
