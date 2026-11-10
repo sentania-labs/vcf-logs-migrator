@@ -1,25 +1,10 @@
 # VCF Logs Migrator
 
-A shared Python engine and automation CLI for historical log migration from
-**Aria Operations for Logs 8.18.x** to **VCF Operations for Logs 9.0.x** and
-**9.1.1 preview**, including history older than 90 days.
-
-The engine, CLI and desktop GUI run against real appliances (Logs REST on 9543,
-root SSH to the 8.18 members, the 9.0 data-migrations API, the 9.1.1 Ops token
-exchange) and against a built-in simulator for CI and demos. Start with
-[Testing against a lab](docs/testing-against-a-lab.md). Standalone downloads for Windows, macOS and
-Linux need no Python install ([Download](#download)). This project is not supported by Broadcom.
-
-The mover is the destination's `/api/v2/data-migrations` API. The wrapper previews
-sealed buckets by date, starts the transfer once, reads status directly from the
-API, checks partitions, verifies per-day counts, and produces Markdown/JSON reports.
-A small local record keeps sent buckets, baseline counts and audit evidence. There
-is no local task state machine. It never stops the source, deletes buckets,
-overwrites destination data, or falls back to manual copying.
+Broadcom's built-in Log Data Transfer selects at most the most recent 90 days; VCF Logs Migrator can move older history too. It is for administrators moving logs from Aria Operations for Logs 8.18.x to VCF Operations for Logs 9.0.x (9.1.1 is a preview). It copies closed groups of logs using the destination's migration API and provides count checks, but completion alone does not prove every event arrived; this project is not supported by Broadcom.
 
 ## Download
 
-Each platform has one download with both the desktop window and CLI:
+Each platform has one download with both the desktop window and CLI; no Python installation is needed.
 
 | Platform | Download | Open the window | Run the CLI |
 |---|---|---|---|
@@ -27,136 +12,140 @@ Each platform has one download with both the desktop window and CLI:
 | macOS Apple silicon | `vcf-logs-migrator-vX.Y.Z-macos-arm64.dmg` | Open the disk image and drag the app to Applications | `/Applications/VCF Logs Migrator.app/Contents/MacOS/logs-migrate <command>` |
 | Linux x86_64, glibc 2.35+ | `vcf-logs-migrator-vX.Y.Z-linux-x86_64` | Make executable, then run with `gui` | Run the executable with a command |
 
-[GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases) also
-provide `SHA256SUMS` and `THIRD-PARTY-NOTICES.txt`. Notices travel with the program:
-use `--licenses` or About → Licenses. On Linux the window needs a desktop session
-and the usual Qt libraries (libEGL/libGL, fontconfig, libxkbcommon-x11,
-libxcb-cursor0).
+[GitHub Releases](https://github.com/sentania-labs/vcf-logs-migrator/releases) also provides `SHA256SUMS` and `THIRD-PARTY-NOTICES.txt`. Use `--licenses` or About → Licenses to see bundled notices. On Linux, the window needs a desktop session and Qt system libraries (libEGL/libGL, fontconfig, libxkbcommon-x11 and libxcb-cursor0).
 
-### How the downloads are built and signed
+## Before you start
 
-`packaging/build.py` uses pinned PyInstaller tools and Python 3.12.10. The binary
-builds run natively on GitHub-hosted Linux, Windows and macOS runners; smoke tests
-exercise the CLI, simulator, a real SSH probe against a reserved localhost port and
-GUI from the finished download. Every download bundles Paramiko (pinned in
-`packaging/requirements.txt`). PyInstaller's analysis
-provides the bundled distribution inventory used to generate the embedded notices.
+- Snapshot the destination before copying. The transfer has no undo. The lab guide recommends snapshots of both appliances.
+- You need an 8.18 cluster member address, a Logs API account and password, and root SSH access to **every** 8.18 member. The workstation needs access to Logs REST on port 9543 and SSH on port 22; the destination also needs SSH access to each source member.
+- You need the destination Logs address and API account and password, with access to port 9543. Optional destination root SSH lets the plan check available storage on each destination node.
+- During copy, the source root SSH password is sent to the destination so it can pull the data. Enter passwords at a prompt, in the window, or through the private credential methods in the [lab guide](docs/testing-against-a-lab.md), never in command arguments.
+- Check certificate and SSH host key fingerprints against the appliances before trusting them. Ensure partition configuration matches and the destination has enough space. See the [lab guide](docs/testing-against-a-lab.md) for the full checklist and commands.
 
-Windows is Authenticode signed through Azure Artifact Signing. macOS uses the org's
-Developer ID signing and notarization actions; the disk image is also signed,
-notarized and stapled. Linux is covered by `SHA256SUMS`. Signing credentials remain
-in organization secrets. Pull requests build and smoke unsigned downloads.
+## Walk through a migration with the CLI
 
-To build locally, install `python -m pip install -r packaging/requirements.txt '.[ssh]'`,
-then run `python packaging/build.py build <platform>` and `python packaging/build.py
-package <platform>`. Run `python packaging/smoke.py dist/<download>` to smoke it.
+The example uses a 9.0 destination and a two-day UTC interval. Substitute your addresses and dates. The end date is exclusive. Run these commands from a terminal on the machine with the download. In the commands below, `logs-migrate` means the downloaded executable: use the full command from the table on macOS, `./vcf-logs-migrator-vX.Y.Z-linux-x86_64` on Linux (first run `chmod +x` on the download), or `./vcf-logs-migrator-vX.Y.Z-windows-x64.exe` in Windows PowerShell. Replace `logs-migrate` on every line with that platform command. Passwords are requested at the terminal when needed.
 
-## Try it
-
-Against a lab (read-only until `copy`):
+Set the addresses for each invocation through environment variables. In macOS or Linux:
 
 ```sh
-python -m pip install '.[ssh]'
-export LOGS_SOURCE=aria-logs-1.lab.example LOGS_DESTINATION=vcf-logs.lab.example
-export LOGS_SOURCE_API_PASSWORD=... LOGS_SOURCE_SSH_PASSWORD=... LOGS_DESTINATION_API_PASSWORD=...
-logs-migrate --trust-new selftest   # enrolls the identities it sees and exits; no credential sent
-logs-migrate selftest               # read-only checks against the pinned identities
+export LOGS_SOURCE=source.example.com LOGS_DESTINATION=destination.example.com
 ```
 
-Against the simulator:
+In Windows PowerShell:
 
-```sh
-logs-migrate --journal /private/migration/run.sqlite \
-  --fixture tests/fixtures/sealed-populated.fixture discover
-logs-migrate --journal /private/migration/run.sqlite \
-  --fixture tests/fixtures/sealed-populated.fixture plan \
-  --since 2026-03-01T00:00:00Z --until 2026-04-01T00:00:00Z
+```powershell
+$env:LOGS_SOURCE = "source.example.com"
+$env:LOGS_DESTINATION = "destination.example.com"
 ```
 
-Use the returned run ID with `copy`, then query `status` (with the same
-`--journal`, so it shows this run's own task) and run
-`verify`. Status exposes API task and per-node observations, elapsed time, relative
-transfer rate and ETA when the API supplies enough data. `stop` explicitly cancels
-the observed API task by its task ID. The [CLI operator guide](docs/operator-cli.md)
-has the complete workflow, attestations, exit codes and qualification limits.
+The default API user is `admin` and source SSH user is `root`; other names and credential options are described in the [lab guide](docs/testing-against-a-lab.md#what-you-need). Use the same private run file for every command below. It records the selection and observations for this destination; keep it safe for later runs.
 
-API completion is not verified success: it can hide skipped data. Verification
-requires complete, agreeing counts and accounts for pre-existing data and new
-ingest. Active exclusions remain visible. Buckets already received (or in flight)
-are refused, including on 9.1.1 where no destination bucket store exists.
-Verification is cumulative per destination, so a later transfer never invalidates
-an earlier success.
+1. **Trust and test.** First enroll the identities. This run sends no credentials; compare the printed fingerprints with the appliances before continuing. Repeat enrollment if additional cluster members are discovered.
 
-Configuration migration supports forwarding, partition, masking and filter rules
-through `config compare` and `config apply --select TYPE:NAME`. Only explicitly
-selected rules are created or updated; nothing is deleted, and source rules stay
-untouched. New partitions report a destination restart for normal maintenance.
-Existing fixup code is retained privately and **set aside**, unavailable from the
-engine/CLI, pending migration qualification.
+   ```text
+   logs-migrate --trust-new selftest
+   Unknown appliance identity: TLS <source>:9543 SHA256 <fingerprint>
+   Enrolled (--trust-new); no credential is sent on this run.
+   ...
+   {"enrolled": [...], "credentials_sent": false, "next": "Verify each fingerprint ..."}
+   ```
 
-Appliance identities (TLS certificates, SSH host keys) are trusted on first use with
-an explicit prompt or dialog, or enrolled by `--trust-new` on a run that sends no
-credential, or matched against `--expect-fingerprint`; they are remembered under the
-user's config directory.
-Credentials come from the GUI, environment variables, a private file or a prompt;
-never from command arguments, logs or reports.
+   Run the read-only checks after the identities are trusted:
 
-### Troubleshooting logs
+   ```text
+   logs-migrate selftest
+   PASS  Source API version                  8.18.7
+   ...
+   PASS  Destination API version             9.0.2.0200
+   ...
+   Summary: 17 passed, 0 failed, 0 skipped. All checks passed.
+   Read-only: nothing was started, written or stopped.
+   ```
 
-Detailed logging is off by default. Run `logs-migrate --debug-log status` to write a
-credential-redacted log under the client configuration directory (it keeps the 10 most
-recent logs, each capped at 5 MiB plus 2 backups), or
-`--debug-log=/path/to/log` to choose a file; add `-v` to echo it to stderr. In the
-desktop app, tick **Enable detailed troubleshooting log** in Settings, retry, then use
-**Show details**. Logs contain appliance addresses, so review before sharing. Details:
-[operator troubleshooting](docs/operator-cli.md#troubleshooting-logs).
+2. **Plan.** Choose a private path for `migration.sqlite`; use the same path throughout. Review selected groups, skipped open groups, partition differences, capacity and warnings before continuing. The output below is trimmed from an evaluation; identifiers are masked and your results will differ.
 
-## Desktop GUI
+   ```text
+   logs-migrate --journal migration.sqlite plan --since 2024-03-19T00:00:00Z --until 2024-03-21T00:00:00Z
+   {
+     "id": "<run-id>",
+     "plan": {
+       "selected": [ ... 5 groups ... ],
+       "active_skipped": [ ... 18 open groups ... ],
+       "partial_days": [ ... ],
+       "capacity": { ... }, "partition_diff": { ... }, "warnings": [ ... ]
+     }, ...
+   }
+   ```
 
-`logs-migrate gui` opens a PySide6 window over the same engine: Overview, Connections,
-Configuration, Discovery & Plan, Migration, Verification, Reports and Settings, styled
-with the shared [Lattice](https://github.com/sentania-labs/lattice) tokens in light and
-dark. The GUI holds no migration logic; every number it shows is an engine or API
-observation, and estimates read Unavailable when the API gives no counters. Engine
-calls run on a worker thread so the window stays responsive. Settings (theme, display
-timezone, status refresh, verification budget, report folder, simulator fixture,
-journal file and troubleshooting log) are editable in the window and stored in an INI
-file under the user's config directory; credentials stay in session memory only.
+   Copy the actual `id` from your plan and replace `<run-id>` below. If partitions differ, resolve them before copying; see [configuration rules](docs/operator-cli.md#configuration-rules).
 
-```sh
-python -m pip install '.[gui]'
-logs-migrate gui --fixture tests/fixtures/sealed-populated.fixture \
-  --journal /private/migration/run.sqlite
-```
+3. **Copy.** After taking the snapshot and reviewing the plan, start the transfer. The second acknowledgment is required when open groups are excluded. Keep the quotes exactly as shown.
 
-Leave the fixture path empty in Settings to connect to real appliances from the
-Connections page; set one to drive the simulator. `python tests/gui_screenshots.py
---output DIR` renders every workspace state offscreen for review
-(`QT_QPA_PLATFORM=offscreen`).
+   ```text
+   logs-migrate --journal migration.sqlite copy <run-id> --ack-backup --ack-active "i understand you aren't going to copy the latest data"
+   {"run_id": "<run-id>", "task": {"id": "<task-id>", "status": "running", "progress": 0.0, ...}, ...}
+   ```
 
-## Development
+4. **Watch, verify and report.** Repeat `status` until the task finishes, then run `verify` and `report`. The report is printed as Markdown; redirect it to a private file if you want to keep it. A completed task can still have skipped data, so inspect the verification and any partial days.
 
-Python 3.11+; the core and CLI do not import Qt. `gui` installs the optional PySide6
-dependency for the desktop window. `ssh` installs the optional Paramiko adapter.
+   ```text
+   logs-migrate --journal migration.sqlite status
+   {"id": "<task-id>", "status": "completed", "progress": 100.0, "elapsed_seconds": 146.06, ...}
 
-```sh
-python -m pip install '.[dev,gui,ssh]'
-make check
-make smoke
-```
+   logs-migrate --journal migration.sqlite verify <run-id>
+   {"complete": true, "expected_count": 342837, "measured_arrival_count": 24286, "partial_days": [...], ...}
 
-GUI tests use Qt's offscreen platform and skip when PySide6 is absent. Wire-level
-SSH tests skip when Paramiko is absent; CI installs both extras and runs them.
+   logs-migrate --journal migration.sqlite report <run-id>
+   # Migration count report
+   ...
+   5 selected groups; 342,837 events sent from selected groups; arrivals were counted for the requested dates only (... 24,286 arrived); 71 other days these groups touch were not counted; ... 1 fully matched days; 1 partial days.
+   ```
 
-`make check` runs Ruff and pytest. Tests use synthetic fixtures, recorded-transport
-contracts (including the live adapter's listing, status and token-exchange codecs),
-and simulated failures. `make smoke` drives the installed `logs-migrate`
-console script from a temporary directory through both data fixtures and the
-configuration workflow. Linux CI installs the package and runs these same targets
-on pull requests and pushes to main. These checks do not contact appliances; the
-lab guide's `selftest` is the check that does. Fixture helper behavior does not
-prove that updating an already-registered vendor bucket is safe; fixup is not an
-enabled operation.
+The example report compares whole selected groups with a narrower requested date window. Counts are evidence, not proof of identical event content. The [CLI operator guide](docs/operator-cli.md) explains incomplete checks, errors, and reports; [Testing against a lab](docs/testing-against-a-lab.md) provides a detailed real-appliance walkthrough.
+
+## Use the window
+
+Open the download as shown above. These pictures use the simulator, not a real environment.
+
+1. On **Connections**, enter source and destination addresses and credentials, test the connection and compare each trust prompt's fingerprint with the appliance. Run the self-test and review its results.
+
+   ![Connections page in the simulator](docs/images/gui/04-connections.png)
+
+2. On **Discovery & Plan**, choose the dates and preview. Review the selected and excluded groups, capacity, partitions and warnings. Snapshot the destination and acknowledge the prompts before starting.
+
+   ![Plan preview in the simulator](docs/images/gui/07-plan-light.png)
+
+3. Watch the **Migration** page until the destination reports completion.
+
+   ![Migration in progress in the simulator](docs/images/gui/11-migration-light.png)
+
+4. Run the checks on **Verification** and examine partial days and any missing evidence.
+
+   ![Verification page in the simulator](docs/images/gui/15-verified-light.png)
+
+5. Open **Reports** and export the results for your records.
+
+   ![Reports page in the simulator](docs/images/gui/20-reports.png)
+
+## What to expect
+
+- A bucket is a group of logs stored by the source. The tool selects whole closed buckets, so the actual coverage can extend beyond the requested dates. Open buckets are skipped; the newest data may need a later run after they close. Some open data may never close, so retain the source under your retention plan.
+- Days shared with open or unselected buckets are partial. Their counts can differ and need review. On 9.0, migrated events land in the destination's Default partition. Count comparisons do not establish identical content or routing.
+- Allow minutes for each step on a large source. In one evaluation with about 4,300 source buckets, planning took 206 seconds, starting took 200 seconds, the transfer took about 146 seconds, and verification took 117 seconds. Your times depend on inventory, data, network and appliance load.
+- 9.1.1 support is a preview: count verification is not available for that destination. See the [9.1.1 notes](docs/testing-against-a-lab.md#911-preview) before using it.
+
+For troubleshooting, see [operator troubleshooting](docs/operator-cli.md#troubleshooting-logs). Detailed logs can contain appliance addresses, so review them before sharing.
+
+---
+
+## Building and development
+
+`packaging/build.py` uses pinned PyInstaller tools and Python 3.12.10. Builds run natively on GitHub-hosted Linux, Windows and macOS runners and smoke-test the CLI and window. Windows downloads are Authenticode signed; macOS downloads are signed and notarized; Linux downloads have checksums.
+
+To build locally, install `python -m pip install -r packaging/requirements.txt '.[ssh]'`, then run `python packaging/build.py build <platform>` and `python packaging/build.py package <platform>`. Run `python packaging/smoke.py dist/<download>` to test the download.
+
+For development, install Python 3.11+ and `python -m pip install '.[dev,gui,ssh]'`, then run `make check` and `make smoke`. GUI tests use Qt's offscreen platform and skip when PySide6 is absent; SSH tests skip when Paramiko is absent. `python tests/gui_screenshots.py --output DIR` renders the simulator's window pages for review.
 
 ## Research and historical evidence
 
@@ -169,13 +158,8 @@ enabled operation.
 | [Research guide](docs/research-guide.md) | Original investigation and experimental procedures |
 | [Config migration](docs/config-migration.md) | Config API findings; broader config migration is outside this delivery |
 | [Specification](docs/spec.md) | Product design and historical appendix; the operator guide describes shipped commands |
-| [Testing against a lab](docs/testing-against-a-lab.md) | Step-by-step for real hosts: setup, exact commands, what correct output looks like |
+| [Testing against a lab](docs/testing-against-a-lab.md) | Step-by-step for real hosts |
 
-The files under `scripts/` are historical research prototypes, not this CLI's
-execution path. Some contain source stops, insecure transport or deletion flows.
-Do not use them as production operator instructions. The engine invokes none of
-them, including the destructive stock bucket migration command.
+The files under `scripts/` are historical research prototypes, not this CLI's execution path. Some contain source stops, insecure transport or deletion flows. Do not use them as production operator instructions.
 
-MIT licensed. No production-readiness claim is made from fixture tests or the
-recorded lab results alone; a lab run of this tool against real appliances is the
-evidence that counts.
+MIT licensed. No production-readiness claim is made from simulated tests or recorded lab results alone.
