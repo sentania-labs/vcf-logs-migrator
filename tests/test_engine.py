@@ -1,6 +1,7 @@
 import copy
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta
 
 import pytest
 from conftest import FIXTURES, execute, planned
@@ -78,7 +79,7 @@ def test_transfers_with_intersecting_coverage_verify_without_double_counting(rig
         b["id"] for b in second["plan"]["selected"]
     )
     execute(engine, first)
-    assert engine.status()["status"] == "completed"
+    assert engine.status(first["id"])["status"] == "completed"
     execute(engine, second)
     assert engine.status()["status"] == "completed"
     for run in (first, second):
@@ -216,19 +217,29 @@ def test_api_task_uncertainty_never_reports_verification_success(rig, status):
     assert engine.verify(run["id"])["outcome"] == "incomplete_verification"
 
 
-def test_status_is_api_truth_without_a_journal_and_supplies_estimates(rig):
+def test_status_requires_run_identity_and_supplies_estimates(rig):
     engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
     task = Transfer(
-        "api-task", "running", bytes_transferred=200, elapsed_seconds=4, total_bytes=1000
+        "sim-1",
+        "running",
+        bytes_transferred=200,
+        elapsed_seconds=4,
+        total_bytes=1000,
+        destination=run["plan"]["destination"]["id"],
     )
     env.transfer = lambda: task
-    wrapper = Engine(env, None)
-    assert wrapper.status()["rate_bytes_per_second"] == 50
-    assert wrapper.status()["eta_seconds"] == 16
-    task = replace(task, status="failed", elapsed_seconds=None)
-    result = wrapper.status()
-    assert result["status"] == "failed" and result["rate_bytes_per_second"] is None
-    assert result["eta_seconds"] is None
+    assert engine.status(run["id"])["eta_seconds"] == 16
+    untied = Engine(env, None).status()
+    assert untied["status"] == "idle" and untied["run"] is None
+    assert "--journal" in untied["no_run"]["hint"]
+    assert untied["destination_tasks"]["tasks"] == [
+        {"id": "sim-1", "status": "running", "window": None, "progress": None}
+    ]
+    assert "not tied to any run" in untied["destination_tasks"]["note"]
+    task = replace(task, id="old-task", status="completed")
+    assert engine.status(run["id"])["status"] == "idle"
 
 
 @pytest.mark.parametrize("status", ["failed", "cancelled", "idle", "unknown"])
@@ -247,9 +258,11 @@ def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(r
     with pytest.raises(MigrationError) as error:
         execute(engine, run)
     assert error.value.code == Code.UNCERTAIN
-    fresh = Engine(env, None)
-    task = fresh.status()
-    assert task["status"] == "running"
+    fresh = Engine(env, journal, engine.clock)
+    task = fresh.status(run["id"])
+    assert task["status"] == "running" and task["id"] == "sim-1"
+    assert "start_outcome" not in task
+    assert journal.transfers(env.data["destination"]["id"])[0]["task_id"] == "sim-1"
     with pytest.raises(MigrationError):
         fresh.stop("different-task")
     assert fresh.stop(task["id"])["status"] == "cancelled"
@@ -257,6 +270,51 @@ def test_lost_post_ack_can_be_observed_and_explicitly_cancelled_without_replay(r
     with pytest.raises(MigrationError):
         execute(engine, run)
     assert sum(t["operation"] == "start" for t in env.data["trace"]) == 1
+
+
+def test_lost_post_ack_with_no_task_found_says_the_start_is_unknown(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["faults"] = {"start.before": "connection"}
+    with pytest.raises(MigrationError) as error:
+        execute(engine, run)
+    assert error.value.code == Code.UNCERTAIN
+    result = Engine(env, journal, engine.clock).status(run["id"])
+    assert result["status"] == "idle" and result["id"] == ""
+    assert result["start_outcome"] == "unknown"
+    attempted = datetime.fromisoformat(
+        journal.transfers(env.data["destination"]["id"])[0]["attempted_at"]
+    )
+    assert datetime.fromisoformat(result["hold_until"]) == attempted + timedelta(minutes=15)
+    assert (
+        result["hold_until"] in result["start_hint"]
+        and "plan and copy again" in result["start_hint"]
+    )
+
+
+@pytest.mark.parametrize("skew_seconds,found", [(120, True), (1200, False)])
+def test_lost_post_lookup_tolerates_a_few_minutes_of_appliance_clock_skew(rig, skew_seconds, found):
+    from datetime import datetime
+
+    engine, env, journal = rig
+    run = planned(engine)
+    env.data["faults"] = {"start.after": "connection"}
+    with pytest.raises(MigrationError):
+        execute(engine, run)
+    destination = env.data["destination"]["id"]
+    row = journal.transfers(destination)[0]
+    created = int(datetime.fromisoformat(row["attempted_at"]).timestamp() * 1000)
+    created -= skew_seconds * 1000
+
+    def finder(task_id="", *, window=None, attempted_at_ms=None):
+        if window == Window(**row["window"]) and created >= attempted_at_ms:
+            return Transfer("late-task", "running", destination=destination, window=window)
+        return Transfer("", "idle", destination=destination)
+
+    env.transfer_for = finder
+    result = Engine(env, journal, engine.clock).status(run["id"])
+    assert (result["id"] == "late-task") is found
+    assert (result.get("start_outcome") == "unknown") is (not found)
 
 
 def test_stop_does_not_relabel_a_completed_task(rig):

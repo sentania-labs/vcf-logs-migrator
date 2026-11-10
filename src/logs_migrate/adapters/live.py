@@ -400,6 +400,7 @@ def _node_entries(task: dict) -> list[dict]:
         "nodeStatus",
         "perNode",
         "nodeDetails",
+        "taskDetails",
         "tasks",
         "details",
         "hosts",
@@ -418,6 +419,9 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
     if response in ({}, [], None):
         return Transfer("", "idle", destination=destination)
     task = response
+    if isinstance(task, dict) and isinstance(task.get("tasks"), list):
+        tasks = task["tasks"]
+        return decode_task(tasks[0] if tasks else {}, destination=destination, now_ms=now_ms)
     if isinstance(task, list):
         # A list is one entry per node or per task; a part still running means running.
         require(all(isinstance(t, dict) for t in task), Code.SCHEMA)
@@ -429,7 +433,11 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
             status,
             tuple(dict.fromkeys(k for p in parts for k in p.completed)),
             tuple(dict.fromkeys(k for p in parts for k in p.skipped)),
-            sum(p.bytes_transferred for p in parts),
+            (
+                sum(p.bytes_transferred for p in parts)
+                if all(p.bytes_transferred is not None for p in parts)
+                else None
+            ),
             tuple(n for p in parts for n in p.nodes),
             latest.source,
             destination,
@@ -474,17 +482,44 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
             if node_status:
                 break
         node_completed, node_skipped = _bucket_lists(entry)
-        node_bytes = (
-            _first(
-                entry,
-                r"(transferred|copied|migrated).*bytes|bytes.*(transferred|copied|migrated)",
-                int,
-            )
-            or _first(entry, r"bytes", int)
-            or 0
+        node_bytes = _first(
+            entry,
+            r"(transferred|copied|migrated).*bytes|bytes.*(transferred|copied|migrated)",
+            int,
         )
+        if node_bytes is None:
+            node_bytes = _first(entry, r"bytes", int)
+        progress = entry.get("progress")
+        if type(progress) not in (int, float) or not 0 <= progress <= 100:
+            progress = None
+        scheduled = entry.get("scheduledBuckets")
+        scheduled = (
+            {str(k): len(v) for k, v in scheduled.items() if isinstance(v, list)}
+            if isinstance(scheduled, dict)
+            else None
+        )
+        totals = entry.get("totalBucketsCount")
+        totals = (
+            {str(k): v for k, v in totals.items() if type(v) is int and v >= 0}
+            if isinstance(totals, dict)
+            else None
+        )
+        start = parse_time(str(entry.get("startTime"))) if entry.get("startTime") else None
+        end = parse_time(str(entry.get("endTime"))) if entry.get("endTime") else None
+        reference = end if end and node_status != "running" else now_ms
+        node_elapsed = (reference - start) / 1000 if start and reference >= start else None
         nodes.append(
-            NodeTransfer(name, node_status or status, node_completed, node_skipped, node_bytes)
+            NodeTransfer(
+                name,
+                node_status or status,
+                node_completed,
+                node_skipped,
+                node_bytes,
+                progress,
+                scheduled,
+                totals,
+                node_elapsed,
+            )
         )
     completed = tuple(dict.fromkeys(completed + tuple(k for n in nodes for k in n.completed)))
     skipped = tuple(dict.fromkeys(skipped + tuple(k for n in nodes for k in n.skipped)))
@@ -494,19 +529,19 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
     transferred = _first(
         task, r"(transferred|copied|migrated).*bytes|bytes.*(transferred|copied|migrated)", int
     )
-    if transferred is None:
+    if transferred is None and nodes and all(n.bytes_transferred is not None for n in nodes):
         transferred = sum(n.bytes_transferred for n in nodes)
     total = _first(task, r"(total|planned|expected).*bytes|bytes.*(total|planned|expected)", int)
     window = None
-    start_ms = task.get("bucketStartTimeMillis")
-    end_ms = task.get("bucketEndTimeMillis")
+    start_ms = task.get("bucketStartTimeMillis", task.get("bucketStartTime"))
+    end_ms = task.get("bucketEndTimeMillis", task.get("bucketEndTime"))
     if type(start_ms) is int and type(end_ms) is int and 0 <= start_ms < end_ms:
         window = Window(start_ms, end_ms)
     elapsed = None
     started = None
     for key, value in task.items():
         if re.search(
-            r"^(start|started|created|began|submitted)", key, re.IGNORECASE
+            r"^(taskCreateTime|start|started|created|began|submitted)", key, re.IGNORECASE
         ) and not key.startswith("bucket"):
             started = parse_time(str(value)) if isinstance(value, (str, int)) else None
             if started:
@@ -515,7 +550,7 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         finished = None
         for key, value in task.items():
             if re.search(
-                r"^(end|ended|finished|completed|updated|last)", key, re.IGNORECASE
+                r"^(taskEndTime|end|ended|finished|completed|updated|last)", key, re.IGNORECASE
             ) and not key.startswith("bucket"):
                 finished = parse_time(str(value)) if isinstance(value, (str, int)) else None
                 if finished:
@@ -523,6 +558,10 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         reference = finished if finished and status != "running" else now_ms
         if reference >= started:
             elapsed = (reference - started) / 1000
+    if elapsed is None:
+        elapsed = max(
+            (n.elapsed_seconds for n in nodes if n.elapsed_seconds is not None), default=None
+        )
     source = task.get("hostName") if isinstance(task.get("hostName"), str) else ""
     return Transfer(
         ident,
@@ -537,6 +576,12 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         (),
         elapsed,
         total,
+        parse_time(str(task.get("taskCreateTime"))) if task.get("taskCreateTime") else None,
+        (
+            task["progress"]
+            if type(task.get("progress")) in (int, float) and 0 <= task["progress"] <= 100
+            else None
+        ),
     )
 
 
@@ -918,6 +963,7 @@ class LiveEnvironment:
         require(self.destination_client is not None, Code.STATE)
         destination = cluster_id(self.destination_client.identity)
         before = self.transfer()
+        attempted_at_ms = self._now_ms()
         try:
             response = self.destination_client.start_migration(
                 self.connection.source_host,
@@ -932,17 +978,15 @@ class LiveEnvironment:
             decoded = decode_task(response, destination=destination, now_ms=self._now_ms())
         except MigrationError:
             decoded = Transfer("", "unknown", destination=destination)
-        if decoded.status not in {"idle", "unknown"}:
+        if decoded.id and decoded.id != before.id:
+            if decoded.status in {"idle", "unknown"}:
+                return Transfer(decoded.id, "running", destination=destination, window=window)
             return decoded
         try:
-            task = self.transfer()
+            task = self.transfer_for(window=window, attempted_at_ms=attempted_at_ms)
         except MigrationError:
             task = None
-        if (
-            task is not None
-            and task.status != "idle"
-            and (task.id, task.status, task.window) != (before.id, before.status, before.window)
-        ):
+        if task is not None and task.id and task.id != before.id:
             return task
         # The status route shows nothing yet, or still the previous task. Report the new
         # one as running with the requested window so the operator polls rather than
@@ -955,6 +999,39 @@ class LiveEnvironment:
         response = self.destination_client.migration_status()
         self.notes["status_response_keys"] = observed_keys(response)
         return decode_task(response, destination=destination, now_ms=self._now_ms())
+
+    def destination_tasks(self) -> list[Transfer]:
+        require(self.destination_client is not None, Code.STATE)
+        destination = cluster_id(self.destination_client.identity)
+        response = self.destination_client.migration_status()
+        self.notes["status_response_keys"] = observed_keys(response)
+        if isinstance(response, dict) and isinstance(response.get("tasks"), list):
+            return [
+                decode_task(item, destination=destination, now_ms=self._now_ms())
+                for item in response["tasks"]
+            ]
+        return [decode_task(response, destination=destination, now_ms=self._now_ms())]
+
+    def transfer_for(self, task_id: str = "", *, window=None, attempted_at_ms=None) -> Transfer:
+        """Find exactly one run's task in the 9.0 task list."""
+        require(self.destination_client is not None, Code.STATE)
+        destination = cluster_id(self.destination_client.identity)
+        tasks = self.destination_tasks()
+        matches = [
+            task
+            for task in tasks
+            if task.id
+            and (
+                task.id == task_id
+                if task_id
+                else window is not None
+                and task.window == window
+                and attempted_at_ms is not None
+                and task.created_at_ms is not None
+                and task.created_at_ms >= attempted_at_ms
+            )
+        ]
+        return matches[0] if len(matches) == 1 else Transfer("", "idle", destination=destination)
 
     def cancel(self) -> None:
         require(self.destination_client is not None, Code.STATE)

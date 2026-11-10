@@ -150,7 +150,10 @@ def parser():
     gui.add_argument("--journal", dest="gui_journal", type=Path, help="Prefill the private journal")
     sub.add_parser("discover")
     sub.add_parser("partitions", help="Compare partitions (and extracted fields on 9.1.1)")
-    sub.add_parser("status", help="Read current task and per-node progress directly from the API")
+    status = sub.add_parser("status", help="Read the recorded API task and per-node progress")
+    status.add_argument(
+        "run_id", nargs="?", type=uuid_arg, help="Run to inspect (default: latest plan)"
+    )
     selftest = sub.add_parser(
         "selftest", help="Read-only checks against real hosts with a pass/fail summary"
     )
@@ -390,7 +393,7 @@ def main(argv=None):
         elif args.command == "copy":
             result = engine.run(args.run_id, backup_ack=args.ack_backup, active_ack=args.ack_active)
         elif args.command == "status":
-            result = engine.status()
+            result = engine.status(args.run_id)
         elif args.command == "stop":
             result = engine.stop(args.task_id)
         else:

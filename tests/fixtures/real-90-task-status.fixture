@@ -1,0 +1,181 @@
+{
+  "tasks": [
+    {
+      "taskId": "task-1",
+      "progress": 100.0,
+      "status": "COMPLETED",
+      "taskCreateTime": 1794252933436,
+      "taskEndTime": 1794253019035,
+      "bucketStartTime": 1709251200000,
+      "bucketEndTime": 1709424000000,
+      "taskDetails": {
+        "destination-1": {
+          "startTime": 1794252955568,
+          "endTime": 1794252964808,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 0,
+            "source-2": 0,
+            "source-3": 1
+          }
+        },
+        "destination-2": {
+          "startTime": 1794252976376,
+          "endTime": 1794252993137,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 0,
+            "source-2": 0,
+            "source-3": 2
+          }
+        },
+        "destination-3": {
+          "startTime": 1794253004623,
+          "endTime": 1794253019035,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 0,
+            "source-2": 0,
+            "source-3": 1
+          }
+        }
+      }
+    },
+    {
+      "taskId": "task-5",
+      "progress": 100.0,
+      "status": "COMPLETED",
+      "taskCreateTime": 1793989754611,
+      "taskEndTime": 1793989969156,
+      "bucketStartTime": 1735689600000,
+      "bucketEndTime": 1767225600000,
+      "taskDetails": {
+        "destination-1": {
+          "startTime": 1793989777550,
+          "endTime": 1793989928374,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 9,
+            "source-2": 11,
+            "source-3": 6
+          }
+        },
+        "destination-2": {
+          "startTime": 1793989798730,
+          "endTime": 1793989969156,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 12,
+            "source-2": 9,
+            "source-3": 9
+          }
+        },
+        "destination-3": {
+          "startTime": 1793989777976,
+          "endTime": 1793989957690,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 8,
+            "source-2": 9,
+            "source-3": 15
+          }
+        }
+      }
+    },
+    {
+      "taskId": "task-6",
+      "progress": 100.0,
+      "status": "COMPLETED",
+      "taskCreateTime": 1793977498704,
+      "taskEndTime": 1793977656640,
+      "bucketStartTime": 1772323200000,
+      "bucketEndTime": 1785542400000,
+      "taskDetails": {
+        "destination-1": {
+          "startTime": 1793977539296,
+          "endTime": 1793977656403,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 0,
+            "source-2": 0,
+            "source-3": 16
+          }
+        },
+        "destination-2": {
+          "startTime": 1793977527744,
+          "endTime": 1793977617476,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 0,
+            "source-2": 0,
+            "source-3": 14
+          }
+        },
+        "destination-3": {
+          "startTime": 1793977550428,
+          "endTime": 1793977656640,
+          "status": "COMPLETED",
+          "progress": 100.0,
+          "scheduledBuckets": {
+            "source-3": [],
+            "source-1": [],
+            "source-2": []
+          },
+          "totalBucketsCount": {
+            "source-1": 0,
+            "source-2": 0,
+            "source-3": 14
+          }
+        }
+      }
+    }
+  ]
+}

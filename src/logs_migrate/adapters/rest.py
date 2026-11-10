@@ -108,6 +108,13 @@ def split_endpoint(value: str, default_port: int) -> tuple[str, int]:
     return parsed.hostname, parsed.port or default_port
 
 
+class SessionExpired(Rejection):
+    """HTTP 440 proves the request was not processed."""
+
+    def __init__(self):
+        super().__init__(Code.AUTH)
+
+
 class HTTPS:
     """JSON over TLS. The enrolled certificate digest is checked before any request is sent."""
 
@@ -195,6 +202,8 @@ class HTTPS:
                     )
                 except Exception:
                     log.exception("Could not read REST error body")
+            if response.status == 440:
+                raise SessionExpired()
             if response.status in {401, 403}:
                 raise Rejection(Code.AUTH)
             if not 200 <= response.status < 300:  # No credential redirects.
@@ -327,6 +336,13 @@ class Logs90:
         require(allowed(method, path), Code.UNSUPPORTED)
         extra = {"timeout": timeout} if timeout else {}
         try:
+            return self.transport.request(method, path, body, self.headers(), **extra)
+        except SessionExpired:
+            self.clear_token()
+            try:
+                self.authenticate()
+            except MigrationError:
+                raise Rejection(Code.AUTH) from None
             return self.transport.request(method, path, body, self.headers(), **extra)
         except MigrationError as error:
             if error.code == Code.AUTH and method == "GET":

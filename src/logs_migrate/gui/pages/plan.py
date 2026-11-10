@@ -317,7 +317,11 @@ class PlanPage(Page):
         if state.plan_run is None or not self._preview_is_current():
             return
         self.start_button.setEnabled(False)
-        self.start_button.setText("Starting…")
+        self.start_button.setText("Preparing migration…")
+        self.note.setText(
+            "Checking the source and destination counts before starting. "
+            "This can take several minutes; keep this window open."
+        )
         self.app.submit(
             "start", "start", run_id=state.plan_run["id"], acknowledged=state.acknowledged
         )

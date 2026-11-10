@@ -57,6 +57,8 @@ ERROR_TEXT = {
 
 def split_error(text: str) -> tuple[Code | None, str]:
     """A failure is a bare code, `gui:<message>`, or `<code>: <message>` (a coded diagnostic)."""
+    if text.startswith("gui:pre_start:"):
+        return None, text[len("gui:pre_start:") :]
     if text.startswith("gui:"):
         return None, text[4:]
     head, separator, message = text.partition(": ")
@@ -508,7 +510,7 @@ PRE_POST_CODES = {
 
 
 def is_pre_post(code: str) -> bool:
-    return split_error(code)[0] in PRE_POST_CODES
+    return code.startswith("gui:pre_start:") or split_error(code)[0] in PRE_POST_CODES
 
 
 def start_note(code: str) -> str:
@@ -566,6 +568,15 @@ STATE_LABEL = {
 }
 
 
+def uncertain_start_text(hold_until: str | None, zone: str) -> str:
+    held = f"until {format_time(hold_until, zone)}" if hold_until else "for 15 minutes"
+    return (
+        "The start's outcome is unknown and no task has appeared yet. Keep refreshing status. "
+        f"If none appears, this window stays held {held}, 15 minutes from the start attempt; "
+        "after that, refresh the preview on Discovery & Plan and start again."
+    )
+
+
 def progress_view(
     status: dict | None,
     *,
@@ -581,9 +592,7 @@ def progress_view(
             "banner": (
                 "warn",
                 "Start outcome uncertain · no task observed",
-                "The last Start may not have reached the API and the destination reports no "
-                "task. Refresh status; if none appears, refresh the preview on Discovery & Plan "
-                "and start again.",
+                uncertain_start_text(status.get("hold_until") if status else None, zone),
             )
             if start_uncertain
             else (
@@ -599,6 +608,7 @@ def progress_view(
                 ("ETA", UNAVAILABLE, "Estimate; verification time is separate"),
             ],
             "nodes": [],
+            "bucket_rows": [],
             "details": [],
             "progress": None,
         }
@@ -652,8 +662,14 @@ def progress_view(
     tiles = [
         (
             "Transferred",
-            format_bytes_pair(done, total),
-            "Last API sample" if stale else format_percent(done, total),
+            format_bytes_pair(done, total) if done is not None else UNAVAILABLE,
+            "Last API sample"
+            if stale
+            else (
+                f"API progress: {status['progress']:g}%"
+                if status.get("progress") is not None
+                else format_percent(done, total)
+            ),
         ),
         (
             "Transfer rate",
@@ -672,9 +688,27 @@ def progress_view(
         ),
     ]
     nodes = []
+    bucket_rows = []
     for node in status.get("nodes", []):
         node_state = "Unknown" if stale else STATE_LABEL.get(node["status"], node["status"].upper())
-        buckets = f"{len(node['completed'])} received"
+        scheduled = node.get("scheduled_buckets")
+        totals = node.get("total_buckets")
+        if scheduled is not None or totals is not None:
+            sources = sorted(set(scheduled or {}) | set(totals or {}))
+            for source in sources:
+                bucket_rows.append(
+                    (
+                        node["node"],
+                        source,
+                        str((scheduled or {}).get(source, 0)),
+                        str((totals or {}).get(source, UNAVAILABLE)),
+                    )
+                )
+            buckets = "See source breakdown"
+        else:
+            buckets = f"{len(node['completed'])} received"
+        if node.get("progress") is not None:
+            node_state += f" · {node['progress']:g}%"
         if node["skipped"]:
             buckets += f" · {len(node['skipped'])} skipped"
         if stale and node["status"] == "running":
@@ -686,7 +720,15 @@ def progress_view(
         else:
             error = "—"
         nodes.append(
-            (node["node"], node_state, format_bytes(node["bytes_transferred"]), buckets, error)
+            (
+                node["node"],
+                node_state,
+                format_bytes(node["bytes_transferred"])
+                if node["bytes_transferred"] is not None
+                else UNAVAILABLE,
+                buckets,
+                error,
+            )
         )
     window = status.get("window")
     details = [
@@ -706,14 +748,19 @@ def progress_view(
             f"{len(status.get('bucket_keys', ()))} requested",
         ),
     ]
+    if bucket_rows and not status.get("completed") and not status.get("skipped"):
+        details = [(k, v) for k, v in details if k != "Buckets"]
     progress = None
     if done is not None and total:
         progress = max(0, min(100, int(100 * done / total)))
+    elif status.get("progress") is not None:
+        progress = int(status["progress"])
     return {
         "state": state,
         "banner": banner,
         "tiles": tiles,
         "nodes": nodes,
+        "bucket_rows": bucket_rows,
         "details": details,
         "progress": progress,
     }

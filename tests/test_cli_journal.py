@@ -30,6 +30,11 @@ def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture):
         str(tmp_path / "j.simulated-state"),
     ]
     assert main([*api_only, "status"]) == 0
+    untied = json.loads(capsys.readouterr().out)
+    assert untied["status"] == "idle" and untied["run"] is None
+    assert untied["no_run"]["reason"] == "no_journal"
+    assert [t["id"] for t in untied["destination_tasks"]["tasks"]] == ["sim-1"]
+    assert main([*base, "status", run["id"]]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["status"] == "completed" and len(status["nodes"]) == 3
     assert main([*base, "verify", run["id"]]) == 0
