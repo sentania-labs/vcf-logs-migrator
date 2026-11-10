@@ -2172,7 +2172,8 @@ def test_an_unknown_group_count_alone_is_incomplete_and_the_banner_shows_both_ch
     assert result["outcome"] == "incomplete_verification" and not result["complete"]
     tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
     assert title == "Group counts unavailable"
-    assert text.index(result["bucket_check"]["unknown"][0]) < text.index("Daily counts")
+    assert text.index("Group 1") < text.index("Daily counts")
+    assert result["bucket_check"]["unknown"][0] not in text
 
 
 def test_matching_groups_with_a_daily_difference_show_the_difference_in_the_banner(tmp_path):

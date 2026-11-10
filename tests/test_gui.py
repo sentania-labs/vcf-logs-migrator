@@ -146,6 +146,7 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     verification = driver.pages["verification"]
     assert "fully covered day" in verification.banner.text()
     assert "1 partial day" in verification.banner.text()
+    assert "matches too" in verification.banner.text()
 
 
 def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
@@ -766,3 +767,109 @@ def test_testing_endpoints_from_a_connected_window_drops_the_stale_connection(dr
     driver.until(lambda: not driver.window.worker.pending)
     driver.idle()
     assert driver.state.status_error is None
+
+
+def test_plan_overlap_warning_is_readable_and_group_ids_expand(driver):
+    driver.connect()
+    driver.plan()
+    run = driver.state.plan_run
+    group = run["plan"]["selected"][0]
+    key = group["node"] + "/" + group["id"]
+    run["plan"]["destination"]["inventory_available"] = True
+    run["plan"]["warnings"].append(
+        f"Earlier task old-task ran 2026-01-01; its window was 2024-01-01 to "
+        f"2025-01-01 UTC. Selected groups crossing that window: {key}. "
+        "Destination identities were checked."
+    )
+    page = driver.pages["plan"]
+    page.refresh()
+    driver.wait(100)
+    page.scroll.verticalScrollBar().setValue(page.scroll.verticalScrollBar().maximum())
+    driver.wait(50)
+    assert "Earlier task old-task" in page.warnings.text()
+    assert "Group 1" in page.warnings.text() and group["node"] in page.warnings.text()
+    assert group["id"] not in page.warnings.text()
+    assert page.warnings.height() >= page.warnings.heightForWidth(page.warnings.width())
+    driver.window.resize(1000, 700)
+    driver.wait(100)
+    assert page.warnings.height() >= page.warnings.heightForWidth(page.warnings.width())
+    assert "Earlier migration dates overlap" in dict(page.checks.rows())["Destination overlap"]
+    assert page.warning_ids_toggle.isVisible()
+    page.warning_ids_toggle.click()
+    assert group["id"] in page.warning_ids.toPlainText()
+
+
+def test_overlap_refusal_names_plan_group_and_hides_id(driver):
+    driver.connect()
+    driver.plan()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    key = group["node"] + "/" + group["id"]
+    driver.state.plan_error = (
+        f"overlapping_transfer: Earlier task old ran 2026-01-01; its window was "
+        f"2024-01-01 to 2025-01-01 UTC. Selected groups crossing that window: {key}."
+    )
+    page = driver.pages["plan"]
+    page.refresh()
+    refused = dict(page.overlap_rows.rows())["Refused"]
+    assert "Group 1" in refused and group["node"] in refused and "UTC" in refused
+    assert group["id"] not in refused
+    page.group_ids_toggle.click()
+    assert group["id"] in page.group_ids.toPlainText()
+
+
+def test_unknown_group_count_explains_retry_and_expands_id(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.verify()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    result = driver.state.verification
+    result["outcome"] = "incomplete_verification"
+    result["bucket_check"] = {
+        "matched_groups": 0,
+        "total_groups": len(driver.state.plan_run["plan"]["selected"]),
+        "matched_events": 0,
+        "total_events": 6,
+        "unmatched": [],
+        "unknown": [group["node"] + "/" + group["id"]],
+    }
+    page = driver.pages["verification"]
+    page.refresh()
+    text = page.banner.text()
+    assert "Group 1" in text and group["node"] in text and group["id"] not in text
+    assert "incomplete" in text and "Run verify again" in text and "destination" in text
+    page.group_ids_toggle.click()
+    assert group["id"] in page.group_ids.toPlainText()
+
+
+def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, monkeypatch):
+    import time
+
+    from logs_migrate.gui import session
+
+    attempts, asked, store = _live_simulator(monkeypatch, driver)
+    original = session.Session._open_live
+
+    def slow_open(self, *, probe_only=False):
+        if probe_only and not attempts:
+            self.on_progress("Contacting tls aria-logs.lab.example:9543")
+            time.sleep(1.3)
+        return original(self, probe_only=probe_only)
+
+    monkeypatch.setattr(session.Session, "_open_live", slow_open)
+    page = driver.pages["connections"]
+    page.source_host.setText("aria-logs.lab.example")
+    page.destination_host.setText("vcf-logs.lab.example:9543")
+    page.connect()
+    driver.until(lambda: driver.window.probe_activity.isVisible())
+    driver.wait(1100)
+    assert driver.window.probe_activity.minimum() == driver.window.probe_activity.maximum() == 0
+    assert "0:01 elapsed" in driver.window.probe_elapsed.text()
+    assert "Checking this appliance's identity" in driver.window.page_progress.text()
+    assert "tls" not in driver.window.page_progress.text()
+    driver.until(lambda: bool(page.validation))
+    driver.idle()
+    assert asked and store.enrolled
+    assert not driver.window.probe_activity.isVisible()

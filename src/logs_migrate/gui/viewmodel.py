@@ -330,6 +330,33 @@ def window_error(start: date, end_inclusive: date) -> str | None:
     return None
 
 
+def group_label(bucket: dict, number: int) -> str:
+    return (
+        f"Group {number} · {bucket['node']} "
+        f"({format_day_range(bucket.get('start'), bucket.get('end'), inclusive_end=True)})"
+    )
+
+
+def describe_group_ids(text: str, selected: list[dict]) -> str:
+    for number, bucket in enumerate(selected, 1):
+        text = text.replace(bucket["node"] + "/" + bucket["id"], group_label(bucket, number))
+    return text
+
+
+def selected_for_window(discovered: dict | None, window: Window | None) -> list[dict]:
+    if not discovered or window is None:
+        return []
+    return [
+        b
+        for b in discovered["source"]["buckets"]
+        if b["status"] != "active"
+        and b.get("start") is not None
+        and b.get("end") is not None
+        and b["start"] < window.end
+        and b["end"] >= window.start
+    ]
+
+
 def conflicting_groups(code: str, discovered: dict | None) -> list[dict]:
     """Source groups a destination-conflict refusal names, matched by their full node/id."""
     if not (
@@ -340,6 +367,13 @@ def conflicting_groups(code: str, discovered: dict | None) -> list[dict]:
 
 
 def conflict_group_lines(code: str, discovered: dict | None) -> list[str]:
+    if code.startswith(Code.OVERLAP.value + ":") and discovered:
+        return [
+            f"{b['node']}/{b['id']}  "
+            f"{format_day_range(b.get('start'), b.get('end'), inclusive_end=True)}"
+            for b in discovered["source"]["buckets"]
+            if f"{b['node']}/{b['id']}" in code
+        ]
     return [
         f"{b['node']}/{b['id']}  "
         f"{format_day_range(b.get('start'), b.get('end'), inclusive_end=True)}"
@@ -383,6 +417,8 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
                 "The destination's transfer history is incomplete, so overlap cannot be ruled out."
             )
         return "Some selected groups have unproven date bounds, so the preview cannot be trusted."
+    if code.startswith(Code.OVERLAP.value + ":"):
+        return describe_group_ids(describe_error(code), selected_for_window(discovered, window))
     return describe_error(code)
 
 
@@ -429,8 +465,18 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
             "Last day covered only by sealed buckets: not proven (open group bounds unknown); "
             f"sealed groups end {format_day(day_of(coverage['end'] - 1))}."
         )
+    earlier_overlap = any(
+        "Earlier task " in w and "Selected groups crossing" in w for w in plan.get("warnings", [])
+    )
+    overlap_text = (
+        "Group ids checked; none on destination. Earlier migration dates overlap."
+        if earlier_overlap
+        else "No selected group ids found on destination"
+        if plan["destination"].get("inventory_available")
+        else "No overlapping migration found in available history"
+    )
     checks = [
-        ("Destination overlap", "None in selected whole groups"),
+        ("Destination overlap", overlap_text),
         (
             "Partitions",
             "Match"
@@ -521,7 +567,13 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         "group_tips": tips,
         "checks": checks,
         "storage": storage,
-        "warnings": plan["warnings"],
+        "warnings": [describe_group_ids(w, selected) for w in plan["warnings"]],
+        "overlap_text": overlap_text,
+        "overlap_ids": [
+            f"Group {n} · {b['node']}/{b['id']}"
+            for n, b in enumerate(selected, 1)
+            if any(b["node"] + "/" + b["id"] in w for w in plan["warnings"])
+        ],
         "blockers": blockers,
         "needs_ack": bool(active),
     }
@@ -1037,7 +1089,13 @@ def verification_view(
             + (
                 f"{len(partial)} partial day{'s' if len(partial) != 1 else ''} shared with open "
                 "or unselected groups "
-                + ("differ as expected. " if result.get("partial_differences") else "match too. ")
+                + (
+                    "differ as expected. "
+                    if result.get("partial_differences")
+                    else "matches too. "
+                    if len(partial) == 1
+                    else "match too. "
+                )
                 if partial
                 else ""
             )
@@ -1114,10 +1172,24 @@ def verification_view(
                 f"{', '.join(exact['unmatched'])}. {groups} {daily}",
             )
         elif exact.get("unknown"):
+            labels = (
+                {
+                    b["node"] + "/" + b["id"]: group_label(b, n)
+                    for n, b in enumerate(run["plan"]["selected"], 1)
+                }
+                if run
+                else {}
+            )
+            unknown_groups = ", ".join(
+                labels.get(key, "A selected group") for key in exact["unknown"]
+            )
             banner = (
                 "bad" if daily_outcome == "verified_discrepancy" else "warn",
                 "Group counts unavailable",
-                f"{', '.join(exact['unknown'])}. {daily}",
+                f"{unknown_groups} "
+                "could not have their event counts checked, so verification is incomplete. "
+                "Run verify again. If this persists, check the destination bucket listing "
+                f"with the appliance administrator. {daily}",
             )
         else:
             banner = (

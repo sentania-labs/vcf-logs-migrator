@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QElapsedTimer, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -75,6 +76,10 @@ class MainWindow(QMainWindow):
         self.ask_trust = self._ask_trust
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_status)
+        self.probe_clock = QElapsedTimer()
+        self.probe_timer = QTimer(self)
+        self.probe_timer.setInterval(1000)
+        self.probe_timer.timeout.connect(self._update_probe_elapsed)
         # Results from a previous connection are dropped instead of landing in a reset state.
         self.generation = 0
         self.job_generation: dict[str, int] = {}
@@ -97,6 +102,15 @@ class MainWindow(QMainWindow):
         self.page_progress.setAccessibleName("Current operation progress")
         self.page_progress.hide()
         content.addWidget(self.page_progress)
+        self.probe_activity = QProgressBar()
+        self.probe_activity.setRange(0, 0)
+        self.probe_activity.setTextVisible(False)
+        self.probe_activity.setAccessibleName("Checking appliance identities")
+        self.probe_activity.hide()
+        content.addWidget(self.probe_activity)
+        self.probe_elapsed = label("", "hint")
+        self.probe_elapsed.hide()
+        content.addWidget(self.probe_elapsed)
         content.addWidget(self.stack, 1)
         middle.addLayout(content, 1)
         outer.addLayout(middle, 1)
@@ -266,7 +280,16 @@ class MainWindow(QMainWindow):
 
     # Engine jobs -------------------------------------------------------------------------
 
+    def _update_probe_elapsed(self) -> None:
+        seconds = self.probe_clock.elapsed() // 1000
+        self.probe_elapsed.setText(
+            f"Checking appliance identities · {seconds // 60}:{seconds % 60:02d} elapsed"
+        )
+
     def _show_progress(self, message: str) -> None:
+        if message.startswith("Contacting "):
+            endpoint = message.removeprefix("Contacting ").partition(" ")[2]
+            message = f"Checking this appliance's identity at {endpoint}"
         key = message.split(": sizing", 1)[0] if ": sizing" in message else "query"
         self.progress_lines[key] = message
         text = "\n".join(self.progress_lines.values())
@@ -277,6 +300,12 @@ class MainWindow(QMainWindow):
     def submit(self, job: str, method: str, **kwargs) -> bool:
         accepted = self.worker.submit(job, method, **kwargs)
         if accepted:
+            if job == "probe":
+                self.probe_clock.start()
+                self._update_probe_elapsed()
+                self.probe_activity.show()
+                self.probe_elapsed.show()
+                self.probe_timer.start()
             if job.split(":")[0] in PROGRESS_JOBS:
                 self.progress_lines.clear()
                 self.progress_label.clear()
@@ -419,6 +448,10 @@ class MainWindow(QMainWindow):
     def _settle(self, job: str) -> bool:
         """Clear the job and say whether its result belongs to the current connection."""
         self.worker.pending.discard(job)
+        if job == "probe":
+            self.probe_timer.stop()
+            self.probe_activity.hide()
+            self.probe_elapsed.hide()
         if job.split(":")[0] in PROGRESS_JOBS:
             self.progress_lines.clear()
             self.progress_label.clear()
