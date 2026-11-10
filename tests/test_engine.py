@@ -230,7 +230,13 @@ def test_status_requires_run_identity_and_supplies_estimates(rig):
     )
     env.transfer = lambda: task
     assert engine.status(run["id"])["eta_seconds"] == 16
-    assert Engine(env, None).status()["status"] == "idle"
+    untied = Engine(env, None).status()
+    assert untied["status"] == "idle" and untied["run"] is None
+    assert "--journal" in untied["no_run"]["hint"]
+    assert untied["destination_tasks"]["tasks"] == [
+        {"id": "sim-1", "status": "running", "window": None, "progress": None}
+    ]
+    assert "not tied to any run" in untied["destination_tasks"]["note"]
     task = replace(task, id="old-task", status="completed")
     assert engine.status(run["id"])["status"] == "idle"
 

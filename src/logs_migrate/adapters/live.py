@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from ..errors import Accepted, Code, MigrationError, require
-from ..models import Bucket, Cluster, Counts, Node, Partition, Window, day_window
+from ..models import Bucket, Cluster, Counts, Node, Partition, Window
 from ..ports import History, NodeTransfer, SystemClock, Transfer
 from ..security import Credentials, Secret
 from ..trust import Identity, TrustRequired, TrustStore, config_dir, probe_ssh, probe_tls
@@ -984,19 +984,23 @@ class LiveEnvironment:
         self.notes["status_response_keys"] = observed_keys(response)
         return decode_task(response, destination=destination, now_ms=self._now_ms())
 
-    def transfer_for(self, task_id: str = "", *, window=None, attempted_at_ms=None) -> Transfer:
-        """Find exactly one run's task in the 9.0 task list."""
+    def destination_tasks(self) -> list[Transfer]:
         require(self.destination_client is not None, Code.STATE)
         destination = cluster_id(self.destination_client.identity)
         response = self.destination_client.migration_status()
         self.notes["status_response_keys"] = observed_keys(response)
         if isinstance(response, dict) and isinstance(response.get("tasks"), list):
-            tasks = [
+            return [
                 decode_task(item, destination=destination, now_ms=self._now_ms())
                 for item in response["tasks"]
             ]
-        else:
-            tasks = [decode_task(response, destination=destination, now_ms=self._now_ms())]
+        return [decode_task(response, destination=destination, now_ms=self._now_ms())]
+
+    def transfer_for(self, task_id: str = "", *, window=None, attempted_at_ms=None) -> Transfer:
+        """Find exactly one run's task in the 9.0 task list."""
+        require(self.destination_client is not None, Code.STATE)
+        destination = cluster_id(self.destination_client.identity)
+        tasks = self.destination_tasks()
         matches = [
             task
             for task in tasks
@@ -1005,8 +1009,7 @@ class LiveEnvironment:
                 task.id == task_id
                 if task_id
                 else window is not None
-                and task.window is not None
-                and day_window(task.window) == day_window(window)
+                and task.window == window
                 and attempted_at_ms is not None
                 and task.created_at_ms is not None
                 and task.created_at_ms >= attempted_at_ms

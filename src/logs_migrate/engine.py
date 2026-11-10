@@ -16,7 +16,6 @@ from .models import (
     Policy,
     Verification,
     Window,
-    day_window,
     digest,
     sealed_frontier,
 )
@@ -35,6 +34,11 @@ START_CLOCK_SLACK_MS = 300_000
 
 def _ids(keys):
     return {key.rsplit("/", 1)[-1] for key in keys}
+
+
+def day_window(window: Window) -> Window:
+    """The whole UTC days a window touches; count queries are compared per day."""
+    return Window(window.start // DAY * DAY, ((window.end - 1) // DAY + 1) * DAY)
 
 
 def _day(ms: int) -> str:
@@ -421,17 +425,44 @@ class Engine:
         )
         return result
 
+    def _untied_status(self, reason, hint):
+        """No run was identified: say so, and list destination tasks as not tied to any run."""
+        lister = getattr(self.env, "destination_tasks", None)
+        tasks = lister() if lister is not None else [self.env.transfer()]
+        result = self._progress(Transfer("", "idle"))
+        result["run"] = None
+        result["no_run"] = {"reason": reason, "hint": hint}
+        result["destination_tasks"] = {
+            "note": "Destination tasks, not tied to any run of this tool",
+            "tasks": [
+                {
+                    "id": t.id,
+                    "status": t.status,
+                    "window": asdict(t.window) if t.window else None,
+                    "progress": t.progress,
+                }
+                for t in tasks
+                if t.id
+            ],
+        }
+        return result
+
     @safe_boundary
     def status(self, run_id=None):
         with self._exclusive():
             if self.journal is None:
-                return self._progress(Transfer("", "idle"))
+                return self._untied_status(
+                    "no_journal",
+                    "No run was identified because no journal was given; pass --journal.",
+                )
             runs = self.journal.runs()
             if run_id is None:
                 run_id = runs[-1]["id"] if runs else None
             run = next((r for r in runs if r["id"] == run_id), None)
             if run is None:
-                return self._progress(Transfer("", "idle"))
+                return self._untied_status(
+                    "run_not_found", "No run was identified in this journal; check the run ID."
+                )
             destination = run["plan"]["destination"]["id"]
             rows = self.journal.transfers(destination)
             row = next((r for r in rows if r["run"] == run_id), None)
@@ -457,12 +488,7 @@ class Engine:
                 bool(task.id)
                 and task.destination == destination
                 and task.id not in others
-                and (
-                    task.id == task_id
-                    if task_id
-                    else finder is not None
-                    or (task.window is not None and day_window(task.window) == day_window(window))
-                )
+                and (task.id == task_id if task_id else finder is not None or task.window == window)
             )
             if not found:
                 result = self._progress(Transfer("", "idle", destination=destination))

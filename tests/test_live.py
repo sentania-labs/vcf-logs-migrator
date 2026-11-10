@@ -1396,18 +1396,12 @@ def test_recorded_90_task_list_selects_this_task_and_falls_back_only_for_unique_
         == "idle"
     )
     day = first["bucketStartTime"] // DAY * DAY
-    inside = Window(day + 3_600_000, day + 7_200_000)
-    snapped = dict(first, bucketStartTime=day, bucketEndTime=day + DAY)
-    response["tasks"][response["tasks"].index(first)] = snapped
+    same_day = Window(day + 3_600_000, day + 7_200_000)
     assert (
-        env.transfer_for(window=inside, attempted_at_ms=first["taskCreateTime"]).id
-        == first["taskId"]
+        env.transfer_for(window=same_day, attempted_at_ms=first["taskCreateTime"]).status == "idle"
     )
-    outside = Window(day + DAY + 1, day + DAY + 2)
-    assert (
-        env.transfer_for(window=outside, attempted_at_ms=first["taskCreateTime"]).status == "idle"
-    )
-    response["tasks"][response["tasks"].index(snapped)] = first
+    listed = env.destination_tasks()
+    assert [t.id for t in listed] == [t["taskId"] for t in response["tasks"]]
     response["tasks"].append(dict(first, taskId="duplicate"))
     assert env.transfer_for(window=window, attempted_at_ms=first["taskCreateTime"]).status == "idle"
     assert env.transfer_for("missing").status == "idle"

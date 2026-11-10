@@ -155,6 +155,11 @@ this run's journal record. Supply the same `--journal` used to start the run.
 It defaults to the latest plan; pass a run UUID to select another run. A missing
 or unidentifiable task shows idle rather than another run's status.
 
+Without a journal (or with a journal that holds no such run), `status` still succeeds
+but says so: `run` is `null`, `no_run` gives the reason and a hint (pass `--journal`),
+and `destination_tasks` lists what the destination currently reports (task id, state,
+window, progress), labelled as destination tasks not tied to any run of this tool.
+
 ```sh
 logs-migrate --journal /private/migration/run.sqlite \
   --fixture tests/fixtures/sealed-populated.fixture status RUN_ID
@@ -170,14 +175,16 @@ The API remains the source of task state. Status records finished transfers in t
 ledger only after matching the task to the run.
 
 An interrupted client or lost POST response does not imply a stopped task. Query
-status. When the start was acknowledged without a task ID, or its response was lost,
-status looks in the appliance's task list for a task with exactly this run's window
+status. When the start's response was lost (never acknowledged), status looks in the
+appliance's task list for a single task with exactly this run's requested window,
 created no earlier than five minutes before the start attempt (a margin for clock
-difference between this machine and the appliance). A single match is shown with its
-progress and remembered for this run, and its ID can be used to stop it. If none is
-found, status reports `idle` with `start_outcome: unknown`: the start may not have
-reached the appliance, or its task is not listed yet. Run status again; if it still
-shows nothing once the 15-minute uncertain-start hold has passed, plan and copy again. Explicit
+difference between this machine and the appliance), and not belonging to another run.
+A match is shown with its progress and remembered for this run, and its ID can be
+used to stop it. If none is found, status reports `idle` with `start_outcome: unknown`:
+the start may not have reached the appliance, or its task is not listed yet. Run
+status again; if it still shows nothing once the 15-minute uncertain-start hold has
+passed, plan and copy again. A start that was acknowledged without a task ID is looked
+up the same way, but reports plain `idle` while no task matches. Explicit
 cancellation uses the currently observed **API task ID**:
 
 ```sh

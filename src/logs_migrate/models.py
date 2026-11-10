@@ -64,11 +64,6 @@ class Window:
         return self.start < other.end and other.start < self.end
 
 
-def day_window(window: Window) -> Window:
-    """The whole UTC days a window touches; count queries are compared per day."""
-    return Window(window.start // DAY * DAY, ((window.end - 1) // DAY + 1) * DAY)
-
-
 @dataclass(frozen=True)
 class Bucket:
     id: str
