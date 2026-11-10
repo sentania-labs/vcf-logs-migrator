@@ -126,7 +126,7 @@ class ConnectionsPage(Page):
             edit.returnPressed.connect(self.connect)
 
         checks, checks_layout = card("Connection checks")
-        self.checks = Table(["Check", "Result"])
+        self.checks = Table(["Check", "Result"], wrap=True)
         checks_layout.addWidget(self.checks)
         self.body.addWidget(checks)
 

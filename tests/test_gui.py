@@ -671,3 +671,47 @@ def test_trust_dialog_names_shared_host_before_accepting(driver, monkeypatch):
     ]
     assert not driver.window._ask_trust(identities)
     assert "node-b:22 presents the same SSH key as node-a:22" in shown[0]
+
+
+def test_connections_selftest_failure_wraps_and_accepts_keyboard_focus(driver):
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtTest import QTest
+
+    driver.connect()
+    driver.show("connections")
+    message = (
+        "The source node could not complete its inventory listing. "
+        "Check the node's disk and network access, then retry the self-test. "
+    ) * 5
+    driver.state.selftest = {
+        "steps": [{"name": "Source node", "status": "fail", "detail": "gui:" + message}],
+        "summary": {"pass": 0, "fail": 1, "skip": 0},
+        "passed": False,
+        "notes": {},
+    }
+    page = driver.pages["connections"]
+    page.refresh()
+    driver.wait(100)
+    table = page.checks
+    row = next(i for i, cells in enumerate(table.rows()) if cells[0] == "Source node")
+    item = table.item(row, 1)
+    rect = table.fontMetrics().boundingRect(
+        QRect(0, 0, table.columnWidth(1) - 12, 10000),
+        int(Qt.TextFlag.TextWordWrap),
+        item.text(),
+    )
+    assert table.wordWrap()
+    assert table.rowHeight(row) >= rect.height()
+    driver.window.resize(900, 900)
+    driver.wait(100)
+    narrow = table.fontMetrics().boundingRect(
+        QRect(0, 0, table.columnWidth(1) - 12, 10000),
+        int(Qt.TextFlag.TextWordWrap),
+        item.text(),
+    )
+    assert table.rowHeight(row) >= narrow.height()
+    assert table.focusPolicy() != Qt.FocusPolicy.NoFocus
+    table.setFocus(Qt.FocusReason.TabFocusReason)
+    table.setCurrentCell(row, 1)
+    QTest.keyClick(table, Qt.Key.Key_Down)
+    assert table.hasFocus() and table.currentRow() > row
