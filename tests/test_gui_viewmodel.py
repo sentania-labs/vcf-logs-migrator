@@ -94,6 +94,28 @@ def test_plan_view_reports_groups_checks_and_start_gate(rig):
     assert "cannot hold" in vm.start_state(short, True, True)[1]
 
 
+@pytest.mark.parametrize(
+    ("growth", "shown", "warned"),
+    [
+        (
+            {"bytes": 3_000_000, "nodes": ["a", "b"], "window_seconds": 9},
+            "Active buckets on a, b grew by 3.0 MB in 9 s",
+            True,
+        ),
+        ({"bytes": 0, "nodes": [], "window_seconds": 5}, "No active bucket growth in 5 s", False),
+        ({"bytes": None, "nodes": [], "window_seconds": None}, "Unavailable", True),
+    ],
+)
+def test_plan_view_reports_source_growth_from_the_engine(rig, growth, shown, warned):
+    engine, env, _ = rig
+    env.data["source_growth"] = growth
+    run = planned(engine)
+    assert run["plan"]["source_ingest"] == growth
+    assert dict(vm.plan_view(run, engine.discover())["checks"])["Source ingest"] == shown
+    warnings = [w for w in run["plan"]["warnings"] if "Source growth" in w or "grew by" in w]
+    assert bool(warnings) is warned
+
+
 def test_progress_view_marks_stale_estimates_unavailable():
     status = {
         "id": "sim-1",

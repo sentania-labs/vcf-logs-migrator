@@ -975,7 +975,8 @@ class LiveEnvironment:
     def source_growth(self) -> dict:
         """Compare active directory sizes, never event timestamps or a full second inventory."""
         members = self.members or self.source_members()
-        first = {host: self.node_inventory(host) for host in members}
+        with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
+            first = dict(zip(members, pool.map(self.node_inventory, members), strict=True))
         sampled = min(self._inventory_cache[(host, "source_ssh", None)][0] for host in members)
         self.clock.sleep(5)
 
@@ -984,8 +985,10 @@ class LiveEnvironment:
             active = [b.id for b in first[host].buckets if b.status == "active"]
             listing = parse_listing(ssh.read(ReadOperation.INVENTORY))
             current = [b.id for b in listing if b.status == "active"]
-            if set(active) != set(current) or not active:
+            if set(active) != set(current):
                 raise MigrationError(Code.INCOMPLETE)
+            if not active:
+                return 0
             usage = parse_usage(ssh.active_usage(current))
             before = first[host].usage
             if any(i not in before or i not in usage or usage[i] < before[i] for i in active):

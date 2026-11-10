@@ -221,12 +221,10 @@ class Engine:
                 require(not coverage.overlaps(prior.window), Code.OVERLAP)
 
     def _source_ingest(self) -> dict:
-        reader = getattr(self.env, "source_growth", None)
-        if reader is not None:
-            try:
-                return reader()
-            except MigrationError:
-                pass
+        try:
+            return self.env.source_growth()
+        except MigrationError:
+            pass
         return {"bytes": None, "nodes": [], "window_seconds": None}
 
     @safe_boundary

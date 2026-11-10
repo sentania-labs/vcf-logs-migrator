@@ -129,7 +129,7 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.plan()
     plan_page = driver.pages["plan"]
     checks = dict(plan_page.checks.rows())
-    assert checks["Source ingest"] == "Unavailable"
+    assert checks["Source ingest"] == "No active bucket growth in 5 s"
     driver.acknowledge()
     driver.start()
     driver.poll_until_finished()

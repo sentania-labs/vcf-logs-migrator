@@ -501,7 +501,7 @@ def test_start_does_not_adopt_the_previous_task_with_the_same_window(rigged):
     assert task.id == "" and task.status == "running"  # No creation time to bind it safely.
 
 
-def _run_selftest(rigged, window):
+def _run_selftest(rigged, window, growth=None):
     from logs_migrate import selftest
 
     env, source, destination, ssh = trusted(rigged)
@@ -538,7 +538,7 @@ def _run_selftest(rigged, window):
         return destination_request(method, path, body, headers)
 
     destination.request = destination_counts
-    env.source_growth = lambda: {"bytes": 0, "nodes": [], "window_seconds": 5}
+    env.source_growth = lambda: growth or {"bytes": 0, "nodes": [], "window_seconds": 5}
     return env, destination, selftest.run(env, window)
 
 
@@ -553,6 +553,17 @@ def test_selftest_reports_every_read_and_sends_nothing(rigged):
     data = result.data()
     assert data["summary"]["fail"] == 0 and "status_response_keys" in data["notes"]
     assert "canary" not in json.dumps(data)
+
+
+def test_selftest_names_active_bucket_growth_not_event_counts(rigged):
+    grew = {"bytes": 2048, "nodes": ["src-1.lab"], "window_seconds": 7}
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000), grew)
+    (step,) = [s for s in result.steps if s.name == "Source ingest (cutover check)"]
+    assert step.status == "pass"
+    assert step.detail == "active buckets on src-1.lab grew by 2,048 bytes in 7 seconds"
+    _, _, quiet = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    (step,) = [s for s in quiet.steps if s.name == "Source ingest (cutover check)"]
+    assert step.detail == "no active bucket growth in 5 seconds"
 
 
 def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
@@ -1462,6 +1473,33 @@ def test_source_growth_compares_active_directory_sizes_only(rigged):
     assert result["window_seconds"] >= 1
 
 
+def test_source_growth_counts_a_node_without_active_buckets_as_idle(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab", "src-2.lab"]
+    path = "/storage/core/loginsight/cidata/store/"
+    idle = LISTING.replace("status=active", "status=archived")
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {path}{C}\n"
+    ssh.replies[("src-2.lab", ReadOperation.INVENTORY)] = idle
+    env.node_inventory("src-1.lab")
+    env.node_inventory("src-2.lab")
+    env.clock.sleep = lambda seconds: None
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1300 {path}{C}\n"
+    result = env.source_growth()
+    assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
+
+
+def test_source_growth_inventories_every_node_when_nothing_is_cached(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab", "src-2.lab"]
+    path = "/storage/core/loginsight/cidata/store/"
+    for host in env.members:
+        ssh.replies[(host, ReadOperation.USAGE)] = f"1000 {path}{C}\n"
+    env.clock.sleep = lambda seconds: None
+    result = env.source_growth()
+    assert result["bytes"] == 0 and result["nodes"] == []
+    assert {host for host, _ in ssh.reads} >= set(env.members)
+
+
 def test_source_growth_refuses_bucket_rollover(rigged):
     env, source, destination, ssh = trusted(rigged)
     env.members = ["src-1.lab"]
@@ -1506,8 +1544,9 @@ def test_live_copy_counts_requested_days_not_full_bucket_coverage(tmp_path):
     days = requested
     assert len(seen) == 4 and all(window == days for _, window in seen)
     engine.status()
+    before = len(seen)
     engine.verify(run["id"])
-    assert all(window == days for _, window in seen)
+    assert len(seen) > before and all(window == days for _, window in seen)
 
 
 def test_count_progress_reports_every_query(rigged, capsys):
