@@ -385,10 +385,13 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         )
         tips.append(f"Sealed bucket {b['id']} on {b['node']} reports no time range")
     if plan["last_fully_sealed_day"]:
-        sealed_text = f"Last fully sealed day: {format_day_label(plan['last_fully_sealed_day'])}."
+        sealed_text = (
+            "Last day covered only by sealed buckets right now: "
+            f"{format_day_label(plan['last_fully_sealed_day'])}."
+        )
     else:
         sealed_text = (
-            "Last fully sealed day: not proven (open group bounds unknown); "
+            "Last day covered only by sealed buckets: not proven (open group bounds unknown); "
             f"sealed groups end {format_day(day_of(coverage['end'] - 1))}."
         )
     checks = [
@@ -982,6 +985,8 @@ def verification_view(
             "destination_busy": "The destination task is still running.",
             "topology_changed": "The destination identity changed since the plan.",
         }.get(reason or "", describe_error(reason) if reason else "")
+        if result.get("detail"):
+            why += f" {result['detail']}"
         if task in {"cancelled", "failed"}:
             why += (
                 f" The API task {task}; plan the remainder with a window that excludes "

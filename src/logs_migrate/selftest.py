@@ -306,7 +306,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             f"{_fmt_day(preview['coverage']['end'] - 1)} · "
             f"{len(preview['active_skipped'])} active skipped · "
             f"{len(preview['undated_excluded'])} undated excluded · "
-            f"last sealed day {preview['last_fully_sealed_day'] or 'unknown'}"
+            "last day covered only by sealed buckets "
+            f"{preview['last_fully_sealed_day'] or 'unknown'}"
         )
         if preview["capacity"]["unknown"]:
             detail += " · destination budget unknown"

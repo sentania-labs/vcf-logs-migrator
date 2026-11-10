@@ -40,6 +40,8 @@ from .state import AppState
 from .widgets import button, label, section
 from .worker import EngineWorker
 
+PROGRESS_JOBS = {"connect", "selftest", "plan", "start", "verify", "discover"}
+
 NAV = [
     ("overview", "Overview"),
     ("connections", "Connections"),
@@ -266,7 +268,7 @@ class MainWindow(QMainWindow):
     def submit(self, job: str, method: str, **kwargs) -> bool:
         accepted = self.worker.submit(job, method, **kwargs)
         if accepted:
-            if job in {"connect", "selftest", "plan", "start"}:
+            if job.split(":")[0] in PROGRESS_JOBS:
                 self.progress_lines.clear()
                 self.progress_label.clear()
             self.job_generation[job] = self.generation
@@ -390,7 +392,7 @@ class MainWindow(QMainWindow):
     def _settle(self, job: str) -> bool:
         """Clear the job and say whether its result belongs to the current connection."""
         self.worker.pending.discard(job)
-        if job in {"connect", "selftest", "plan", "start"}:
+        if job.split(":")[0] in PROGRESS_JOBS:
             self.progress_lines.clear()
             self.progress_label.clear()
         return self.job_generation.pop(job, self.generation) == self.generation

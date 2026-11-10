@@ -527,3 +527,16 @@ def test_uncertain_start_banner_states_when_the_window_frees_up():
     assert vm.format_time("2026-11-06T16:00:00+00:00", "UTC") in text
     bare = vm.progress_view(None, stale=False, last_ok=None, zone="UTC", start_uncertain=True)
     assert "for 15 minutes" in bare["banner"][2]
+
+
+def test_verification_view_names_what_timed_out():
+    result = {
+        "outcome": "incomplete_verification",
+        "complete": False,
+        "reason": "connection_failed",
+        "detail": "destination count query from 2026-03-01 timed out",
+    }
+    view = vm.verification_view(result, None, 0, False)
+    assert "destination count query from 2026-03-01 timed out" in " ".join(
+        str(part) for part in view["banner"]
+    )

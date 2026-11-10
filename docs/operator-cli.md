@@ -28,9 +28,14 @@ exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so t
 preview includes both the requested interval and actual bucket coverage. Active
 buckets are always excluded. A sealed bucket the appliance lists with no time range
 (8.18 does this after a restart) cannot be shown to touch the window, so it is never
-selected: the plan lists it by node and id as excluded, and the operator decides. The last fully sealed day is the day before the first active bucket's proven start
-(America/Chicago). If any active bucket lacks a proven start, it is unknown: that
-bucket could contain old-dated arrivals.
+selected: the plan lists it by node and id as excluded, and the operator decides.
+`last_fully_sealed_day` is the last day covered only by sealed buckets right now,
+not a guarantee: it is the day before the first active bucket's proven start
+(America/Chicago). A live 8.18 listing shows no dates for active buckets, so there it
+is the day before the oldest node's newest sealed bucket end; it is unknown when a
+node with an active bucket has no sealed bucket to go by. Active buckets with no
+dates can still receive older-dated data (backfill or late agents); the preview
+warns about that, and such days show as differences at verify.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to
@@ -46,9 +51,8 @@ transfer and that source retention can remove planned buckets before the run.
 The preview reports `source_ingest` as growth in the active bucket directories over
 a short sampled interval. Growth indicates the source is still receiving data; no
 growth is only an observation for that interval, not a 24-hour event count. Open
-buckets can contain late or backfilled data. If their dates are unknown, every
-requested day is partial and verification cannot establish a successful match.
-`partial_days` also includes days shared with unselected buckets.
+buckets can contain late or backfilled data. `partial_days` lists the requested days
+at or after the sealed frontier and days shared with unselected buckets.
 
 **No undo: migrated data stays on the destination. Snapshot the destination before
 continuing (snapshotting the source too is optional).** `--ack-backup` records the

@@ -17,6 +17,7 @@ from .models import (
     Verification,
     Window,
     digest,
+    sealed_frontier,
 )
 from .planning import build_plan, partition_diff
 from .ports import SystemClock, Transfer
@@ -44,10 +45,13 @@ def _day(ms: int) -> str:
 
 
 def partial_days(source, plan: dict) -> list[str]:
-    """Days that may contain events outside the selected sealed buckets.
-
-    An unbounded active bucket can contain late arrivals for any day.
-    """
+    """Requested days whose source events are not all in the selected buckets: days shared
+    with an unselected sealed bucket, and days at or after the active tail. The tail starts
+    at the first active bucket's proven start; when active bounds are unknown (the 8.18
+    listing shows none) it starts at the oldest node's newest sealed bucket end.
+    That is the sealed frontier. Counts on partial days are reported, never judged; a day
+    before the frontier that an open bucket secretly holds late arrivals for shows up as a
+    discrepancy, not a pass."""
     coverage = day_window(Window(**plan.get("window", plan["coverage"])))
     selected = {b["node"] + "/" + b["id"] for b in plan["selected"]}
     days = []
@@ -70,7 +74,11 @@ def partial_days(source, plan: dict) -> list[str]:
             if bucket.start < start + DAY and bucket.end >= start:
                 partial.add(start)
     if unproven_active:
-        partial.update(days)
+        sealed = sealed_frontier(source.buckets)
+        if sealed is None:
+            partial.update(days)
+        else:
+            partial.update(start for start in days if start >= sealed // DAY * DAY)
     return sorted(_day(start) for start in partial)
 
 
@@ -342,7 +350,8 @@ class Engine:
                 except MigrationError as error:
                     # 9.1.1: no qualified count route. The transfer can still run; the
                     # verification will report incomplete evidence.
-                    require(error.code == Code.UNSUPPORTED, error.code)
+                    if error.code != Code.UNSUPPORTED:
+                        raise
                     run["baseline"] = None
                 run["partial_days"] = partial_days(source, fresh)
             run["backup_ack"] = True
@@ -538,6 +547,7 @@ class Engine:
                     "outcome": Verification.INCOMPLETE.value,
                     "complete": False,
                     "reason": error.code.value,
+                    **({"detail": error.message} if hasattr(error, "message") else {}),
                 }
             result["at"] = self.clock.now()
             run["verification"] = result

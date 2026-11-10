@@ -134,10 +134,11 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.start()
     driver.poll_until_finished()
     driver.verify()
-    assert state.verification["outcome"] == "incomplete_verification"
-    assert state.verification["partial_days"]
+    assert state.verification["outcome"] == "verified_success"
+    assert state.verification["partial_days"] == ["2026-03-03"]
     verification = driver.pages["verification"]
-    assert "No requested day is fully covered" in verification.banner.text()
+    assert "fully covered day" in verification.banner.text()
+    assert "1 partial day" in verification.banner.text()
 
 
 def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
@@ -558,3 +559,14 @@ def test_window_shows_each_node_inventory_progress(driver):
     text = driver.window.progress_label.text()
     assert "source-1" in text and "source-2" in text
     assert len(text.splitlines()) == 2
+
+
+@pytest.mark.parametrize("job", ["verify:run-1", "discover", "plan"])
+def test_progress_lines_clear_when_any_progress_job_settles(driver, job):
+    driver.window.worker.progress.emit("Counting destination: 2026-03-01 to 2026-03-03")
+    driver.wait(50)
+    assert driver.window.progress_label.text()
+    driver.window.worker.pending.add(job)
+    driver.window._settle(job)
+    assert driver.window.progress_label.text() == ""
+    assert driver.window.progress_lines == {}

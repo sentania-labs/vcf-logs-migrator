@@ -101,8 +101,6 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
         "warnings": [
             BACKUP_ACK,
             "Active buckets are skipped; newest data is not copied.",
-            "Open buckets may contain late or backfilled data for earlier days; "
-            "verification marks days with unknown active bounds as partial.",
             "Whole buckets can extend beyond the requested date range.",
             "The source root password is sent to the destination for the transfer.",
             "Source retention can remove planned buckets before the run.",
@@ -114,6 +112,19 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
                 + ", ".join(f"{b.node}/{b.id}" for b in undated)
             ]
             if undated
+            else []
+        )
+        + (
+            [
+                "Active buckets carry no dates on this appliance and may still receive "
+                "older-dated data (backfill or late agents); the last day covered only by "
+                "sealed buckets is not a guarantee, and days those buckets hold will show "
+                "as partial at verify."
+            ]
+            if any(
+                b.status == "active" and not (b.bounds_proven and b.start is not None)
+                for b in source.buckets
+            )
             else []
         )
         + (

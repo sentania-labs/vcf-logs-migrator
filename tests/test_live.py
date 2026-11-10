@@ -590,16 +590,19 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
         Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
         Policy(poll_seconds=0),
     )
-    # An unbounded active bucket may contain backfilled data for any requested day.
-    assert "2026-03-01" in run["plan"]["partial_days"]
+    # The open bucket has no bounds, so the sealed frontier (newest sealed end, Mar 3) starts
+    # the partial tail; Mar 1 and Mar 2 are fully covered days.
+    assert run["plan"]["partial_days"][0] == "2026-03-03"
+    assert "2026-03-02" not in run["plan"]["partial_days"]
     started = engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert started["task"]["status"] == "running"
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    # Unbounded active buckets make the difference partial rather than decisive.
-    assert result["outcome"] == "incomplete_verification"
-    assert result["partial_differences"]
-    assert all(d["partial"] for d in result["daily"])
+    # New ingest landed on Mar 1, a fully covered day; counts cannot attribute it, so the
+    # honest answer is a discrepancy on that day, never a pass.
+    assert result["outcome"] == "verified_discrepancy"
+    assert [d["difference"] for d in result["daily"]][:3] == [1, 0, 0]
+    assert [d["partial"] for d in result["daily"]][:3] == [False, False, True]
     assert result["buckets"]["covered"] and not result["buckets"]["not_received"]
     assert "not attributed" in result["method"]
 
@@ -623,15 +626,14 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    assert result["outcome"] == "incomplete_verification"
+    assert result["outcome"] == "verified_success" and "2026-03-03" in result["partial_days"]
     assert not result["partial_differences"]
-    # Nothing landed; the difference is visible, but cannot establish a full-day result.
+    # Nothing landed (the API said COMPLETED anyway): a discrepancy, never a pass.
     env.data["destination_events"] = [
         e for e in env.data["destination_events"] if e.get("cohort") == "baseline"
     ]
     result = engine.verify(run["id"])
-    assert result["outcome"] == "incomplete_verification"
-    assert result["partial_differences"]
+    assert result["outcome"] == "verified_discrepancy"
 
 
 def _live_rig(tmp_path, data_changes=None):
@@ -1190,9 +1192,9 @@ def test_the_sealed_frontier_names_the_last_fully_sealed_day_when_active_bounds_
 
     sealed = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + DAY // 2, None, True, True)
     active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
-    assert last_sealed_day((sealed, active)) is None
+    assert last_sealed_day((sealed, active)) == "1970-01-01"
     early = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + 3 * 3600 * 1000, None, True, True)
-    assert last_sealed_day((early, active)) is None
+    assert last_sealed_day((early, active)) == "1969-12-31"
     assert last_sealed_day((active,)) is None
     assert last_sealed_day((sealed,)) is None
 
@@ -1210,8 +1212,8 @@ def test_the_sealed_frontier_is_the_oldest_node_when_a_source_has_several_nodes(
     fresh = sealed(A, "a", 6 * DAY + 3600 * 1000)
     stale = sealed(B, "b", 3 * DAY + 12 * 3600 * 1000)
     buckets = (fresh, stale, active(C, "a"), active(D4, "b"))
-    # Sealed bucket ends do not bound old-dated events in active buckets.
-    assert last_sealed_day(buckets) is None
+    # Node b's open bucket began on day 4 (Chicago day 3), so day 2 is the last sealed day.
+    assert last_sealed_day(buckets) == "1970-01-03"
     nodes = (Node("a", 10, 1, 9), Node("b", 10, 1, 9))
     cluster = Cluster("c", "8.18.7", nodes, (), (), buckets, "i")
     plan = {
@@ -1219,7 +1221,7 @@ def test_the_sealed_frontier_is_the_oldest_node_when_a_source_has_several_nodes(
         "selected": [{"node": "a", "id": A}, {"node": "b", "id": B}],
         "last_fully_sealed_day": None,
     }
-    assert len(partial_days(cluster, plan)) == 7
+    assert partial_days(cluster, plan) == ["1970-01-04", "1970-01-05", "1970-01-06", "1970-01-07"]
     # A node with an open bucket and nothing sealed cannot be bounded: everything is partial.
     unbounded = Cluster("c", "8.18.7", nodes, (), (), (fresh, active(C, "a"), active(D4, "b")), "i")
     assert last_sealed_day(unbounded.buckets) is None
@@ -1245,13 +1247,11 @@ def test_partial_days_and_day_window_helpers():
     assert partial_days(cluster, plan) == ["1970-01-02"]
     assert day_window(Window(5, DAY + 6)) == Window(0, 2 * DAY)
     active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
-    # Active bounds are unknown, so neither day can be judged fully covered.
+    # Active bounds unknown: the tail starts at the sealed frontier (the selected bucket's
+    # end, day 2), so day 1 stays fully covered.
     cluster = Cluster("c", "8.18.7", (Node("n", 10, 1, 9),), (), (), (selected, active), "i")
-    assert partial_days(cluster, plan) == ["1970-01-01", "1970-01-02"]
-    assert partial_days(cluster, {**plan, "last_fully_sealed_day": "1970-01-01"}) == [
-        "1970-01-01",
-        "1970-01-02",
-    ]
+    assert partial_days(cluster, plan) == ["1970-01-02"]
+    assert partial_days(cluster, {**plan, "last_fully_sealed_day": "1970-01-01"}) == ["1970-01-02"]
     # No sealed bucket at all to bound the tail: every day is partial.
     cluster = Cluster("c", "8.18.7", (Node("n", 10, 1, 9),), (), (), (active,), "i")
     assert partial_days(cluster, {**plan, "selected": []}) == ["1970-01-01", "1970-01-02"]
@@ -1617,3 +1617,92 @@ def test_node_inventories_run_in_parallel_and_are_reused(rigged):
         "src-2.lab",
     ]
     assert len(messages) == 2 and all("sizing" in message for message in messages)
+
+
+def test_plan_warns_that_undated_open_buckets_may_hold_backfill_without_dropping_the_frontier(
+    tmp_path,
+):
+    from conftest import FIXTURES
+
+    from logs_migrate.models import Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    _, engine = _live_rig(tmp_path)
+    plan = engine.plan(window, Policy(poll_seconds=0))["plan"]
+    (warning,) = [w for w in plan["warnings"] if "backfill" in w]
+    assert "older-dated data" in warning and "not a guarantee" in warning
+    assert plan["last_fully_sealed_day"] == "2026-03-01"
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    active = data["source"]["buckets"][3]
+    active.update(start=parse_time("2026-03-10T00:00:00Z"), end=None, bounds_proven=True)
+    _, engine = _live_rig(tmp_path / "dated", {"source": data["source"]})
+    dated = engine.plan(window, Policy(poll_seconds=0))["plan"]
+    assert not [w for w in dated["warnings"] if "backfill" in w]
+
+
+def test_backfilled_open_bucket_data_before_the_frontier_is_a_discrepancy_not_a_pass(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env, engine = _live_rig(tmp_path)
+    env.data["source_events"].append(
+        {
+            "id": "backfill-1",
+            "time": parse_time("2026-03-01T12:00:00Z"),
+            "bucket": "src-1/00000000-0000-0000-0000-000000000001",
+            "fields": {},
+        }
+    )
+    run = engine.plan(window, Policy(poll_seconds=0))
+    assert "2026-03-01" not in run["plan"]["partial_days"]
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    env.data["destination_events"] = [
+        e for e in env.data["destination_events"] if e["id"] != "backfill-1"
+    ]
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+
+
+def test_baseline_count_timeout_keeps_the_scope_and_interval_in_the_error(tmp_path):
+    from logs_migrate.errors import QueryTimeout
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(window, Policy(poll_seconds=0))
+    original = env.count
+
+    def count(scope, requested, keys):
+        if scope == "baseline":
+            raise QueryTimeout("destination count query from 2026-03-01 timed out")
+        return original(scope, requested, keys)
+
+    env.count = count
+    with pytest.raises(QueryTimeout) as failure:
+        engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    assert "destination count query from 2026-03-01 timed out" in failure.value.message
+
+
+def test_verify_keeps_the_timeout_message_for_the_operator(tmp_path):
+    from logs_migrate.errors import QueryTimeout
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-03T00:00:00Z"))
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    original = env.count
+
+    def count(scope, requested, keys):
+        if scope == "destination":
+            raise QueryTimeout("destination count query from 2026-03-01 timed out")
+        return original(scope, requested, keys)
+
+    env.count = count
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "incomplete_verification"
+    assert result["reason"] == Code.CONNECTION.value
+    assert result["detail"] == "destination count query from 2026-03-01 timed out"

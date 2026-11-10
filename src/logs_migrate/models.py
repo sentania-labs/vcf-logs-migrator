@@ -266,15 +266,33 @@ class Policy:
         require(2 <= self.attempts <= 10000 and self.poll_seconds >= 0, Code.INVALID_INPUT)
 
 
+def sealed_frontier(buckets: tuple[Bucket, ...]) -> int | None:
+    """Where unproven open buckets may begin: the oldest per-node newest sealed end, else None."""
+    newest: dict[str, int] = {}
+    for b in buckets:
+        if b.status != "active" and b.end is not None:
+            newest[b.node] = max(newest.get(b.node, 0), b.end)
+    ends = []
+    for node in {b.node for b in buckets if b.status == "active"}:
+        if node not in newest:
+            return None
+        ends.append(newest[node])
+    return min(ends) if ends else None
+
+
 def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") -> str | None:
-    """The day before the first active data, if all active starts are known."""
+    """The day before the first active data: its proven start, else the sealed frontier."""
     from datetime import timedelta
 
     active = [b for b in buckets if b.status == "active"]
     if not active:
         return None
     if any(not b.bounds_proven or b.start is None for b in active):
-        return None
-    first_active = min(b.start for b in active)
-    day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
+        frontier = sealed_frontier(buckets)
+        if frontier is None:
+            return None
+        day = datetime.fromtimestamp(frontier / 1000, ZoneInfo(zone)).date()
+    else:
+        first_active = min(b.start for b in active)
+        day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
     return (day - timedelta(days=1)).isoformat()
