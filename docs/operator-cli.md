@@ -28,11 +28,9 @@ exclusive; there is no 90-day limit. Selection copies whole sealed buckets, so t
 preview includes both the requested interval and actual bucket coverage. Active
 buckets are always excluded. A sealed bucket the appliance lists with no time range
 (8.18 does this after a restart) cannot be shown to touch the window, so it is never
-selected: the plan lists it by node and id as excluded, and the operator decides. The last fully sealed day is the day
-before the first active bucket's proven start (America/Chicago). A live 8.18 listing
-shows no dates for active buckets, so there it is the day before the oldest node's
-newest sealed bucket end (America/Chicago); it is unknown when a node with an active bucket
-has no sealed bucket to go by.
+selected: the plan lists it by node and id as excluded, and the operator decides. The last fully sealed day is the day before the first active bucket's proven start
+(America/Chicago). If any active bucket lacks a proven start, it is unknown: that
+bucket could contain old-dated arrivals.
 
 The preview also shows storage: the selected buckets' total bytes beside each
 destination node's own available repository budget. The API assigns buckets to
@@ -45,11 +43,12 @@ verification shows what landed. The
 preview warns that the source root password is sent to the destination for the
 transfer and that source retention can remove planned buckets before the run.
 
-The preview also reports `source_ingest`: how many events the source counted in the
-last 24 hours. A non-zero figure is a warning that cutover has not happened; open
-buckets keep growing and a later run of the same dates collects the tail once they
-seal. `partial_days` lists the covered days that share events with open or
-unselected buckets; verification marks them and does not judge the run on them.
+The preview reports `source_ingest` as growth in the active bucket directories over
+a short sampled interval. Growth indicates the source is still receiving data; no
+growth is only an observation for that interval, not a 24-hour event count. Open
+buckets can contain late or backfilled data. If their dates are unknown, every
+requested day is partial and verification cannot establish a successful match.
+`partial_days` also includes days shared with unselected buckets.
 
 **No undo: migrated data stays on the destination. Snapshot the destination before
 continuing (snapshotting the source too is optional).** `--ack-backup` records the
@@ -246,7 +245,7 @@ even while its status still shows nothing.
   the counts are evidence, not a success for the requested dates. A count
   difference stays `verified_discrepancy` (exit 5).
   The simulator supplies per-event attribution. Live counts cannot: against real
-  appliances verification is per run over the covered days (source per-day counts
+  appliances verification is per run over the UTC days touched by the requested window (source per-day counts
   against destination counts minus the baseline recorded at start), new ingest is
   not attributed, and days shared with open or unselected buckets are reported as
   partial without deciding the outcome.

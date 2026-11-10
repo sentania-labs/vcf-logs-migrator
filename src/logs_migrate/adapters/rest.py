@@ -20,7 +20,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
-from ..errors import Accepted, Code, MigrationError, Rejection, require, safe_boundary
+from ..errors import Accepted, Code, MigrationError, QueryTimeout, Rejection, require, safe_boundary
 from ..models import DAY, Window
 from ..security import Secret
 
@@ -202,6 +202,8 @@ class HTTPS:
                     )
                 except Exception:
                     log.exception("Could not read REST error body")
+            if response.status in {408, 504} and path.startswith("/api/v1/aggregated-events/"):
+                raise QueryTimeout()
             if response.status == 440:
                 raise SessionExpired()
             if response.status in {401, 403}:
@@ -222,10 +224,18 @@ class HTTPS:
                 return parsed
             except MigrationError as error:
                 raise Accepted(error.code) from None
+            except TimeoutError:
+                if path.startswith("/api/v1/aggregated-events/"):
+                    raise QueryTimeout() from None
+                raise Accepted(Code.SCHEMA) from None
             except Exception:
                 raise Accepted(Code.SCHEMA) from None
         except MigrationError:
             raise
+        except TimeoutError:
+            if path.startswith("/api/v1/aggregated-events/"):
+                raise QueryTimeout() from None
+            raise MigrationError(Code.CONNECTION) from None
         except Exception:
             log.exception("REST request failed")
             raise MigrationError(Code.CONNECTION) from None
@@ -401,7 +411,15 @@ class Logs90:
                 f"?bin-width={DAY}&timeout=580000"
             )
             # The server is asked for up to 580 s; the socket waits a little longer.
-            response = self.call("GET", path, timeout=COUNT_TIMEOUT_SECONDS)
+            callback = getattr(self, "count_progress", None)
+            if callback:
+                callback(cursor, end)
+            try:
+                response = self.call("GET", path, timeout=COUNT_TIMEOUT_SECONDS)
+            except QueryTimeout:
+                start_day = datetime.fromtimestamp(cursor / 1000, UTC).isoformat()
+                end_day = datetime.fromtimestamp(end / 1000, UTC).isoformat()
+                raise QueryTimeout(f"count query from {start_day} to {end_day} timed out") from None
             require(isinstance(response, dict), Code.SCHEMA)
             if response.get("complete") is not True:
                 complete = False

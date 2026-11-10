@@ -111,7 +111,7 @@ PASS  Version compatibility                              8.18.7 → 9.0.2.0200
 PASS  Partition comparison                               0 missing, 0 differ
 PASS  Source daily counts                                5,414,021 events on 30 days (2025-10-08 to 2025-11-06) · complete
 PASS  Destination daily counts                           0 events on 0 days (...) · complete
-PASS  Source ingest (cutover check)                      0 events in the last 24 hours · source looks quiet
+PASS  Source ingest (cutover check)                      no active bucket growth in 5 seconds
 PASS  Plan preview (no request sent)                     88 buckets, 4.21 GB, covers 2025-01-01 to 2025-06-22 · 2 active skipped · last sealed day 2025-06-21 · destination budget unknown
 
 Summary: 17 passed, 0 failed, 0 skipped. All checks passed.
@@ -185,7 +185,7 @@ logs-migrate --journal ~/migration/lab.sqlite report RUN_ID
 ```
 
 `status` shows the API task, per-node entries, bytes and the buckets it reports.
-`verify` waits for a finished task, counts the destination over the covered days
+`verify` waits for a finished task, counts the destination over the requested UTC days
 again (two agreeing complete observations), subtracts the baseline and compares
 with the source per day. Exit 0 is `verified_success`: every fully covered day
 matches. Partial days (shared with an unselected bucket, or at or after the sealed

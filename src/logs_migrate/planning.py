@@ -101,6 +101,8 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
         "warnings": [
             BACKUP_ACK,
             "Active buckets are skipped; newest data is not copied.",
+            "Open buckets may contain late or backfilled data for earlier days; "
+            "verification marks days with unknown active bounds as partial.",
             "Whole buckets can extend beyond the requested date range.",
             "The source root password is sent to the destination for the transfer.",
             "Source retention can remove planned buckets before the run.",

@@ -10,7 +10,6 @@ from uuid import UUID
 
 from . import __version__
 from .adapters.simulated import SimulatedClock, SimulatedEnvironment
-from .adapters.ssh_errors import SSHFailure
 from .engine import Engine
 from .errors import Code, MigrationError, require
 from .journal import Journal
@@ -247,6 +246,7 @@ def open_live(args):
     )
     trust = TrustStore()
     env = LiveEnvironment(connection, credentials, trust)
+    env.on_progress = lambda message: print(message, file=sys.stderr, flush=True)
     for _ in range(4):
         try:
             return env.open()
@@ -419,7 +419,7 @@ def main(argv=None):
                 {
                     "error": error.code.value,
                     "run_id": getattr(args, "run_id", None),
-                    **({"message": error.message} if isinstance(error, SSHFailure) else {}),
+                    **({"message": error.message} if hasattr(error, "message") else {}),
                 }
             ),
             file=sys.stderr,

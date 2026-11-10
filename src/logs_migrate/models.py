@@ -281,18 +281,14 @@ def sealed_frontier(buckets: tuple[Bucket, ...]) -> int | None:
 
 
 def last_sealed_day(buckets: tuple[Bucket, ...], zone: str = "America/Chicago") -> str | None:
-    """The day before the first active data: its proven start, else the sealed frontier."""
+    """The day before the first active data, if all active starts are known."""
     from datetime import timedelta
 
     active = [b for b in buckets if b.status == "active"]
     if not active:
         return None
     if any(not b.bounds_proven or b.start is None for b in active):
-        frontier = sealed_frontier(buckets)
-        if frontier is None:
-            return None
-        day = datetime.fromtimestamp(frontier / 1000, ZoneInfo(zone)).date()
-    else:
-        first_active = min(b.start for b in active)
-        day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
+        return None
+    first_active = min(b.start for b in active)
+    day = datetime.fromtimestamp(first_active / 1000, ZoneInfo(zone)).date()
     return (day - timedelta(days=1)).isoformat()

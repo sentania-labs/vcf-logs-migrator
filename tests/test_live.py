@@ -315,6 +315,9 @@ class FakeSSH:
         env = self
 
         class Client:
+            def active_usage(self, ids):
+                return env.replies[(host, ReadOperation.USAGE)]
+
             def read(self, operation):
                 env.reads.append((host, operation))
                 try:
@@ -535,6 +538,7 @@ def _run_selftest(rigged, window):
         return destination_request(method, path, body, headers)
 
     destination.request = destination_counts
+    env.source_growth = lambda: {"bytes": 0, "nodes": [], "window_seconds": 5}
     return env, destination, selftest.run(env, window)
 
 
@@ -575,18 +579,16 @@ def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
         Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
         Policy(poll_seconds=0),
     )
-    # The open bucket has no bounds, so the sealed frontier (newest sealed end, Mar 3) starts
-    # the partial tail; Mar 1 and Mar 2 are fully covered days.
-    assert run["plan"]["partial_days"] == ["2026-03-03"]
+    # An unbounded active bucket may contain backfilled data for any requested day.
+    assert "2026-03-01" in run["plan"]["partial_days"]
     started = engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert started["task"]["status"] == "running"
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    # New ingest landed on Mar 1, a fully covered day; counts cannot attribute it, so the
-    # honest answer is a discrepancy on that day, never a pass.
-    assert result["outcome"] == "verified_discrepancy"
-    assert [d["difference"] for d in result["daily"]] == [1, 0, 0]
-    assert [d["partial"] for d in result["daily"]] == [False, False, True]
+    # Unbounded active buckets make the difference partial rather than decisive.
+    assert result["outcome"] == "incomplete_verification"
+    assert result["partial_differences"]
+    assert all(d["partial"] for d in result["daily"])
     assert result["buckets"]["covered"] and not result["buckets"]["not_received"]
     assert "not attributed" in result["method"]
 
@@ -610,14 +612,15 @@ def test_engine_live_path_passes_only_on_fully_covered_days_that_match(tmp_path)
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     assert engine.status()["status"] == "completed"
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_success" and result["partial_days"] == ["2026-03-03"]
+    assert result["outcome"] == "incomplete_verification"
     assert not result["partial_differences"]
-    # Nothing landed (the API said COMPLETED anyway): a discrepancy, never a pass.
+    # Nothing landed; the difference is visible, but cannot establish a full-day result.
     env.data["destination_events"] = [
         e for e in env.data["destination_events"] if e.get("cohort") == "baseline"
     ]
     result = engine.verify(run["id"])
-    assert result["outcome"] == "verified_discrepancy"
+    assert result["outcome"] == "incomplete_verification"
+    assert result["partial_differences"]
 
 
 def _live_rig(tmp_path, data_changes=None):
@@ -1176,9 +1179,9 @@ def test_the_sealed_frontier_names_the_last_fully_sealed_day_when_active_bounds_
 
     sealed = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + DAY // 2, None, True, True)
     active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
-    assert last_sealed_day((sealed, active)) == "1970-01-01"
+    assert last_sealed_day((sealed, active)) is None
     early = Bucket(A, "n", "", "archived", 1, 1, DAY, DAY + 3 * 3600 * 1000, None, True, True)
-    assert last_sealed_day((early, active)) == "1969-12-31"
+    assert last_sealed_day((early, active)) is None
     assert last_sealed_day((active,)) is None
     assert last_sealed_day((sealed,)) is None
 
@@ -1196,8 +1199,8 @@ def test_the_sealed_frontier_is_the_oldest_node_when_a_source_has_several_nodes(
     fresh = sealed(A, "a", 6 * DAY + 3600 * 1000)
     stale = sealed(B, "b", 3 * DAY + 12 * 3600 * 1000)
     buckets = (fresh, stale, active(C, "a"), active(D4, "b"))
-    # Node b's open bucket began on day 4 (Chicago day 3), so day 2 is the last sealed day.
-    assert last_sealed_day(buckets) == "1970-01-03"
+    # Sealed bucket ends do not bound old-dated events in active buckets.
+    assert last_sealed_day(buckets) is None
     nodes = (Node("a", 10, 1, 9), Node("b", 10, 1, 9))
     cluster = Cluster("c", "8.18.7", nodes, (), (), buckets, "i")
     plan = {
@@ -1205,7 +1208,7 @@ def test_the_sealed_frontier_is_the_oldest_node_when_a_source_has_several_nodes(
         "selected": [{"node": "a", "id": A}, {"node": "b", "id": B}],
         "last_fully_sealed_day": None,
     }
-    assert partial_days(cluster, plan) == ["1970-01-04", "1970-01-05", "1970-01-06", "1970-01-07"]
+    assert len(partial_days(cluster, plan)) == 7
     # A node with an open bucket and nothing sealed cannot be bounded: everything is partial.
     unbounded = Cluster("c", "8.18.7", nodes, (), (), (fresh, active(C, "a"), active(D4, "b")), "i")
     assert last_sealed_day(unbounded.buckets) is None
@@ -1231,11 +1234,13 @@ def test_partial_days_and_day_window_helpers():
     assert partial_days(cluster, plan) == ["1970-01-02"]
     assert day_window(Window(5, DAY + 6)) == Window(0, 2 * DAY)
     active = Bucket(C, "n", "", "active", 0, 0, None, None, None, False, False)
-    # Active bounds unknown: the tail starts at the sealed frontier (the selected bucket's
-    # end, day 2), so day 1 stays fully covered.
+    # Active bounds are unknown, so neither day can be judged fully covered.
     cluster = Cluster("c", "8.18.7", (Node("n", 10, 1, 9),), (), (), (selected, active), "i")
-    assert partial_days(cluster, plan) == ["1970-01-02"]
-    assert partial_days(cluster, {**plan, "last_fully_sealed_day": "1970-01-01"}) == ["1970-01-02"]
+    assert partial_days(cluster, plan) == ["1970-01-01", "1970-01-02"]
+    assert partial_days(cluster, {**plan, "last_fully_sealed_day": "1970-01-01"}) == [
+        "1970-01-01",
+        "1970-01-02",
+    ]
     # No sealed bucket at all to bound the tail: every day is partial.
     cluster = Cluster("c", "8.18.7", (Node("n", 10, 1, 9),), (), (), (active,), "i")
     assert partial_days(cluster, {**plan, "selected": []}) == ["1970-01-01", "1970-01-02"]
@@ -1442,3 +1447,134 @@ def test_recorded_90_task_list_selects_this_task_and_falls_back_only_for_unique_
     response["tasks"].append(dict(first, taskId="duplicate"))
     assert env.transfer_for(window=window, attempted_at_ms=first["taskCreateTime"]).status == "idle"
     assert env.transfer_for("missing").status == "idle"
+
+
+def test_source_growth_compares_active_directory_sizes_only(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab"]
+    path = "/storage/core/loginsight/cidata/store/"
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"5000 {path}{A}\n1000 {path}{C}\n"
+    env.node_inventory("src-1.lab")
+    env.clock.sleep = lambda seconds: None
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"99999 {path}{A}\n1300 {path}{C}\n"
+    result = env.source_growth()
+    assert result["bytes"] == 300 and result["nodes"] == ["src-1.lab"]
+    assert result["window_seconds"] >= 1
+
+
+def test_source_growth_refuses_bucket_rollover(rigged):
+    env, source, destination, ssh = trusted(rigged)
+    env.members = ["src-1.lab"]
+    path = "/storage/core/loginsight/cidata/store/"
+    ssh.replies[("src-1.lab", ReadOperation.USAGE)] = f"1000 {path}{C}\n"
+    env.node_inventory("src-1.lab")
+    env.clock.sleep = lambda seconds: None
+    ssh.replies[("src-1.lab", ReadOperation.INVENTORY)] = LISTING.replace(
+        "status=active", "status=archived"
+    )
+    with pytest.raises(MigrationError, match=Code.INCOMPLETE):
+        env.source_growth()
+
+
+def test_live_copy_counts_requested_days_not_full_bucket_coverage(tmp_path):
+    from conftest import FIXTURES
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    source = data["source"]
+    # The masked r1 request was Mar 1-3, 2024. Extend one selected bucket to
+    # reproduce the roughly 25-month coverage in the later large-source run.
+    source["buckets"][0]["start"] = parse_time("2023-03-01T00:00:00Z")
+    source["buckets"][0]["end"] = parse_time("2025-04-01T00:00:00Z")
+    source["buckets"][1]["start"] = parse_time("2024-03-01T00:00:11.738Z")
+    source["buckets"][1]["end"] = parse_time("2024-03-02T00:00:00Z")
+    env, engine = _live_rig(tmp_path, {"source": source})
+    seen = []
+    original = env.count
+
+    def count(scope, window, keys):
+        seen.append((scope, window))
+        return original(scope, window, keys)
+
+    env.count = count
+    requested = Window(parse_time("2024-03-01T00:00:00Z"), parse_time("2024-03-03T00:00:00Z"))
+    run = engine.plan(requested, Policy(poll_seconds=0))
+    assert run["plan"]["coverage"]["start"] < requested.start
+    assert run["plan"]["coverage"]["end"] > requested.end
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    days = requested
+    assert len(seen) == 4 and all(window == days for _, window in seen)
+    engine.status()
+    engine.verify(run["id"])
+    assert all(window == days for _, window in seen)
+
+
+def test_count_progress_reports_every_query(rigged, capsys):
+    import sys
+
+    env, source, _, _ = trusted(rigged)
+    window = Window(0, 2 * DAY)
+    path = (
+        f"/api/v1/aggregated-events/timestamp/%3E%3D0/timestamp/%3C{2 * DAY}"
+        "?bin-width=86400000&timeout=580000"
+    )
+    source.records += [
+        session(),
+        record("GET", path, {"complete": True, "bins": []}),
+        record("GET", path, {"complete": True, "bins": []}),
+    ]
+    env.on_progress = lambda message: print(message, file=sys.stderr)
+    env._counts(env.source_client, "source", window)
+    env._counts(env.source_client, "source", window)
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 2
+    assert all("Counting source: 1970-01-01 to 1970-01-03" in line for line in lines)
+
+
+def test_count_timeout_identifies_scope_and_query_interval(rigged):
+    from logs_migrate.errors import QueryTimeout
+
+    env, source, _, _ = trusted(rigged)
+
+    def request(*args, **kwargs):
+        raise QueryTimeout()
+
+    source.request = request
+    with pytest.raises(QueryTimeout) as failure:
+        env._counts(env.source_client, "source", Window(0, DAY))
+    assert "source count query from 1970-01-01" in failure.value.message
+    assert "timed out" in failure.value.message
+
+
+def test_node_inventories_run_in_parallel_and_are_reused(rigged):
+    import threading
+
+    env, source, _, ssh = trusted(rigged)
+    barrier = threading.Barrier(2, timeout=2)
+    original = env.node_inventory
+    first = set()
+
+    def inventory(host, *args):
+        if host not in first:
+            first.add(host)
+            barrier.wait()
+        return original(host, *args)
+
+    env.node_inventory = inventory
+    source.records += [
+        session(),
+        record("GET", "/api/v1/version", {"version": "8.18.7"}),
+        record("GET", "/api/v1/partitioning", {"partitions": []}),
+        record("GET", "/api/v1/version", {"version": "8.18.7"}),
+        record("GET", "/api/v1/partitioning", {"partitions": []}),
+    ]
+    messages = []
+    env.on_progress = messages.append
+    env.source_cluster()
+    env.source_cluster()
+    assert sorted(host for host, op in ssh.reads if op == ReadOperation.USAGE) == [
+        "src-1.lab",
+        "src-2.lab",
+    ]
+    assert len(messages) == 2 and all("sizing" in message for message in messages)

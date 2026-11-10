@@ -28,6 +28,7 @@ class Session:
 
     def __init__(self):
         self.env = None
+        self.on_progress = None
         self.engine = None
         self.journal = None
         self.credentials = None
@@ -98,6 +99,7 @@ class Session:
         )
         self.store = self.store or TrustStore()
         env = LiveEnvironment(connection, self.credentials, self.store)
+        env.on_progress = self.on_progress
         try:
             return env.open()
         except TrustRequired as pending:

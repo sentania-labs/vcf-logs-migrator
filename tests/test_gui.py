@@ -129,16 +129,15 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.plan()
     plan_page = driver.pages["plan"]
     checks = dict(plan_page.checks.rows())
-    assert checks["Source ingest"].endswith("source quiet")
+    assert checks["Source ingest"] == "Unavailable"
     driver.acknowledge()
     driver.start()
     driver.poll_until_finished()
     driver.verify()
-    assert state.verification["outcome"] == "verified_success"
-    assert state.verification["partial_days"] == ["2026-03-03"]
+    assert state.verification["outcome"] == "incomplete_verification"
+    assert state.verification["partial_days"]
     verification = driver.pages["verification"]
-    assert "fully covered day" in verification.banner.text()
-    assert "1 partial day" in verification.banner.text()
+    assert "No requested day is fully covered" in verification.banner.text()
 
 
 def test_live_connect_refused_trust_sends_nothing(driver, monkeypatch):
@@ -549,3 +548,13 @@ def test_ssh_failure_survives_worker_and_renders_in_connections(driver, monkeypa
     assert error.message in shown
     assert "No migration request was submitted." in shown
     assert "API did not respond" not in shown
+
+
+def test_window_shows_each_node_inventory_progress(driver):
+    driver.show("connections")
+    driver.window.worker.progress.emit("node 1/2 (source-1): sizing 2,100 buckets")
+    driver.window.worker.progress.emit("node 2/2 (source-2): sizing 2,088 buckets")
+    driver.wait(50)
+    text = driver.window.progress_label.text()
+    assert "source-1" in text and "source-2" in text
+    assert len(text.splitlines()) == 2
