@@ -6,6 +6,8 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from logs_migrate import __version__
+
 from .settings import Settings
 from .theme import apply_theme
 from .window import MainWindow
@@ -16,6 +18,7 @@ def create(
 ) -> tuple[QApplication, MainWindow]:
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv[:1])
     app.setApplicationName("VCF Logs Migrator")
+    app.setApplicationVersion(__version__)
     settings = Settings.load()
     if fixture:
         settings.fixture_path = str(fixture)
