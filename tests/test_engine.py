@@ -637,72 +637,62 @@ def test_plan_shows_space_and_copy_refuses_when_a_node_cannot_hold_the_selection
     assert not env.data["trace"]
 
 
-def test_status_uses_rate_between_samples(rig):
+def test_status_uses_rate_over_a_window_not_between_two_polls(rig):
     engine, env, _ = rig
     run = planned(engine)
     execute(engine, run)
     destination = run["plan"]["destination"]["id"]
-    samples = iter(
-        [
-            Transfer(
-                "sim-1",
-                "running",
-                bytes_transferred=100,
-                destination=destination,
-                elapsed_seconds=10,
-                total_bytes=1000,
-            ),
-            Transfer(
-                "sim-1",
-                "running",
-                bytes_transferred=400,
-                destination=destination,
-                elapsed_seconds=20,
-                total_bytes=1000,
-            ),
-        ]
-    )
-    env.transfer = lambda: next(samples)
-    engine.status(run["id"])
-    progress = engine.status(run["id"])
-    assert progress["rate_bytes_per_second"] == 30
-    assert progress["eta_seconds"] == 20
+    polls = [(0, 0), (30, 0), (60, 600), (65, 600), (70, 600)]
+    seen = []
+    for elapsed, copied in polls:
+        env.transfer = lambda e=elapsed, c=copied: Transfer(
+            "sim-1",
+            "running",
+            bytes_transferred=c,
+            destination=destination,
+            elapsed_seconds=e,
+            total_bytes=1200,
+        )
+        seen.append(engine.status(run["id"]))
+    assert seen[2]["rate_bytes_per_second"] == 10
+    assert seen[2]["eta_seconds"] == 60
+    for later in seen[3:]:
+        assert later["rate_bytes_per_second"] > 0
+        assert later["eta_seconds"] is not None
 
 
-def test_node_rate_uses_later_pending_samples_when_initial_assignment_was_missed(rig):
+def test_node_rate_uses_a_window_of_pending_samples(rig):
     engine, env, _ = rig
     run = planned(engine)
     execute(engine, run)
     selected = run["plan"]["selected"]
     ids = [b["id"] for b in selected]
     destination = run["plan"]["destination"]["id"]
-    node = NodeTransfer(
-        "dst-1",
-        "running",
-        bytes_transferred=None,
-        total_buckets={"source": len(ids)},
-        scheduled_ids={"source": tuple(ids[1:])},
-        elapsed_seconds=10,
-    )
-    first = Transfer(
-        "sim-1",
-        "running",
-        bytes_transferred=None,
-        nodes=(node,),
-        destination=destination,
-        elapsed_seconds=10,
-    )
-    second = replace(
-        first,
-        elapsed_seconds=20,
-        nodes=(replace(node, elapsed_seconds=20, scheduled_ids={"source": tuple(ids[2:])}),),
-    )
-    samples = iter((first, second))
-    env.transfer = lambda: next(samples)
-    engine.status(run["id"])
-    progress = engine.status(run["id"])
-    assert progress["nodes"][0]["rate_bytes_per_second"] == selected[1]["size"] / 10
-    assert progress["nodes"][0]["eta_seconds"] == 10
+
+    def poll(elapsed, remaining):
+        node = NodeTransfer(
+            "dst-1",
+            "running",
+            bytes_transferred=None,
+            total_buckets={"source": len(ids)},
+            scheduled_ids={"source": tuple(remaining)},
+            elapsed_seconds=elapsed,
+        )
+        env.transfer = lambda: Transfer(
+            "sim-1",
+            "running",
+            bytes_transferred=None,
+            nodes=(node,),
+            destination=destination,
+            elapsed_seconds=elapsed,
+        )
+        return engine.status(run["id"])
+
+    poll(10, ids[1:])
+    short = poll(20, ids[2:])
+    assert short["nodes"][0].get("rate_bytes_per_second") != selected[1]["size"] / 10
+    progress = poll(70, ids[2:])
+    assert progress["nodes"][0]["rate_bytes_per_second"] == selected[1]["size"] / 60
 
 
 def test_observed_assignment_provides_progress_and_measured_preview(rig):

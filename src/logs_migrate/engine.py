@@ -27,6 +27,8 @@ from .ports import SystemClock, Transfer
 from .verification import combine, reconcile, stable_counts
 
 TERMINAL = {"idle", "completed", "cancelled", "failed"}
+TASK_REPORT = "task_report"
+RATE_WINDOW_SECONDS = 60
 EVERYTHING = Window(0, EVERYTHING_END)
 # A start whose outcome is uncertain (no HTTP answer) holds its window this long; after that,
 # an appliance history with no task covering the window is the evidence that nothing started.
@@ -234,8 +236,20 @@ class Engine:
                             row["run"],
                             sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
                         )
-                # No inventory and no explicit receipt list leaves an unresolved row.
-                # Treating the selection as received or absent would both be guesses.
+                elif task.status == "completed" or (
+                    task.nodes and all(node.scheduled_ids is not None for node in task.nodes)
+                ):
+                    skipped = _ids(
+                        {*task.skipped, *(k for node in task.nodes for k in node.skipped)}
+                    )
+                    arrived = _ids(row["keys"]) - pending - skipped
+                    self.journal.settle_transfer(
+                        row["run"],
+                        sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in arrived),
+                        TASK_REPORT,
+                    )
+                # A cancelled or failed task that lists no remaining buckets leaves the row
+                # open: treating the selection as received or absent would be a guess.
 
     def _settle(self, destination):
         task = self.env.transfer()
@@ -373,6 +387,18 @@ class Engine:
             plan = build_plan(filtered, destination, window)
         plan["already_received"] = [asdict(b) for b in selected if b.id in received]
         return plan
+
+    @staticmethod
+    def _baseline(series, elapsed, value):
+        """Record a poll and return the newest earlier sample at least a window old, if any."""
+        if series and elapsed < series[-1][0]:
+            series.clear()
+        if not series or elapsed > series[-1][0]:
+            series.append((elapsed, value))
+        while len(series) > 1 and series[1][0] <= elapsed - RATE_WINDOW_SECONDS:
+            series.pop(0)
+        first = series[0]
+        return first if elapsed - first[0] >= RATE_WINDOW_SECONDS else None
 
     def _estimate(self, plan):
         sizes = sum(b["size"] for b in plan["selected"])
@@ -996,6 +1022,24 @@ class Engine:
             self._record(task, destination)
             self._observe_assignment(run, task)
             result = self._progress(task, run)
+            settled = next(
+                (r for r in self.journal.transfers(destination) if r["run"] == run_id), row
+            )
+            if task.status in TERMINAL - {"idle"}:
+                if not settled["closed"]:
+                    result["settlement"] = "held"
+                    result["settlement_note"] = (
+                        "The task finished but reports no list of buckets still to do, and the "
+                        "destination's bucket store was not read, so what arrived cannot be "
+                        "told. The selection stays held; connect destination SSH and check "
+                        "status again."
+                    )
+                elif settled.get("basis") == TASK_REPORT:
+                    result["settlement"] = TASK_REPORT
+                    result["settlement_note"] = (
+                        "What arrived is taken from the destination's task report, not "
+                        "confirmed against the destination's bucket store (no destination SSH)."
+                    )
             elapsed = task.elapsed_seconds
             copied = result.get("bytes_transferred")
             sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}
@@ -1006,16 +1050,16 @@ class Engine:
                 ids = {item for group in node.scheduled_ids.values() for item in group}
                 if ids <= sizes.keys():
                     pending_now[node.node] = sorted(ids)
-            samples = self._samples.setdefault(run_id, {})
-            prior_pending = samples.get("pending")
+            samples = self._samples.setdefault(run_id, {"pending": [], "rate": []})
             if task.status == "running" and elapsed is not None and pending_now:
-                if prior_pending and elapsed > prior_pending["elapsed"]:
-                    interval = elapsed - prior_pending["elapsed"]
+                prior = self._baseline(samples["pending"], elapsed, pending_now)
+                if prior:
+                    interval = elapsed - prior[0]
                     for output in result["nodes"]:
                         name = output["node"]
-                        if name not in pending_now or name not in prior_pending["nodes"]:
+                        if name not in pending_now or name not in prior[1]:
                             continue
-                        before = set(prior_pending["nodes"][name])
+                        before = set(prior[1][name])
                         after = set(pending_now[name])
                         if not after <= before:
                             continue
@@ -1034,21 +1078,13 @@ class Engine:
                         )
                         if all(n.get("eta_seconds") is not None for n in active):
                             result["eta_seconds"] = max(n["eta_seconds"] for n in active)
-                if prior_pending is None or elapsed > prior_pending["elapsed"]:
-                    samples["pending"] = {"elapsed": elapsed, "nodes": pending_now}
-            previous = samples.get("rate")
             if task.status == "running" and elapsed is not None and copied is not None:
-                if previous and elapsed > previous["elapsed"] and copied >= previous["bytes"]:
-                    current = (copied - previous["bytes"]) / (elapsed - previous["elapsed"])
+                prior = self._baseline(samples["rate"], elapsed, copied)
+                if prior and copied > prior[1]:
+                    current = (copied - prior[1]) / (elapsed - prior[0])
                     result["rate_bytes_per_second"] = current
                     if result.get("total_bytes") is not None:
-                        result["eta_seconds"] = (
-                            max(0, result["total_bytes"] - copied) / current
-                            if current > 0
-                            else None
-                        )
-                if previous is None or elapsed > previous["elapsed"]:
-                    samples["rate"] = {"elapsed": elapsed, "bytes": copied}
+                        result["eta_seconds"] = max(0, result["total_bytes"] - copied) / current
             measured = None
             if task.elapsed_seconds is not None and task.elapsed_seconds >= 180:
                 if result.get("bytes_transferred"):
@@ -1337,6 +1373,12 @@ class Engine:
             "not_received": sorted({key for r in related for key in r["keys"]} - received),
         }
         result["covered_days"] = [day for day, _ in source.daily]
+        if any(r.get("basis") == TASK_REPORT for r in related):
+            result["receipt_basis"] = TASK_REPORT
+            result["receipt_note"] = (
+                "What arrived is taken from the destination's task report, not confirmed "
+                "against the destination's bucket store (no destination SSH)."
+            )
         if result["buckets"]["not_received"]:
             if result["outcome"] == Verification.SUCCESS.value:
                 result["outcome"] = Verification.INCOMPLETE.value

@@ -847,9 +847,59 @@ def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_l
     env.transfer = lambda: Transfer("sim-1", "completed", (), (first,), destination=destination)
     engine.status()
     (row,) = engine.journal.transfers(destination)
-    assert not row["closed"] and row["received"] == []
+    assert row["closed"] and first not in {k.rsplit("/", 1)[-1] for k in row["received"]}
+    assert len(row["received"]) == 2
     result = engine.verify(run["id"])
-    assert result["outcome"] != "verified_success"
+    assert result["buckets"]["not_received"] == ["src-1/" + first]
+    assert result["receipt_basis"] == "task_report"
+    assert (
+        result["outcome"] != "verified_success"
+        and result["reason"] == "selected_buckets_not_received"
+    )
+
+
+@pytest.mark.parametrize("state", ["cancelled", "failed"])
+def test_live_ledger_without_inventory_settles_a_stopped_task_from_its_remaining_list(
+    tmp_path, state
+):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import NodeTransfer, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination = run["plan"]["destination"]["id"]
+    ids = [b["id"] for b in run["plan"]["selected"]]
+    left = ids[-1]
+    node = NodeTransfer(state, state, scheduled_ids={"src-1": (left,)})
+    env.transfer = lambda: Transfer("sim-1", state, destination=destination, nodes=(node,))
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert row["closed"] and {k.rsplit("/", 1)[-1] for k in row["received"]} == set(ids[:-1])
+    assert status["settlement"] == "task_report"
+    assert "not confirmed" in status["settlement_note"]
+
+
+@pytest.mark.parametrize("state", ["cancelled", "failed"])
+def test_live_ledger_without_inventory_holds_a_stopped_task_with_no_remaining_list(tmp_path, state):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination = run["plan"]["destination"]["id"]
+    env.transfer = lambda: Transfer("sim-1", state, destination=destination)
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"] and status["settlement"] == "held"
+    assert "stays held" in status["settlement_note"]
 
 
 def test_live_ledger_stays_open_while_status_still_shows_the_previous_task(tmp_path):
@@ -1077,11 +1127,11 @@ def test_an_uncertain_start_whose_task_appears_in_history_settles_instead_of_rel
     with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
         engine.plan(MARCH, Policy(poll_seconds=0))
     engine.clock.sleep(900)
-    # The task is known, but without inventory receipt remains unproven and held.
+    # Finished on our window: the row settles as usual and the window is overlap-protected.
     with pytest.raises(MigrationError, match=Code.OVERLAP):
         engine.plan(MARCH, Policy(poll_seconds=0))
     (row,) = engine.journal.transfers(destination)
-    assert not row["closed"] and not row["received"] and row["acknowledged"]
+    assert row["closed"] and row["received"]
 
 
 @pytest.mark.parametrize("status", [408, 502, 503, 504])
@@ -1115,7 +1165,7 @@ def test_a_gateway_answer_after_the_start_holds_the_window_until_the_task_settle
     with pytest.raises(MigrationError, match=Code.OVERLAP):
         engine.plan(MARCH, Policy(poll_seconds=0))
     (row,) = engine.journal.transfers(destination)
-    assert not row["closed"] and not row["received"] and row["acknowledged"]
+    assert row["closed"] and row["received"]
 
 
 def test_an_uncertain_start_is_not_released_by_an_unrelated_finished_task_until_stale(

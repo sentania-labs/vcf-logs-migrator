@@ -729,7 +729,9 @@ def progress_view(
         banner = (
             "ok",
             "Transfer finished",
-            "Verify the imported history to check what arrived.",
+            "Finished is not a verified migration. A destination that reaches its disk "
+            "limit still reports finished with history dropped. Verify the imported "
+            "history to check what arrived.",
         )
     elif state == "failed":
         banner = (
@@ -842,6 +844,7 @@ def progress_view(
         )
     window = status.get("window")
     details = [
+        ("API task", status.get("id") or UNAVAILABLE),
         ("Window", format_day_range(window["start"], window["end"]) if window else UNAVAILABLE),
         (
             "Source → destination",
@@ -857,6 +860,8 @@ def progress_view(
             f"{len(status.get('bucket_keys', ()))} requested",
         ),
     ]
+    if status.get("settlement_note"):
+        details.append(("Receipt record", status["settlement_note"]))
     if bucket_rows and not status.get("completed") and not status.get("skipped"):
         details = [(k, v) for k, v in details if k != "Buckets"]
     progress = None
@@ -1287,6 +1292,8 @@ def verification_view(
     checks.append(
         ("Scope", "Cumulative: every group this destination has received so far, across runs")
     )
+    if result.get("receipt_note"):
+        checks.append(("Receipt record", result["receipt_note"]))
     return {
         "outcome": outcome,
         "banner": banner,

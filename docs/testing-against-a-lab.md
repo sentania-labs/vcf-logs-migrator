@@ -197,7 +197,8 @@ matches. Partial days (shared with an unselected bucket, or at or after the seal
 frontier where open buckets hold the newest data) are listed with their differences
 and do not decide the outcome. With destination SSH, `verify` first compares each
 selected group's id and message count with the source and leads the report with that
-result. Without it, a selection that reaches days beyond the requested ones is
+result. Without it, what arrived is taken from the task's own report (and the
+result says so), and a selection that reaches days beyond the requested ones is
 incomplete, not `verified_success`. Exit 5 is a difference on a fully covered day,
 including new ingest that landed on those dates, which counts cannot tell apart from
 migrated events. Exit 6 is incomplete evidence (task still running, counts not

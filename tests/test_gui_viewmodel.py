@@ -160,6 +160,15 @@ def test_progress_view_marks_stale_estimates_unavailable():
     assert idle["state"] == "idle" and idle["progress"] is None
     failed = vm.progress_view({**status, "status": "failed"}, stale=False, last_ok=None, zone="UTC")
     assert failed["banner"][0] == "bad"
+    assert dict(live["details"])["API task"] == "sim-1"
+    done = vm.progress_view(
+        {**status, "status": "completed", "settlement_note": "Taken from the task report."},
+        stale=False,
+        last_ok=None,
+        zone="UTC",
+    )
+    assert "not a verified migration" in done["banner"][2]
+    assert dict(done["details"])["Receipt record"] == "Taken from the task report."
 
 
 def test_daily_rows_compress_matching_periods_and_isolate_differences():

@@ -217,8 +217,15 @@ logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/se
 The preview reports already received buckets and those still to transfer. Resume
 checks destination node count and available space again. A missing source bucket,
 unregistered destination directory, changed bucket size, or unresolved receipt
-record stops the preview for investigation. On 9.0, destination SSH inventory is
-required to check what arrived; 9.1.1 relies on the journal and explicit task
+record stops the preview for investigation. With destination SSH on 9.0, the
+destination's bucket inventory decides what arrived. Without it, a finished task is
+settled from its own report: the run's selection minus the buckets the task still
+lists as to do and minus those it reports skipped. Status, verify and the Migration
+page say plainly that such a record is taken from the task report and not confirmed
+against the destination's bucket store (a disk-limit stop that drops buckets without
+listing them cannot be seen this way). A cancelled or failed task that lists no
+remaining buckets stays held, with the reason shown, until destination SSH or a
+readable task record settles it. 9.1.1 relies on the journal and explicit task
 receipt evidence. After the remaining transfer finishes, run `verify NEW_RUN_ID`.
 `resume RUN_ID --ack-active ...` previews and starts in one command; use `--preview`
 when you need to review the remainder first.
