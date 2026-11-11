@@ -263,9 +263,8 @@ even while its status still shows nothing.
   receives the original dates and selects whole overlapping buckets; it skips a bucket
   only on the node to which it assigns that bucket. If placement cannot be checked,
   inspect it before starting because another copy could be created. Once the API reports
-  a task finished, only
-  the buckets it transferred stay recorded, so a stopped, cancelled or failed task's
-  remainder is finished with `resume RUN_ID` (no hand-picked dates). Preserve
+  a task finished, only the buckets it transferred stay recorded, so a stopped, cancelled
+  or failed task's remainder is finished with `resume RUN_ID` (no hand-picked dates). Preserve
   the journal for each destination; external transfer history must also be known.
   Adjacent windows selecting the same whole bucket are refused too, especially on
   9.1.1 where destination bucket IDs disappear. A run starts at most once.
