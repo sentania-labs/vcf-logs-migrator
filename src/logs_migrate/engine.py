@@ -114,8 +114,8 @@ def _check_destination_copies(existing, originals):
             Code.INCOMPLETE if incomplete else Code.COLLISION,
             f"{count} destination bucket{'s need' if count != 1 else ' needs'} attention: "
             + "; ".join(detail for _, detail in bad)
-            + ". The listed destination copies must be removed before this window can be copied. "
-            "Inspect them and refresh; this tool does not remove them.",
+            + ". The named copies on the destination are incomplete or differ from the source "
+            "and must be dealt with on the destination before those dates can be copied.",
             {bucket_id for bucket_id, _ in bad},
         )
 
@@ -382,12 +382,22 @@ class Engine:
         self._record(task, destination)
         return task
 
-    def _unarrived(self, message, ids):
-        return _affected_error(
-            Code.OVERLAP,
-            message
-            + " Refresh after that transfer finishes, or resume that run, to bring them over.",
-            ids,
+    @staticmethod
+    def _earlier_listing(plan, task, message, ids):
+        if task.status not in TERMINAL:
+            raise _affected_error(
+                Code.OVERLAP,
+                message + " Refresh after that transfer finishes, or resume that run.",
+                ids,
+            )
+        if not plan["destination"].get("inventory_available"):
+            raise _affected_error(
+                Code.OVERLAP,
+                message + " Destination inventory is unavailable; inspect it before retrying.",
+                ids,
+            )
+        plan["warnings"].append(
+            message + " They are not on the destination, so they will be copied."
         )
 
     def _overlap(self, plan, task):
@@ -473,9 +483,10 @@ class Engine:
             if historical:
                 groups = [b for b in plan["selected"] if b["id"] in historical]
                 details = _group_details(groups)
-                raise self._unarrived(
-                    "An earlier transfer listed these buckets, but they are not on the "
-                    "destination yet: " + details + ".",
+                self._earlier_listing(
+                    plan,
+                    task,
+                    "An earlier transfer listed these buckets: " + details + ".",
                     historical,
                 )
             if not prior.bucket_ids and (prior.complete or prior.partial):
@@ -499,7 +510,7 @@ class Engine:
                         f"{_day(prior.window.end - 1)} UTC. Selected groups crossing "
                         f"that window: {groups}."
                     )
-                    raise self._unarrived(detail, {b["id"] for b in crossing})
+                    self._earlier_listing(plan, task, detail, {b["id"] for b in crossing})
 
     def _source_ingest(self) -> dict:
         try:

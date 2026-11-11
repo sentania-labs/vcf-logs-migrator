@@ -1080,8 +1080,9 @@ class LiveEnvironment:
                     f"{len(affected)} destination "
                     f"bucket{'s have' if len(affected) != 1 else ' has'} {problem}: "
                     + locations
-                    + ". The listed destination copies must be removed before this window "
-                    "can be copied. Inspect them and refresh; this tool does not remove them.",
+                    + ". The named copies on the destination are incomplete or differ from the "
+                    "source and must be dealt with on the destination before those dates can "
+                    "be copied.",
                 )
                 error.affected_ids = affected
                 raise error

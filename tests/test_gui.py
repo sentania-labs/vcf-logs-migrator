@@ -583,7 +583,7 @@ def test_destination_conflict_shows_and_copies_the_affected_bucket(driver):
         "bucket_identity_conflict: 1 destination bucket needs attention: "
         f"{bucket_id} (2026-03-01 to 2026-03-01 UTC; destination: dst-1; "
         "source size 1000 bytes, destination size 1 bytes). "
-        "The listed destination copies must be removed before this window can be copied."
+        "The named copies on the destination must be dealt with there."
     )
     driver.state.plan_affected = [bucket_id]
     page = driver.pages["plan"]

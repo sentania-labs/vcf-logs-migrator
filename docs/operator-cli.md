@@ -280,8 +280,8 @@ even while its status still shows nothing.
   incomplete verification if it changed; source retention after a completed transfer
   is permitted. Existing destination
   copies that are incomplete, missing their index entry, or differ in size or message
-  count block the window. The preview lists the affected copies; they must be removed
-  from the destination before that window can be copied. This tool does not remove them.
+  count block the window. The preview lists the affected copies; they must be dealt
+  with on the destination before those dates can be copied.
   Unknown history and incompatible partitions can also block transfer.
 - To investigate repeated destination entries, the read-only command
   `/usr/lib/loginsight/application/sbin/bucket-index show` can be run on each destination

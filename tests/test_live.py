@@ -2472,7 +2472,7 @@ def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
     assert "unavailable" in markdown(engine.journal.load(run["id"]), []).lower()
 
 
-def test_external_window_overlap_is_refused_even_with_destination_inventory(tmp_path):
+def test_external_window_overlap_warns_only_with_destination_inventory(tmp_path):
     from dataclasses import replace
 
     from logs_migrate.models import Policy, parse_time
@@ -2483,12 +2483,16 @@ def test_external_window_overlap_is_refused_even_with_destination_inventory(tmp_
     source, destination = env.discover()
     env.transfer = lambda: Transfer("", "idle", destination=destination.id)
     env.history = lambda: (History("src", destination.id, window, (), (), True, "old-task"),)
-    for inspected in (destination, replace(destination, inventory_available=True)):
-        env.discover = lambda inspected=inspected: (source, inspected)
-        with pytest.raises(MigrationError) as error:
-            engine.plan(window, Policy(poll_seconds=0))
-        assert error.value.code == Code.OVERLAP
-        assert "old-task" in error.value.message and "Selected groups" in error.value.message
+    with pytest.raises(MigrationError) as error:
+        engine.plan(window, Policy(poll_seconds=0))
+    assert error.value.code == Code.OVERLAP
+    assert "old-task" in error.value.message and "Selected groups" in error.value.message
+    env.discover = lambda: (source, replace(destination, inventory_available=True))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    assert any(
+        "old-task" in warning and "not on the destination" in warning
+        for warning in run["plan"]["warnings"]
+    )
 
 
 def test_overlap_detail_never_carries_raw_remote_task_text(tmp_path):

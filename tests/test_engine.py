@@ -71,28 +71,34 @@ def _earlier_task_listing(env, bucket):
     ]
 
 
-def test_earlier_task_listing_a_bucket_the_destination_lacks_is_refused_with_the_bucket(rig):
+@pytest.mark.parametrize("crossing", [False, True])
+def test_unfinished_earlier_task_holds_buckets_the_destination_lacks(rig, crossing):
     engine, env, _ = rig
     bucket = env.discover()[0].buckets[0]
     _earlier_task_listing(env, bucket)
-    with pytest.raises(MigrationError) as error:
-        planned(engine)
-    assert error.value.code == Code.OVERLAP
-    assert error.value.affected_ids == {bucket.id}
-    assert bucket.id in error.value.message and "not on the destination yet" in error.value.message
-    assert "resume" in error.value.message
-
-
-def test_earlier_task_window_crossing_selected_buckets_is_refused_with_them(rig):
-    engine, env, _ = rig
-    bucket = env.discover()[0].buckets[0]
-    _earlier_task_listing(env, bucket)
-    env.data["history"][0]["bucket_ids"] = []
+    if crossing:
+        env.data["history"][0]["bucket_ids"] = []
+    env.transfer = lambda: Transfer("earlier-1", "unknown")
     with pytest.raises(MigrationError) as error:
         planned(engine)
     assert error.value.code == Code.OVERLAP
     assert bucket.id in error.value.affected_ids
-    assert bucket.id in error.value.message and "resume" in error.value.message
+    assert (
+        bucket.id in error.value.message and "after that transfer finishes" in error.value.message
+    )
+
+
+@pytest.mark.parametrize("crossing", [False, True])
+def test_finished_earlier_task_listing_absent_buckets_warns_and_proceeds(rig, crossing):
+    engine, env, _ = rig
+    bucket = env.discover()[0].buckets[0]
+    _earlier_task_listing(env, bucket)
+    if crossing:
+        env.data["history"][0]["bucket_ids"] = []
+    plan = planned(engine)["plan"]
+    assert bucket.id in {b["id"] for b in plan["selected"]}
+    note = next(w for w in plan["warnings"] if "not on the destination" in w)
+    assert bucket.id in note
 
 
 def test_repeated_destination_listing_on_one_node_is_incomplete_only_when_selected(rig):
@@ -119,7 +125,7 @@ def test_unsafe_existing_copy_names_bucket_and_destination(rig, field, value):
         planned(engine)
     assert source["id"] in error.value.message
     assert "dst-1" in error.value.message and "2026-03-01" in error.value.message
-    assert "removed" in error.value.message
+    assert "dealt with on the destination" in error.value.message
 
 
 def test_all_bad_copies_are_listed_together(rig):
