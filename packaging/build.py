@@ -29,9 +29,10 @@ BUNDLE_ID = "net.sentania.vcf-logs-migrator"
 
 
 def version() -> str:
-    from setuptools_scm import get_version
-
-    return get_version(root=ROOT)
+    # The CLI reads pyproject.toml, just like the build backend that embeds metadata.
+    return subprocess.check_output(
+        [sys.executable, "-m", "setuptools_scm"], cwd=ROOT, text=True
+    ).strip()
 
 
 def executable(platform: str) -> Path:
