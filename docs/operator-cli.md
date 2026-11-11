@@ -348,10 +348,11 @@ and authentication failures use `authentication_failed`; the other stages use
 
 `selftest` exits 0 when every read-only check passed and 1 otherwise.
 
-On a large source the per-node SSH inventory (bucket listing and `du`) is the slow
-step. Nodes are read in parallel, the CLI prints a per-node progress line and each
-count query to stderr, and an inventory read within the last five minutes is reused
-by later steps; `copy` always re-reads the appliances before it starts.
+On a large source the per-node SSH bucket listing is the slow step. Nodes are read in
+parallel, the CLI prints a per-node progress line and each count query to stderr, and
+a listing read within the last five minutes is reused by later steps (kept in the
+`--journal` file when one is given). `du` sizes only the buckets a window selects;
+`copy` always re-reads the appliances before it starts.
 
 The optional 9.0 fixup implementation is retained in `_set_aside_fixup.py`, marked
 set aside and not instantiable or exposed in CLI help/commands. Reintroduction
