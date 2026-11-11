@@ -178,6 +178,7 @@ def parser():
     resume.add_argument(
         "--preview", action="store_true", help="Preview the remainder without starting"
     )
+    resume.add_argument("--json", action="store_true", help="Print the preview as JSON")
     resume.add_argument(
         "--ack-active", default="", help="Acknowledgment that latest data is skipped"
     )
@@ -436,7 +437,32 @@ def main(argv=None):
             result = engine.stop(args.task_id)
         else:
             result = engine.verify(args.run_id)
-        print(json.dumps(result, sort_keys=True))
+        if args.command == "resume" and args.preview and not args.json:
+            from .gui.viewmodel import format_bytes, format_eta
+
+            plan = result["plan"]
+            received, remaining = plan.get("already_received", []), plan["selected"]
+            estimate = plan.get("estimate") or {}
+
+            def amount(buckets):
+                count = len(buckets)
+                size = sum(bucket["size"] for bucket in buckets)
+                return f"{count} bucket{'s' if count != 1 else ''} · {format_bytes(size)}"
+
+            print(f"Already received: {amount(received)}")
+            print(f"Still to transfer: {amount(remaining)}")
+            print(
+                f"Estimated time: {format_eta(estimate.get('low_seconds'))} to "
+                f"{format_eta(estimate.get('high_seconds'))}."
+            )
+            if plan.get("re_requested_unconfirmed"):
+                print(
+                    "The destination could not be inspected. Remaining buckets will be "
+                    "requested again; some may already be there."
+                )
+            print(f"Preview run ID: {result['id']} (use with copy to start)")
+        else:
+            print(json.dumps(result, sort_keys=True))
         if args.command == "config" and args.config_command == "apply":
             if any(r["status"] == "uncertain" for r in result["rules"]):
                 return 8

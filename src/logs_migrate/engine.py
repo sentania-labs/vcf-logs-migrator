@@ -226,7 +226,19 @@ class Engine:
                         row["run"],
                         sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in arrived),
                     )
-                elif received:
+                elif received_ids & _ids(row["keys"]) and not cluster.preview:
+                    skipped = _ids(
+                        {*task.skipped, *(k for node in task.nodes for k in node.skipped)}
+                    )
+                    arrived = received_ids - skipped - pending
+                    unaccounted = _ids(row["keys"]) - received_ids - skipped - pending
+                    self.journal.settle_transfer(
+                        row["run"],
+                        sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in arrived),
+                        TASK_REPORT,
+                        sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in unaccounted),
+                    )
+                elif received and cluster.preview:
                     skipped = _ids(
                         {*task.skipped, *(k for node in task.nodes for k in node.skipped)}
                     )
@@ -583,7 +595,17 @@ class Engine:
             Code.INVENTORY_CHANGED,
             "New source buckets now overlap these dates. Review a new plan before continuing.",
         )
-        if destination.preview:
+        journal_only = destination.preview or (
+            not destination.inventory_available and not self.attribution
+        )
+        if journal_only:
+            if not destination.preview:
+                require(
+                    root_row.get("basis") == TASK_REPORT,
+                    Code.INCOMPLETE,
+                    "The destination could not be inspected and the earlier task report "
+                    "does not account for what arrived.",
+                )
             received = (
                 _ids(
                     {
@@ -640,10 +662,17 @@ class Engine:
             "A source bucket needed for this run has changed.",
         )
         filtered = replace(source, buckets=tuple(b for b in source.buckets if b.id not in received))
-        plan = build_plan(filtered, destination, window)
+        plan_destination = replace(destination, buckets=()) if journal_only else destination
+        plan = build_plan(filtered, plan_destination, window)
         plan["already_received"] = [intended[i] for i in sorted(received)]
         plan["original_selected"] = original["selected"]
         plan["original_coverage"] = original["coverage"]
+        if journal_only and not destination.preview:
+            plan["re_requested_unconfirmed"] = True
+            plan["warnings"].append(
+                "The destination could not be inspected. Remaining buckets will be requested "
+                "again; some may already be present."
+            )
         plan["estimate"] = self._estimate(plan)
         self._overlap(plan)
         return source, destination, plan
@@ -986,6 +1015,33 @@ class Engine:
         }
         return result
 
+    def _remainder_summary(self, run, destination):
+        root_id = run.get("resume_root", run["id"])
+        root = self.journal.load(root_id)
+        linked = {
+            r["id"]
+            for r in self.journal.runs()
+            if r["id"] == root_id or r.get("resume_root") == root_id
+        }
+        rows = [r for r in self.journal.transfers(destination) if r["run"] in linked]
+        if not rows or any(not row["closed"] for row in rows):
+            return None
+        received = _ids({key for row in rows for key in row["received"]})
+        received.update(b["id"] for b in root["plan"].get("already_received", []))
+        selected = [*root["plan"].get("already_received", []), *root["plan"]["selected"]]
+        remaining = [b for b in selected if b["id"] not in received]
+        plan = {**root["plan"], "selected": remaining}
+        try:
+            estimate = self._estimate(plan)
+        except Exception:
+            estimate = None  # A time estimate must never block status or a transfer.
+        return {
+            "already_received": [b for b in selected if b["id"] in received],
+            "selected": remaining,
+            "estimate": estimate,
+            "re_requested_unconfirmed": any(row.get("basis") == TASK_REPORT for row in rows),
+        }
+
     @safe_boundary
     def status(self, run_id=None):
         with self._exclusive():
@@ -1068,6 +1124,13 @@ class Engine:
                         "What arrived is taken from the destination's task report, not "
                         "confirmed against the destination's bucket store (no destination SSH)."
                     )
+                    if settled.get("unaccounted"):
+                        result["settlement_note"] += (
+                            " Buckets not accounted for will be requested again because "
+                            "the destination could not be inspected."
+                        )
+                if settled["closed"]:
+                    result["remainder"] = self._remainder_summary(run, destination)
             elapsed = task.elapsed_seconds
             copied = result.get("bytes_transferred")
             sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}
@@ -1407,6 +1470,11 @@ class Engine:
                 "What arrived is taken from the destination's task report, not confirmed "
                 "against the destination's bucket store (no destination SSH)."
             )
+            if any(r.get("unaccounted") for r in related):
+                result["receipt_note"] += (
+                    " Unaccounted buckets were requested again because the destination "
+                    "could not be inspected."
+                )
         if result["buckets"]["not_received"]:
             if result["outcome"] == Verification.SUCCESS.value:
                 result["outcome"] = Verification.INCOMPLETE.value

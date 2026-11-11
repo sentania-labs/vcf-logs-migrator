@@ -70,6 +70,11 @@ def test_cli_resume_survives_reopening_the_journal(tmp_path, capsys):
     del remote["cancel_after"]
     state_file.write_text(json.dumps(remote))
     assert main([*base, "resume", first["id"], "--preview"]) == 0
+    human = capsys.readouterr().out
+    assert "Already received: 1 bucket · 1.0 kB" in human
+    assert "Still to transfer: 2 buckets · 2.0 kB" in human
+    assert "Estimated time:" in human and "Preview run ID:" in human
+    assert main([*base, "resume", first["id"], "--preview", "--json"]) == 0
     resumed = json.loads(capsys.readouterr().out)
     assert len(resumed["plan"]["already_received"]) == 1
     assert len(resumed["plan"]["selected"]) == 2

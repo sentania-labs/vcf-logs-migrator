@@ -214,7 +214,9 @@ logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/se
   copy NEW_RUN_ID --ack-active "i understand you aren't going to copy the latest data"
 ```
 
-The preview reports already received buckets and those still to transfer. Resume
+The preview reports already received buckets and those still to transfer in plain
+language. Add `--json` to `resume RUN_ID --preview` for the machine-readable form.
+Resume
 checks destination node count and available space again. A missing source bucket,
 unregistered destination directory, changed bucket size, or unresolved receipt
 record stops the preview for investigation. With destination SSH on 9.0, the
@@ -223,11 +225,13 @@ lists the buckets still to do per node is settled from its own report: the run's
 selection minus those buckets and minus the ones it reports skipped. Status, verify
 and the Migration page say plainly that such a record is taken from the task report
 and not confirmed against the destination's bucket store (a disk-limit stop that
-drops buckets without listing them cannot be seen this way). That record releases
-the hold for `status` and `verify`, but `resume` and a re-`plan` of the same dates
-still need destination SSH, because the remainder cannot be planned without the
-destination inventory. A 9.0 task with no per-node remaining list stays held, with
-the reason shown, until destination SSH is connected. 9.1.1 has no bucket store: it
+drops buckets without listing them cannot be seen this way). If the task lists some
+received buckets but leaves others unaccounted for, resume requests those unaccounted
+buckets again: the 9.0 destination skips a bucket whose directory is already present.
+Without destination SSH the tool cannot check for a directory that is present but
+missing from the bucket index, so inspect that condition separately if suspected.
+A 9.0 task with neither receipt evidence nor a per-node remaining list stays held,
+with the reason shown, until destination SSH is connected. 9.1.1 has no bucket store: it
 settles only from explicit per-bucket receipt evidence in the task or journal. A
 finished task without it, or one whose received list leaves selected buckets
 unaccounted for, stays held (status names how many buckets are unaccounted for)

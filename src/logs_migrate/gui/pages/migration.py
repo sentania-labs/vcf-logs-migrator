@@ -15,6 +15,7 @@ class MigrationPage(Page):
         self.banner = banner("", "", "info")
         self.body.addWidget(self.banner)
         self.remainder_card, remainder_layout = card("Ready to resume")
+        self.remainder_title = remainder_layout.itemAt(0).widget()
         self.remainder = label("", "body", wrap=True)
         remainder_layout.addWidget(self.remainder)
         self.body.addWidget(self.remainder_card)
@@ -113,6 +114,7 @@ class MigrationPage(Page):
 
     def resume(self) -> None:
         if self.app.state.run_id:
+            self.app.state.resume_error = None
             self.app.submit("resume", "resume", run_id=self.app.state.run_id)
             self.refresh()
 
@@ -157,6 +159,8 @@ class MigrationPage(Page):
                 "Migration did not start",
                 vm.start_note(state.start_error),
             )
+        if state.resume_error:
+            view["banner"] = ("bad", "Could not resume", vm.start_note(state.resume_error))
         if state.stale:
             subtitle = "Connection to status API lost; last observed progress retained"
         elif view["state"] == "failed":
@@ -171,31 +175,46 @@ class MigrationPage(Page):
             and "source_by_bucket" not in state.plan_run
             and state.started_run_id != state.plan_run["id"]
         )
-        if preview:
-            plan = state.plan_run["plan"]
+        stopped = view["state"] in {"failed", "cancelled"} and not state.stale
+        summary = state.status.get("remainder") if state.status and not state.stale else None
+        show_summary = bool(
+            summary and (stopped or (view["state"] == "completed" and summary["selected"]))
+        )
+        if preview or show_summary:
+            plan = state.plan_run["plan"] if preview else summary
             received = plan.get("already_received", [])
             remaining = plan["selected"]
-            estimate = plan.get("estimate", {})
+            estimate = plan.get("estimate") or {}
+            capacity = plan.get("capacity")
             self.remainder.setText(
                 f"Already received: {len(received)} bucket{'s' if len(received) != 1 else ''} · "
                 f"{vm.format_bytes(sum(b['size'] for b in received))}.\n"
-                f"Still to transfer: {len(remaining)} buckets · "
+                f"Still to transfer: {len(remaining)} bucket{'s' if len(remaining) != 1 else ''} · "
                 f"{vm.format_bytes(sum(b['size'] for b in remaining))}.\n"
                 f"Estimated time: {vm.format_eta(estimate.get('low_seconds'))} to "
                 f"{vm.format_eta(estimate.get('high_seconds'))}. "
                 + (
                     "Estimated space fits on each destination. "
-                    if plan["capacity"]["fits"] and not plan["capacity"]["unknown"]
+                    if capacity and capacity["fits"] and not capacity["unknown"]
                     else "Check the destination space warning before continuing. "
+                    if capacity
+                    else ""
                 )
-                + "Space is checked again before starting."
+                + ("Space is checked again before starting." if preview else "")
+                + (
+                    " The destination could not be inspected; remaining buckets will be "
+                    "requested again, even if some are already there."
+                    if plan.get("re_requested_unconfirmed")
+                    else ""
+                )
             )
-        self.remainder_card.setVisible(preview)
+            self.remainder_title.setText("Ready to resume" if preview else "Migration stopped")
+        self.remainder_card.setVisible(preview or show_summary)
         self.metrics.setVisible(not preview)
         self.nodes_card.setVisible(not preview)
         self.details_card.setVisible(not preview)
         self.set_heading(
-            "Ready to resume" if preview else "Migration",
+            "Ready to resume" if preview else "Migration stopped" if stopped else "Migration",
             "Review what arrived and what remains" if preview else subtitle,
         )
         status, title, text = view["banner"]

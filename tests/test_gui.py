@@ -62,17 +62,41 @@ def test_resume_preview_and_finish_in_the_window():
         driver.start()
         driver.poll_until_finished()
         assert driver.state.status["status"] == "cancelled"
+        page = driver.pages["migration"]
+        assert page.remainder_card.isVisible()
+        assert "Already received: 1 bucket" in page.remainder.text()
+        assert "Still to transfer: 2 buckets" in page.remainder.text()
+        assert "Estimated time:" in page.remainder.text()
+        old_run = driver.state.run_id
+        driver.verify()
+        assert driver.state.verification is not None
+        assert driver.state.verification["outcome"] != "verified_success"
+        driver.export()
+        assert driver.state.report["run"]["id"] == old_run and driver.state.exported
+        driver.show("migration")
         state_path = driver.journal.with_suffix(".simulated-state")
         data = json.loads(state_path.read_text())
         del data["cancel_after"]
         state_path.write_text(json.dumps(data))
-        page = driver.pages["migration"]
         assert page.resume_button.isVisible()
         page.resume_button.click()
         driver.until(lambda: "resume" not in driver.window.worker.pending)
         driver.idle()
         assert page.remainder_card.isVisible()
         assert "Already received: 1 bucket" in page.remainder.text()
+        assert driver.state.run_id != old_run
+        assert driver.state.verification is None and driver.state.verify_error is None
+        assert not driver.state.exported and driver.state.export_error is None
+        assert (
+            driver.state.report is None or driver.state.report["run"]["id"] == driver.state.run_id
+        )
+        driver.show("verification")
+        assert driver.state.verification is None
+        driver.show("reports")
+        assert (
+            driver.state.report is None or driver.state.report["run"]["id"] == driver.state.run_id
+        )
+        driver.show("migration")
         assert page.start_remainder_button.isEnabled()
         page.start_remainder_button.click()
         driver.until(lambda: "start" not in driver.window.worker.pending)
@@ -80,6 +104,33 @@ def test_resume_preview_and_finish_in_the_window():
         driver.poll_until_finished()
         driver.verify()
         assert driver.state.verification["outcome"] == "verified_success"
+    finally:
+        driver.close()
+
+
+def test_refused_resume_explains_which_action_failed():
+    import json
+
+    driver = Driver(FIXTURES / "sealed-populated.fixture", knobs={"cancel_after": 1})
+    try:
+        driver.connect()
+        driver.plan()
+        driver.acknowledge()
+        driver.start()
+        driver.poll_until_finished()
+        state_path = driver.journal.with_suffix(".simulated-state")
+        data = json.loads(state_path.read_text())
+        before = len([item for item in data["trace"] if item["operation"] == "start"])
+        data["destination"]["nodes"].append(dict(data["destination"]["nodes"][0], id="dst-extra"))
+        state_path.write_text(json.dumps(data))
+        page = driver.pages["migration"]
+        page.resume_button.click()
+        driver.until(lambda: "resume" not in driver.window.worker.pending)
+        driver.idle()
+        assert "Could not resume" in page.banner.text()
+        assert "node count changed" in page.banner.text()
+        after = json.loads(state_path.read_text())
+        assert len([item for item in after["trace"] if item["operation"] == "start"]) == before
     finally:
         driver.close()
 
@@ -348,6 +399,11 @@ def test_skipped_selected_group_is_never_reported_as_success():
         driver.start()
         driver.poll_until_finished()
         assert SKIPPED in driver.state.status["skipped"]
+        migration = driver.pages["migration"]
+        assert "Some history is missing" in migration.banner.text()
+        assert migration.banner.property("status") == "warn"
+        assert "Still to transfer: 1 bucket ·" in migration.remainder.text()
+        assert "1 buckets" not in migration.remainder.text()
         driver.verify()
         page = driver.pages["verification"]
         assert driver.state.verification["buckets"]["not_received"] == [SKIPPED]
@@ -384,6 +440,10 @@ def test_verification_results_bind_to_the_run_that_requested_them(driver):
     driver.window.job_generation["verify:" + run_a] = driver.window.generation
     driver.window._done("verify:" + run_a, stray)
     assert driver.state.verification is None, "run A's result must not land on run B"
+    driver.window.worker.pending.add("export:" + run_a)
+    driver.window.job_generation["export:" + run_a] = driver.window.generation
+    driver.window._done("export:" + run_a, ["old-report.md"])
+    assert not driver.state.exported, "run A's export must not appear on run B"
     driver.window.worker.pending.add("verify:" + run_b)
     driver.window.job_generation["verify:" + run_b] = driver.window.generation
     driver.window._done("verify:" + run_b, stray)

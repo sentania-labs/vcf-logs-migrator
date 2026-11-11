@@ -918,6 +918,63 @@ def _preview_run(tmp_path):
     return env, engine, run
 
 
+def test_no_ssh_partial_received_list_can_resume_and_verify(tmp_path):
+    from dataclasses import asdict, replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path, {"cancel_after": 1})
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    status = engine.status(first["id"])
+    assert status["status"] == "cancelled"
+    assert len(status["completed"]) == 1 and not status["skipped"]
+    row = engine.journal.transfers(first["plan"]["destination"]["id"])[0]
+    assert row["closed"] and row["basis"] == "task_report"
+    assert len(row["received"]) == 1 and len(row["unaccounted"]) == 2
+    assert "requested again" in status["settlement_note"]
+    assert len(status["remainder"]["selected"]) == 2
+    # One unaccounted bucket actually landed, but the task report omitted it. Re-requesting
+    # must skip its existing directory instead of copying its events a second time.
+    source, destination = env.discover()
+    unreported = next(b for b in source.buckets if b.id == first["plan"]["selected"][1]["id"])
+    env.data["destination"]["buckets"].append(
+        asdict(replace(unreported, node=destination.nodes[0].id, partition=""))
+    )
+    env.data["destination_events"].extend(
+        {**event, "cohort": "migration"}
+        for event in env.data["source_events"]
+        if event["bucket"] == unreported.key
+    )
+    del env.data["cancel_after"]
+    resumed = engine.resume(first["id"])
+    assert len(resumed["plan"]["already_received"]) == 1
+    assert len(resumed["plan"]["selected"]) == 2
+    assert resumed["plan"]["re_requested_unconfirmed"]
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    engine.status(resumed["id"])
+    result = engine.verify(resumed["id"])
+    assert result["outcome"] == "verified_success"
+    assert result["receipt_basis"] == "task_report"
+    assert "requested again" in result["receipt_note"]
+
+
+def test_no_ssh_unrelated_receipt_does_not_release_the_selection(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    destination = first["plan"]["destination"]["id"]
+    env.transfer = lambda: Transfer("sim-1", "cancelled", (A,), destination=destination)
+    result = engine.status(first["id"])
+    row = engine.journal.transfers(destination)[0]
+    assert not row["closed"] and result["settlement"] == "held"
+
+
 def test_911_completed_task_without_receipt_evidence_stays_held(tmp_path):
     from logs_migrate.ports import NodeTransfer, Transfer
 

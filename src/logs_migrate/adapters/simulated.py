@@ -374,6 +374,14 @@ class SimulatedEnvironment:
                     if key in skip:
                         task["skipped"].append(key)
                         continue
+                    if not dest.preview:
+                        existing = [item for item in dest.buckets if item.id == b.id]
+                        if existing:
+                            if all(item.registered and item.complete for item in existing):
+                                task["completed"].append(key)
+                            else:
+                                task["skipped"].append(key)
+                            continue
                     node = dest.nodes[int(digest(b.id)[:8], 16) % len(dest.nodes)].id
                     if node in self.data.get("failed_nodes", []):
                         task["skipped"].append(key)

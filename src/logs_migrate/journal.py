@@ -157,7 +157,13 @@ class Journal:
         except sqlite3.Error:
             raise MigrationError(Code.STORAGE) from None
 
-    def settle_transfer(self, run_id: str, received: list[str], basis: str | None = None):
+    def settle_transfer(
+        self,
+        run_id: str,
+        received: list[str],
+        basis: str | None = None,
+        unaccounted: list[str] | None = None,
+    ):
         """Replace the in-flight selection with the bucket keys the API reported as transferred."""
         try:
             self.db.execute(
@@ -169,6 +175,7 @@ class Journal:
                             "closed": True,
                             "received": sorted(received),
                             **({"basis": basis} if basis else {}),
+                            **({"unaccounted": sorted(unaccounted)} if unaccounted else {}),
                         }
                     ),
                     run_id,

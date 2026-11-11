@@ -726,13 +726,23 @@ def progress_view(
             "The destination is copying history. Verify it when the transfer finishes.",
         )
     elif state == "completed":
-        banner = (
-            "ok",
-            "Transfer finished",
-            "Finished is not a verified migration. A destination that reaches its disk "
-            "limit still reports finished with history dropped. Verify the imported "
-            "history to check what arrived.",
-        )
+        missing = (status.get("remainder") or {}).get("selected", [])
+        skipped = status.get("skipped") or any(n.get("skipped") for n in status.get("nodes", []))
+        if missing or skipped:
+            banner = (
+                "warn",
+                "Some history is missing",
+                "Finished is not a verified migration. Some selected history is missing. "
+                "Review what remains and choose Resume, then verify the migration.",
+            )
+        else:
+            banner = (
+                "ok",
+                "Transfer finished",
+                "Finished is not a verified migration. A destination that reaches its disk "
+                "limit still reports finished with history dropped. Verify the imported "
+                "history to check what arrived.",
+            )
     elif state == "failed":
         banner = (
             "bad",
