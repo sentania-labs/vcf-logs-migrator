@@ -97,15 +97,17 @@ with `authentication_failed` until you forget the old entry.
 logs-migrate selftest
 ```
 
-Correct output looks like this (hosts and numbers will differ):
+This earlier capture includes a full-history preview. Current self-tests skip the
+preview when no dates are supplied; pass `--since` and `--until` to preview and
+size only that window. Other output looks like this (hosts and numbers will differ):
 
 ```
 PASS  Source API version                                 8.18.7
 PASS  Source partitions                                  2 partitions
 PASS  Source cluster members (SSH)                       3 members: aria-logs-1.lab.example, aria-logs-2.lab.example, aria-logs-3.lab.example
-PASS  Node aria-logs-1.lab.example (SSH listing, du, df, service)  service running · 44 sealed (44 with dates), 2 active · 46 sized by du · 118.2 GB free · listing keys: created, endtime, id, messages, partition, size, starttime, status
-PASS  Node aria-logs-2.lab.example (SSH listing, du, df, service)  ...
-PASS  Node aria-logs-3.lab.example (SSH listing, du, df, service)  ...
+PASS  Node aria-logs-1.lab.example (SSH listing, df, service)  service running · 44 sealed (44 with dates), 2 active · 118.2 GB free · listing keys: created, endtime, id, messages, partition, size, starttime, status
+PASS  Node aria-logs-2.lab.example (SSH listing, df, service)  ...
+PASS  Node aria-logs-3.lab.example (SSH listing, df, service)  ...
 PASS  Source inventory model                             8.18.7 · 3 node(s) · 88 sealed buckets · 2025-01-01 to 2025-06-22
 PASS  Destination API version                            9.0.2.0200
 PASS  Destination partitions                             2 partitions
@@ -138,7 +140,7 @@ What to look at:
 
 `selftest --json` prints the same as JSON (`steps`, `summary`, `passed`, `notes`).
 Exit 0 means every check passed; exit 1 means at least one failed.
-`--since/--until` run the plan preview over those dates instead of all sealed history.
+`--since/--until` run the plan preview (and size only the selected buckets) over those dates; without them the preview is skipped.
 
 ## Step 3: compare and apply configuration (optional, writes to the destination)
 
@@ -195,7 +197,8 @@ matches. Partial days (shared with an unselected bucket, or at or after the seal
 frontier where open buckets hold the newest data) are listed with their differences
 and do not decide the outcome. With destination SSH, `verify` first compares each
 selected group's id and message count with the source and leads the report with that
-result. Without it, a selection that reaches days beyond the requested ones is
+result. Without it, what arrived is taken from the task's own report (and the
+result says so), and a selection that reaches days beyond the requested ones is
 incomplete, not `verified_success`. Exit 5 is a difference on a fully covered day,
 including new ingest that landed on those dates, which counts cannot tell apart from
 migrated events. Exit 6 is incomplete evidence (task still running, counts not

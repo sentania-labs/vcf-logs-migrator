@@ -173,6 +173,20 @@ def parser():
     copy.add_argument(
         "--ack-active", default="", help="Exact acknowledgment that latest data is skipped"
     )
+    resume = sub.add_parser("resume", help="Resume a recorded transfer for the same dates")
+    resume.add_argument("run_id", type=uuid_arg)
+    resume.add_argument(
+        "--preview", action="store_true", help="Preview the remainder without starting"
+    )
+    resume.add_argument("--json", action="store_true", help="Print the preview as JSON")
+    resume.add_argument(
+        "--ack-active", default="", help="Acknowledgment that latest data is skipped"
+    )
+    resume.add_argument(
+        "--ack-node-count-unchanged",
+        action="store_true",
+        help="Confirm the destination node count is unchanged when it cannot be checked",
+    )
     stop = sub.add_parser("stop", help="Cancel the currently observed API task by its API task ID")
     stop.add_argument("task_id")
     verify = sub.add_parser("verify", help="Compare complete, stable per-day counts")
@@ -182,6 +196,12 @@ def parser():
     report.add_argument("--format", choices=("json", "markdown"), default="markdown")
     return p
 
+
+NODE_COUNT_UNCHECKED = (
+    "The destination's node count could not be checked. If nodes were added or removed "
+    "since the first run, history may be copied a second time. Confirm the node count is "
+    "unchanged before continuing."
+)
 
 EXIT_CODES = {
     Code.INVALID_INPUT: 2,
@@ -342,10 +362,13 @@ def main(argv=None):
                 return 0
             print(json.dumps({"forgotten": store.forget(args.kind, args.name)}))
             return 0
-        if args.command in {"plan", "copy", "verify", "report"}:
+        if args.command in {"plan", "copy", "resume", "verify", "report"}:
             require(args.journal is not None, Code.INVALID_INPUT)
             journal = Journal(args.journal)
-        elif args.command in {"status", "stop"} and args.journal is not None:
+        elif (
+            args.command in {"status", "stop", "selftest", "discover", "partitions"}
+            and args.journal is not None
+        ):
             journal = Journal(args.journal)
         if args.command == "report":
             run, events = journal.load(args.run_id), journal.events(args.run_id)
@@ -409,13 +432,60 @@ def main(argv=None):
             result = engine.plan(Window(parse_time(args.since), parse_time(args.until)))
         elif args.command == "copy":
             result = engine.run(args.run_id, active_ack=args.ack_active)
+        elif args.command == "resume":
+            preview = engine.resume(args.run_id)
+            if (
+                not args.preview
+                and preview["plan"].get("node_count_unchecked")
+                and not args.ack_node_count_unchanged
+            ):
+                raise MigrationError(
+                    Code.INVALID_INPUT,
+                    NODE_COUNT_UNCHECKED + " Run the command again with --ack-node-count-unchanged "
+                    "to start, or add --preview to review the remainder first.",
+                )
+            result = (
+                preview
+                if args.preview
+                else {
+                    "preview": preview,
+                    "start": engine.run(preview["id"], active_ack=args.ack_active),
+                }
+            )
         elif args.command == "status":
             result = engine.status(args.run_id)
         elif args.command == "stop":
             result = engine.stop(args.task_id)
         else:
             result = engine.verify(args.run_id)
-        print(json.dumps(result, sort_keys=True))
+        if args.command == "resume" and args.preview and not args.json:
+            from .gui.viewmodel import format_bytes, format_eta
+
+            plan = result["plan"]
+            received, remaining = plan.get("already_received", []), plan["selected"]
+            estimate = plan.get("estimate") or {}
+
+            def amount(buckets):
+                count = len(buckets)
+                size = sum(bucket["size"] for bucket in buckets)
+                return f"{count} bucket{'s' if count != 1 else ''} · {format_bytes(size)}"
+
+            print(f"Already received: {amount(received)}")
+            print(f"Still to transfer: {amount(remaining)}")
+            print(
+                f"Estimated time: {format_eta(estimate.get('low_seconds'))} to "
+                f"{format_eta(estimate.get('high_seconds'))}."
+            )
+            if plan.get("re_requested_unconfirmed"):
+                print(
+                    "The destination could not be inspected. Remaining buckets will be "
+                    "requested again; some may already be there."
+                )
+            if plan.get("node_count_unchecked"):
+                print(NODE_COUNT_UNCHECKED)
+            print(f"Preview run ID: {result['id']} (use with copy to start)")
+        else:
+            print(json.dumps(result, sort_keys=True))
         if args.command == "config" and args.config_command == "apply":
             if any(r["status"] == "uncertain" for r in result["rules"]):
                 return 8

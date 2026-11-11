@@ -128,7 +128,7 @@ class ReportsPage(Page):
         self.export_button.setEnabled(False)
         ids = [run["id"] for run in state.runs]
         self.app.submit(
-            "export",
+            "export:" + state.run_id,
             "export",
             run_id=state.run_id,
             folder=state.settings.export_folder,
@@ -190,7 +190,9 @@ class ReportsPage(Page):
         self.ack_text.setText(view["ack_text"])
         self.ack_recorded.setText(view["ack_recorded"])
         any_format = self.markdown.isChecked() or self.json.isChecked()
-        self.export_button.setEnabled(any_format and "export" not in self.app.worker.pending)
+        self.export_button.setEnabled(
+            any_format and f"export:{state.run_id}" not in self.app.worker.pending
+        )
         self.note.setText(
             "Plain report includes the plan, API observations, daily counts and exclusions. "
             "No credentials."

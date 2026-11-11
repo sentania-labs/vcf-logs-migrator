@@ -227,6 +227,9 @@ class Session:
     def plan(self, *, start: int, end: int, attempts: int, poll_seconds: float) -> dict:
         return self._engine().plan(Window(start, end), Policy(attempts, poll_seconds))
 
+    def resume(self, *, run_id: str) -> dict:
+        return self._engine().resume(run_id)
+
     def start(self, *, run_id: str, acknowledged: bool) -> dict:
         before = len(self.journal.events(run_id))
         try:

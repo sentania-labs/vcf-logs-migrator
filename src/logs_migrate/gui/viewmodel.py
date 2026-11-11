@@ -470,7 +470,9 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         "Earlier task " in w and "Selected groups crossing" in w for w in plan.get("warnings", [])
     )
     overlap_text = (
-        "Group ids checked; none on destination. Earlier migration dates overlap."
+        f"{len(plan['already_received'])} groups already received"
+        if plan.get("already_received")
+        else "Group ids checked; none on destination. Earlier migration dates overlap."
         if earlier_overlap
         else "No selected group ids found on destination"
         if plan["destination"].get("inventory_available")
@@ -525,21 +527,27 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         else:
             detail = f"No active bucket growth in {seconds} s"
         checks.append(("Source ingest", detail))
-    required = capacity["required_bytes"]
-    storage = [
-        (
-            n["id"],
-            format_bytes(n["available_bytes"]),
-            format_bytes(required),
-            "Unknown"
-            if n["fits"] is None
-            else format_bytes(n["available_bytes"] - required)
-            if n["fits"]
-            else "Short",
+    storage = []
+    for node in capacity["nodes"]:
+        available = node["available_bytes"]
+        required = node.get("estimated_bytes", capacity["required_bytes"])
+        storage.append(
+            (
+                node["id"],
+                format_bytes(available),
+                format_bytes(required),
+                "Unknown"
+                if node["fits"] is None
+                else "Short"
+                if not node["fits"]
+                else format_bytes(available - required)
+                if available is not None
+                else "Unknown",
+            )
         )
-        for n in capacity["nodes"]
-    ]
     blockers = []
+    if not selected:
+        blockers.append("nothing to transfer")
     if not capacity["fits"]:
         blockers.append("storage")
     if diff["missing"] or diff["different"]:
@@ -631,7 +639,8 @@ def start_state(
         )
     if view["blockers"]:
         return False, "Start is unavailable until the checks pass. " + {
-            "storage": "A destination node cannot hold the selection.",
+            "nothing to transfer": "Everything selected is already present.",
+            "storage": "A destination node cannot hold its estimated share.",
             "partitions": "Destination partitions must match first.",
             "fields": "Required extracted fields are missing on the destination.",
         }[view["blockers"][0]]
@@ -651,11 +660,11 @@ def start_state(
 
 STATE_LABEL = {
     "idle": "No history transfer running",
-    "running": "RUNNING",
-    "completed": "COMPLETED",
-    "cancelled": "CANCELLED",
-    "failed": "FAILED",
-    "unknown": "UNKNOWN",
+    "running": "In progress",
+    "completed": "Finished",
+    "cancelled": "Cancelled",
+    "failed": "Failed",
+    "unknown": "Unknown",
 }
 
 
@@ -688,13 +697,12 @@ def progress_view(
             if start_uncertain
             else (
                 "info",
-                "No API task observed",
-                "Start a migration from Discovery & Plan, "
-                "or refresh to read existing server tasks.",
+                "No transfer running",
+                "Start a migration from Discovery & Plan, or refresh to check the destination.",
             ),
             "tiles": [
-                ("Transferred", UNAVAILABLE, "No API task"),
-                ("Transfer rate", UNAVAILABLE, "Estimated from API counters"),
+                ("Transferred", UNAVAILABLE, "No transfer"),
+                ("Transfer rate", UNAVAILABLE, "Estimated from observed progress"),
                 ("Elapsed", UNAVAILABLE, "Since API task start"),
                 ("ETA", UNAVAILABLE, "Estimate; verification time is separate"),
             ],
@@ -704,7 +712,6 @@ def progress_view(
             "progress": None,
         }
     state = status["status"]
-    label = STATE_LABEL.get(state, state.upper())
     if stale:
         banner = (
             "warn",
@@ -715,36 +722,54 @@ def progress_view(
     elif state == "running":
         banner = (
             "info",
-            "API state: RUNNING",
-            "Destination nodes pull directly from the source. "
-            "API completion is followed by count verification.",
+            "Migration in progress",
+            "The destination is copying history. Verify it when the transfer finishes.",
         )
     elif state == "completed":
-        banner = (
-            "ok",
-            "API state: COMPLETED",
-            "COMPLETED alone is not verified success. Verify the imported history next.",
-        )
+        missing = (status.get("remainder") or {}).get("selected", [])
+        skipped = status.get("skipped") or any(n.get("skipped") for n in status.get("nodes", []))
+        if missing or skipped:
+            banner = (
+                "warn",
+                "Some history is missing",
+                "Finished is not a verified migration. Some selected history is missing. "
+                "Review what remains and choose Resume, then verify the migration.",
+            )
+        else:
+            banner = (
+                "ok",
+                "Transfer finished",
+                "Finished is not a verified migration. A destination that reaches its disk "
+                "limit still reports finished with history dropped. Verify the imported "
+                "history to check what arrived.",
+            )
     elif state == "failed":
         banner = (
             "bad",
-            "API state: FAILED",
-            "Server-reported failure; imported data stays on the destination. "
-            "No automatic resubmission.",
+            "Transfer failed",
+            "History already received stays on the destination. Review what remains to resume.",
         )
     elif state == "cancelled":
         banner = (
             "warn",
-            "API state: CANCELLED",
-            "Cancellation was requested. Buckets already received stay on the destination.",
+            "Transfer cancelled",
+            "History already received stays on the destination. Review what remains to resume.",
         )
     elif state == "idle":
         banner = ("info", "No history transfer running", "Start a migration from Discovery & Plan.")
     else:
         banner = (
             "warn",
-            f"API state: {label}",
-            "The API reported an unrecognized state. Refresh before deciding anything.",
+            "Transfer status unavailable",
+            "Refresh the destination status before deciding what to do next.",
+        )
+    if status.get("capacity_warning") and not stale:
+        names = ", ".join(item["node"] for item in status["capacity_warning"])
+        banner = (
+            "warn",
+            "A destination may run out of space",
+            f"The assigned remaining buckets exceed the earlier space reading on {names}. "
+            "Check space on those nodes now.",
         )
     done, total = status.get("bytes_transferred"), status.get("total_bytes")
     rate = status.get("rate_bytes_per_second")
@@ -756,6 +781,8 @@ def progress_view(
             format_bytes_pair(done, total) if done is not None else UNAVAILABLE,
             "Last API sample"
             if stale
+            else f"{status['buckets_done']} of {status['buckets_total']} buckets copied"
+            if status.get("buckets_done") is not None
             else (
                 f"API progress: {status['progress']:g}%"
                 if status.get("progress") is not None
@@ -765,7 +792,7 @@ def progress_view(
         (
             "Transfer rate",
             UNAVAILABLE if stale else format_rate(rate),
-            "Estimated from API counters and elapsed time",
+            "Estimated from observed progress and elapsed time",
         ),
         (
             "Elapsed",
@@ -798,6 +825,8 @@ def progress_view(
             buckets = "See source breakdown"
         else:
             buckets = f"{len(node['completed'])} received"
+        if node.get("buckets_done") is not None:
+            buckets = f"{node['buckets_done']} of {node['buckets_total']} copied"
         if node.get("progress") is not None:
             node_state += f" · {node['progress']:g}%"
         if node["skipped"]:
@@ -818,6 +847,8 @@ def progress_view(
                 if node["bytes_transferred"] is not None
                 else UNAVAILABLE,
                 buckets,
+                UNAVAILABLE if stale else format_rate(node.get("rate_bytes_per_second")),
+                UNAVAILABLE if stale else format_eta(node.get("eta_seconds")),
                 error,
             )
         )
@@ -839,6 +870,8 @@ def progress_view(
             f"{len(status.get('bucket_keys', ()))} requested",
         ),
     ]
+    if status.get("settlement_note"):
+        details.append(("Receipt record", status["settlement_note"]))
     if bucket_rows and not status.get("completed") and not status.get("skipped"):
         details = [(k, v) for k, v in details if k != "Buckets"]
     progress = None
@@ -1132,10 +1165,7 @@ def verification_view(
         if result.get("detail"):
             why += f" {result['detail']}"
         if task in {"cancelled", "failed"}:
-            why += (
-                f" The API task {task}; plan the remainder with a window that excludes "
-                "received groups."
-            )
+            why += f" The API task {task}; use Resume to send the remainder."
         expected = result.get("expected_count")
         measured = result.get("measured_arrival_count")
         share = (
@@ -1272,6 +1302,8 @@ def verification_view(
     checks.append(
         ("Scope", "Cumulative: every group this destination has received so far, across runs")
     )
+    if result.get("receipt_note"):
+        checks.append(("Receipt record", result["receipt_note"]))
     return {
         "outcome": outcome,
         "banner": banner,

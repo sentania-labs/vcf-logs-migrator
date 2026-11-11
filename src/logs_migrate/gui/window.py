@@ -41,7 +41,7 @@ from .state import AppState
 from .widgets import button, label, section
 from .worker import EngineWorker
 
-PROGRESS_JOBS = {"probe", "connect", "selftest", "plan", "start", "verify", "discover"}
+PROGRESS_JOBS = {"probe", "connect", "selftest", "plan", "start", "resume", "verify", "discover"}
 
 NAV = [
     ("overview", "Overview"),
@@ -434,6 +434,7 @@ class MainWindow(QMainWindow):
     def select_run(self, run_id: str) -> None:
         self.state.run_id = run_id
         self.state.status = None
+        self.state.resume_error = None
         self.poll_status()
         self.state.report = None
         self.state.verification = None
@@ -526,6 +527,22 @@ class MainWindow(QMainWindow):
             state.export_error = None
             self.submit("runs", "runs")
             self.load_report(result["id"])
+        elif job == "resume":
+            state.plan_run = result
+            state.run_id = result["id"]
+            state.status = None
+            state.status_error = None
+            state.start_error = None
+            state.resume_error = None
+            state.verification = None
+            state.verify_error = None
+            state.verify_run_id = None
+            state.report = None
+            state.exported = []
+            state.export_error = None
+            state.acknowledged = bool(result.get("active_ack"))
+            self.load_report(result["id"])
+            self.submit("runs", "runs")
         elif job == "start":
             state.status = result["task"] if result["task"].get("id") else None
             state.status_at = vm.now_iso()
@@ -547,17 +564,19 @@ class MainWindow(QMainWindow):
                 if state.run_id:
                     self.load_report(state.run_id)
                 self.submit("discover", "discover")  # Inventory moved; the Overview must too.
+            if job == "stop" and state.run_id:
+                self.poll_status()
         elif job == "discover":
             state.discovered = result
         elif job.startswith("verify:"):
             run_id = job[len("verify:") :]
-            state.verify_run_id = None
-            if run_id != state.run_id:
-                return  # The operator moved to another run; this result is not its evidence.
-            state.verification = result
-            state.verify_error = None
-            self.load_report(run_id)
-            self.submit("runs", "runs")
+            if state.verify_run_id == run_id:
+                state.verify_run_id = None
+            if run_id == state.run_id:
+                state.verification = result
+                state.verify_error = None
+                self.load_report(run_id)
+                self.submit("runs", "runs")
         elif job == "runs":
             state.runs = result
             if state.run_id is None and result:
@@ -575,9 +594,10 @@ class MainWindow(QMainWindow):
                 verification = result["run"]["verification"]
                 if state.verification is None and verification["outcome"] != "verification_pending":
                     state.verification = verification
-        elif job == "export":
-            state.exported = result
-            state.export_error = None
+        elif job.startswith("export:"):
+            if job[len("export:") :] == state.run_id:
+                state.exported = result
+                state.export_error = None
         elif job == "selftest":
             state.selftest = result
             state.selftest_error = None
@@ -606,6 +626,8 @@ class MainWindow(QMainWindow):
         elif job == "plan":
             state.plan_run = None
             state.plan_error = code
+        elif job == "resume":
+            state.resume_error = "gui:pre_start:" + vm.describe_error(code)
         elif job == "start":
             state.start_error = code
             state.status = None
@@ -618,18 +640,22 @@ class MainWindow(QMainWindow):
         elif job == "discover":
             return
         elif job.startswith("verify:"):
-            state.verify_run_id = None
-            if job[len("verify:") :] == state.run_id:
+            run_id = job[len("verify:") :]
+            if state.verify_run_id == run_id:
+                state.verify_run_id = None
+            if run_id == state.run_id:
                 state.verify_error = code
-        elif job == "export":
-            state.export_error = code
+        elif job.startswith("export:"):
+            if job[len("export:") :] == state.run_id:
+                state.export_error = code
         elif job == "selftest":
             state.selftest = None
             state.selftest_error = code
         elif job == "trust":
             state.connect_error = code
         elif job.startswith("report:"):
-            state.report = None
+            if job[len("report:") :] == state.run_id:
+                state.report = None
         self.refresh_all()
 
     def show_details(self) -> None:

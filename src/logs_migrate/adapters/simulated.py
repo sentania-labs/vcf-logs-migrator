@@ -147,6 +147,15 @@ class SimulatedEnvironment:
             data = dict(self.data[scope])
             data.pop("config", None)
             data.pop("hosts", None)
+            if (
+                scope == "destination"
+                and self.data.get("placeholder_nodes")
+                and not self.data["task"]
+            ):
+                data["nodes"] = data["nodes"][:1]
+                data["buckets"] = [
+                    b for b in data["buckets"] if b["node"] == data["nodes"][0]["id"]
+                ]
             return Cluster.from_dict(data)
 
         return cluster("source"), cluster("destination")
@@ -329,7 +338,15 @@ class SimulatedEnvironment:
                 for b in self.data["source"]["buckets"]
                 if b["node"] + "/" + b["id"] in completed
             )
-            status = self.data.get("node_statuses", {}).get(node["id"], task["status"])
+            failed = set(self.data.get("failed_nodes", []))
+            default_status = (
+                "failed"
+                if node["id"] in failed and task["status"] != "running"
+                else "completed"
+                if failed and task["status"] == "failed"
+                else task["status"]
+            )
+            status = self.data.get("node_statuses", {}).get(node["id"], default_status)
             outcomes.append(NodeTransfer(node["id"], status, completed, skipped, size))
         return Transfer(
             task["id"],
@@ -366,7 +383,18 @@ class SimulatedEnvironment:
                     if key in skip:
                         task["skipped"].append(key)
                         continue
+                    if not dest.preview:
+                        existing = [item for item in dest.buckets if item.id == b.id]
+                        if existing:
+                            if all(item.registered and item.complete for item in existing):
+                                task["completed"].append(key)
+                            else:
+                                task["skipped"].append(key)
+                            continue
                     node = dest.nodes[int(digest(b.id)[:8], 16) % len(dest.nodes)].id
+                    if node in self.data.get("failed_nodes", []):
+                        task["skipped"].append(key)
+                        continue
                     copy = replace(b, node=node, partition="" if not dest.preview else b.partition)
                     if self.data.get("partial_at_bucket") == key:
                         partial = replace(
@@ -393,7 +421,11 @@ class SimulatedEnvironment:
                             n["repository_available"] -= b.size
                 cancelled = limit is not None and len(task["completed"]) >= limit
                 task["status"] = (
-                    "cancelled" if cancelled else self.data.get("terminal_status", "completed")
+                    "cancelled"
+                    if cancelled
+                    else "failed"
+                    if self.data.get("failed_nodes")
+                    else self.data.get("terminal_status", "completed")
                 )
                 self._close_history()
                 self.data["destination_events"].extend(self.data.get("ingest_during_run", []))

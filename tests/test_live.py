@@ -353,7 +353,10 @@ def rigged(tmp_path, monkeypatch):
             ("src-1.lab", ReadOperation.SERVICE): "active\n",
             ("src-1.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
             ("src-1.lab", ReadOperation.INVENTORY): LISTING,
-            ("src-1.lab", ReadOperation.USAGE): f"5000 /storage/core/loginsight/cidata/store/{A}\n",
+            ("src-1.lab", ReadOperation.USAGE): (
+                f"5000 /storage/core/loginsight/cidata/store/{A}\n"
+                f"20000 /storage/core/loginsight/cidata/store/{B}\n"
+            ),
             ("src-2.lab", ReadOperation.SERVICE): "active\n",
             ("src-2.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
             ("src-2.lab", ReadOperation.INVENTORY): "",
@@ -453,11 +456,119 @@ def test_discover_builds_clusters_from_rest_and_ssh_reads(rigged):
     assert src.version == "8.18.7" and [n.id for n in src.nodes] == ["src-1.lab", "src-2.lab"]
     assert src.nodes[0].repository_available == 900 and src.identity == "a" * 64
     by_id = {b.id: b for b in src.buckets}
-    assert by_id[A].size == 5000 and by_id[A].messages == 1893963 and by_id[A].bounds_proven
+    assert by_id[A].size == 479923834 and by_id[A].messages == 1893963 and by_id[A].bounds_proven
     assert by_id[B].size == 20971520 and by_id[C].status == "active" and not by_id[C].complete
     assert dst.version == "9.0.2.0200" and [n.id for n in dst.nodes] == ["dst.lab"]
     assert dst.nodes[0].repository_available is None and dst.buckets == ()
     assert env.notes["source_listing_keys"]
+
+
+def test_selected_sizing_only_reads_overlapping_sealed_buckets(rigged):
+    env, source, _, ssh = trusted(rigged)
+    source.records += [
+        session(),
+        record("GET", "/api/v1/version", {"version": "8.18.7"}),
+        record("GET", "/api/v1/partitioning", {"partitions": []}),
+    ]
+    calls = []
+    old_client = ssh.client
+
+    def client(host):
+        result = old_client(host)
+        original = result.active_usage
+
+        def selected(ids):
+            calls.append((host, ids))
+            return original(ids)
+
+        result.active_usage = selected
+        return result
+
+    ssh.client = client
+    cluster = env.source_cluster(Window(1790000000000, 1790000000001))
+    assert calls == [("src-1.lab", [A])]
+    assert next(b for b in cluster.buckets if b.id == A).size == 5000
+    assert not any(op == ReadOperation.USAGE for _, op in ssh.reads)
+
+
+def test_only_source_listings_are_timed_and_held_for_saving(rigged):
+    env, _, _, ssh = trusted(rigged)
+    env.node_inventory("src-1.lab")
+    assert set(env._listing_seconds) == {"src-1.lab"}
+    assert set(env._new_listings) == {("src-1.lab", "source_ssh", None)}
+    env.node_inventory("src-2.lab", "destination_ssh", "root")
+    assert set(env._listing_seconds) == {"src-1.lab"}
+    assert set(env._new_listings) == {("src-1.lab", "source_ssh", None)}
+
+
+def test_failed_selected_sizing_clears_the_saved_listing_so_a_retry_refreshes(rigged, tmp_path):
+    from logs_migrate.journal import Journal
+
+    env, source, _, ssh = trusted(rigged)
+    journal = Journal(tmp_path / "inventory.db")
+    env.inventory_journal = journal
+    source.records += [session()] + [
+        entry
+        for _ in range(3)
+        for entry in (
+            record("GET", "/api/v1/version", {"version": "8.18.7"}),
+            record("GET", "/api/v1/partitioning", {"partitions": []}),
+        )
+    ]
+    old_client = ssh.client
+    broken = {"on": False}
+
+    def client(host):
+        result = old_client(host)
+        original = result.active_usage
+
+        def selected(ids):
+            if broken["on"]:
+                raise MigrationError(Code.CONNECTION)
+            return original(ids)
+
+        result.active_usage = selected
+        return result
+
+    ssh.client = client
+    window = Window(1790000000000, 1790000000001)
+    env.source_cluster()
+    listings = len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY])
+    env._inventory_cache.clear()
+    broken["on"] = True
+    with pytest.raises(MigrationError) as failure:
+        env.source_cluster(window)
+    assert failure.value.code == Code.CONNECTION
+    assert "src-1.lab" in failure.value.message and "retry" in failure.value.message
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == listings
+    broken["on"] = False
+    env.source_cluster(window)
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2 * listings
+    journal.close()
+
+
+def test_source_listing_journal_cache_survives_a_new_session(rigged, tmp_path):
+    from logs_migrate.journal import Journal
+
+    env, source, _, ssh = trusted(rigged)
+    journal = Journal(tmp_path / "inventory.db")
+    env.inventory_journal = journal
+    source.records += [session()] + [
+        entry
+        for _ in range(3)
+        for entry in (
+            record("GET", "/api/v1/version", {"version": "8.18.7"}),
+            record("GET", "/api/v1/partitioning", {"partitions": []}),
+        )
+    ]
+    env.source_cluster()
+    env._inventory_cache.clear()
+    env.source_cluster()
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2
+    env.invalidate_inventory()
+    env.source_cluster()
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 4
+    journal.close()
 
 
 def test_counts_recent_ingest_and_history_use_the_documented_routes(rigged):
@@ -622,11 +733,11 @@ def test_selftest_failure_detail_is_plain_for_the_cli_and_named_in_the_window(ri
     assert "ZeroDivisionError" in rows["Source API version"]
 
 
-def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
+def test_selftest_without_a_window_does_not_size_all_sealed_buckets(rigged):
     env, destination, result = _run_selftest(rigged, None)
     (plan,) = [s for s in result.steps if s.name == "Plan preview (no request sent)"]
-    assert plan.status == "pass", plan.detail
-    assert "active skipped" in plan.detail
+    assert plan.status == "skip"
+    assert "Choose dates" in plan.detail
 
 
 def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
@@ -713,9 +824,72 @@ def _live_rig(tmp_path, data_changes=None):
     return env, Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
 
 
+def test_destination_directory_inspection_detects_unregistered_bucket(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    env, _ = _live_rig(tmp_path)
+    source, destination = env.discover()
+    bucket = replace(source.buckets[0], node=destination.nodes[0].id)
+    destination = replace(destination, buckets=(bucket,), inventory_available=True)
+
+    class SSH:
+        def __init__(self, host):
+            self.host = host
+
+        def existing_bucket_usage(self, ids):
+            if self.host == destination.nodes[0].id:
+                return f"{bucket.size} /store/{bucket.id}\n"
+            return ""
+
+    adapter = SimpleNamespace(
+        connection=SimpleNamespace(destination_ssh_user="root"),
+        _ssh=lambda host, credential, user: SSH(host),
+    )
+    inspected = LiveEnvironment.inspect_destination_buckets(adapter, destination, {bucket.id})
+    assert inspected.buckets[0].size == bucket.size
+    orphan = replace(destination, buckets=())
+    with pytest.raises(MigrationError, match=Code.INCOMPLETE):
+        LiveEnvironment.inspect_destination_buckets(adapter, orphan, {bucket.id})
+
+
+def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import NodeTransfer, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], active_ack=ACTIVE_ACK)
+    destination_id = run["plan"]["destination"]["id"]
+    source, destination = env.discover()
+    selected_ids = [b["id"] for b in run["plan"]["selected"]]
+    registered = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in selected_ids[:2]
+    )
+    env.destination_cluster = lambda **kw: replace(
+        destination, buckets=registered, inventory_available=True
+    )
+    task = Transfer(
+        "sim-1",
+        "completed",
+        destination=destination_id,
+        nodes=(NodeTransfer("dst-1", "completed", scheduled_ids={"src-1": (selected_ids[1],)}),),
+    )
+    env.transfer = lambda: task
+    engine.status(run["id"])
+    (row,) = engine.journal.transfers(destination_id)
+    assert row["closed"]
+    assert {key.rsplit("/", 1)[-1] for key in row["received"]} == {selected_ids[0]}
+
+
 def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_list(tmp_path):
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
-    from logs_migrate.ports import Transfer
+    from logs_migrate.ports import NodeTransfer, Transfer
 
     env, engine = _live_rig(tmp_path)
     run = engine.plan(
@@ -726,17 +900,269 @@ def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_l
     destination = run["plan"]["destination"]["id"]
     # The API's finished task names only what it skipped (the documented disk-limit trap).
     first = "00000000-0000-0000-0000-000000000001"  # A fixture bucket, listed as skipped.
-    env.transfer = lambda: Transfer("sim-1", "completed", (), (first,), destination=destination)
+    node = NodeTransfer("dst-1", "completed", scheduled_ids={})
+    env.transfer = lambda: Transfer(
+        "sim-1", "completed", (), (first,), nodes=(node,), destination=destination
+    )
     engine.status()
     (row,) = engine.journal.transfers(destination)
     assert row["closed"] and first not in {k.rsplit("/", 1)[-1] for k in row["received"]}
     assert len(row["received"]) == 2
     result = engine.verify(run["id"])
     assert result["buckets"]["not_received"] == ["src-1/" + first]
+    assert result["receipt_basis"] == "task_report"
     assert (
         result["outcome"] != "verified_success"
         and result["reason"] == "selected_buckets_not_received"
     )
+
+
+@pytest.mark.parametrize("state", ["cancelled", "failed"])
+def test_live_ledger_without_inventory_settles_a_stopped_task_from_its_remaining_list(
+    tmp_path, state
+):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import NodeTransfer, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination = run["plan"]["destination"]["id"]
+    ids = [b["id"] for b in run["plan"]["selected"]]
+    left = ids[-1]
+    node = NodeTransfer(state, state, scheduled_ids={"src-1": (left,)})
+    env.transfer = lambda: Transfer("sim-1", state, destination=destination, nodes=(node,))
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert row["closed"] and {k.rsplit("/", 1)[-1] for k in row["received"]} == set(ids[:-1])
+    assert status["settlement"] == "task_report"
+    assert "not confirmed" in status["settlement_note"]
+
+
+@pytest.mark.parametrize("state", ["cancelled", "failed"])
+def test_live_ledger_without_inventory_holds_a_stopped_task_with_no_remaining_list(tmp_path, state):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    destination = run["plan"]["destination"]["id"]
+    env.transfer = lambda: Transfer("sim-1", state, destination=destination)
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"] and status["settlement"] == "held"
+    assert "stays held" in status["settlement_note"]
+
+
+def _preview_run(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    env.data["destination"]["version"] = "9.1.1"
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    return env, engine, run
+
+
+def test_no_ssh_partial_received_list_can_resume_and_verify(tmp_path):
+    from dataclasses import asdict, replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path, {"cancel_after": 1})
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    status = engine.status(first["id"])
+    assert status["status"] == "cancelled"
+    assert len(status["completed"]) == 1 and not status["skipped"]
+    row = engine.journal.transfers(first["plan"]["destination"]["id"])[0]
+    assert row["closed"] and row["basis"] == "task_report"
+    assert len(row["received"]) == 1 and len(row["unaccounted"]) == 2
+    assert "requested again" in status["settlement_note"]
+    assert len(status["remainder"]["selected"]) == 2
+    # One unaccounted bucket actually landed, but the task report omitted it. Re-requesting
+    # must skip its existing directory instead of copying its events a second time.
+    source, destination = env.discover()
+    unreported = next(b for b in source.buckets if b.id == first["plan"]["selected"][1]["id"])
+    env.data["destination"]["buckets"].append(
+        asdict(replace(unreported, node=destination.nodes[0].id, partition=""))
+    )
+    env.data["destination_events"].extend(
+        {**event, "cohort": "migration"}
+        for event in env.data["source_events"]
+        if event["bucket"] == unreported.key
+    )
+    del env.data["cancel_after"]
+    resumed = engine.resume(first["id"])
+    assert len(resumed["plan"]["already_received"]) == 1
+    assert len(resumed["plan"]["selected"]) == 2
+    assert resumed["plan"]["re_requested_unconfirmed"]
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    engine.status(resumed["id"])
+    result = engine.verify(resumed["id"])
+    assert result["outcome"] == "verified_success"
+    assert result["receipt_basis"] == "task_report"
+    assert "requested again" in result["receipt_note"]
+
+
+def test_no_ssh_resume_does_not_refuse_on_a_placeholder_node_count(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path, {"cancel_after": 1, "placeholder_nodes": True})
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    assert len(first["plan"]["destination"]["nodes"]) == 1
+    assert first["plan"]["estimate"]["destination_nodes"] == 1
+    assert first["plan"]["estimate"]["destination_nodes_assumed"]
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    status = engine.status(first["id"])
+    assert status["status"] == "cancelled"
+    assert status["remainder"]["node_count_unchecked"]
+    assert status["remainder"]["estimate"]["destination_nodes_assumed"]
+    del env.data["cancel_after"]
+    resumed = engine.resume(first["id"])
+    plan = resumed["plan"]
+    assert plan["node_count_unchecked"]
+    assert any("node count could not be checked" in w for w in plan["warnings"])
+    assert plan["estimate"]["destination_nodes"] == len(env.data["destination"]["nodes"]) == 3
+    assert plan["estimate"]["destination_nodes_assumed"]
+    assert status["remainder"]["estimate"] == plan["estimate"]
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+@pytest.mark.parametrize("ingest", [False, True])
+def test_no_ssh_resume_verification_accounts_for_unattributed_ingest(tmp_path, ingest):
+    from conftest import FIXTURES
+
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.journal import Journal
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    if not ingest:
+        data["ingest_during_run"] = []
+    data.update({"cancel_after": 1, "placeholder_nodes": True})
+    data["destination"]["inventory_available"] = False
+    env = SimulatedEnvironment(data)
+    env.attribution = False
+    env.mode = "live"
+    clock = SimulatedClock()
+    engine = Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    assert engine.status(first["id"])["status"] == "cancelled"
+    stopped = engine.verify(first["id"])
+    assert stopped["outcome"] != "verified_success"
+    del env.data["cancel_after"]
+    resumed = engine.resume(first["id"])
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    assert engine.status(resumed["id"])["status"] == "completed"
+    result = engine.verify(resumed["id"])
+    migrated = [e["id"] for e in env.data["destination_events"] if e.get("cohort") == "migration"]
+    assert len(migrated) == len(set(migrated)) == 6
+    if ingest:
+        assert result["outcome"] == "verified_discrepancy"
+        assert (result["daily"][0]["expected"], result["daily"][0]["actual"]) == (3, 5)
+        assert sum(e.get("cohort") == "ingest" for e in env.data["destination_events"]) == 2
+    else:
+        assert result["outcome"] == "verified_success"
+
+
+def _placeholder_then_observed(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path, {"cancel_after": 1, "placeholder_nodes": True})
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    assert len(first["plan"]["destination"]["nodes"]) == 1
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    assert engine.status(first["id"])["status"] == "cancelled"
+    del env.data["cancel_after"]
+    env.data["placeholder_nodes"] = False
+    env.data["destination"]["inventory_available"] = True
+    return env, engine, window, first
+
+
+def test_resume_after_destination_ssh_is_connected_does_not_compare_a_placeholder_count(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK
+
+    env, engine, _, first = _placeholder_then_observed(tmp_path)
+    resumed = engine.resume(first["id"])
+    plan = resumed["plan"]
+    assert len(plan["destination"]["nodes"]) == len(env.data["destination"]["nodes"]) == 3
+    assert plan["node_count_unchecked"]
+    assert any("node count could not be checked" in w for w in plan["warnings"])
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+def test_replanning_after_destination_ssh_is_connected_does_not_compare_a_placeholder_count(
+    tmp_path,
+):
+    from logs_migrate.models import Policy
+
+    _, engine, window, _ = _placeholder_then_observed(tmp_path)
+    replanned = engine.plan(window, Policy(poll_seconds=0))
+    assert len(replanned["plan"]["already_received"]) == 1
+    assert len(replanned["plan"]["selected"]) == 2
+
+
+def test_no_ssh_unrelated_receipt_does_not_release_the_selection(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import Transfer
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    destination = first["plan"]["destination"]["id"]
+    env.transfer = lambda: Transfer("sim-1", "cancelled", (A,), destination=destination)
+    result = engine.status(first["id"])
+    row = engine.journal.transfers(destination)[0]
+    assert not row["closed"] and result["settlement"] == "held"
+
+
+def test_911_completed_task_without_receipt_evidence_stays_held(tmp_path):
+    from logs_migrate.ports import NodeTransfer, Transfer
+
+    env, engine, run = _preview_run(tmp_path)
+    destination = run["plan"]["destination"]["id"]
+    node = NodeTransfer("dst-1", "completed", scheduled_ids={})
+    env.transfer = lambda: Transfer("sim-1", "completed", nodes=(node,), destination=destination)
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"] and status["settlement"] == "held"
+    assert "9.1.1" in status["settlement_note"]
+    assert "SSH" not in status["settlement_note"]
+
+
+def test_a_partial_received_list_holds_and_names_the_unaccounted_buckets(tmp_path):
+    from logs_migrate.ports import Transfer
+
+    env, engine, run = _preview_run(tmp_path)
+    destination = run["plan"]["destination"]["id"]
+    keys = [f"src-1/{b['id']}" for b in run["plan"]["selected"]]
+    env.transfer = lambda: Transfer("sim-1", "completed", (keys[0],), destination=destination)
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"] and status["settlement"] == "held"
+    assert f"{len(keys) - 1} selected bucket(s) are neither received" in status["settlement_note"]
+    assert "reports no list" not in status["settlement_note"]
 
 
 def test_live_ledger_stays_open_while_status_still_shows_the_previous_task(tmp_path):
@@ -945,6 +1371,7 @@ def test_an_uncertain_start_whose_task_appears_in_history_settles_instead_of_rel
                 "status": "COMPLETED",
                 "bucketStartTimeMillis": MARCH.start,
                 "bucketEndTimeMillis": MARCH.end,
+                "taskDetails": {"dst": {"status": "COMPLETED", "scheduledBuckets": {}}},
             },
         ),
     )
@@ -982,7 +1409,18 @@ def test_a_gateway_answer_after_the_start_holds_the_window_until_the_task_settle
         "bucketEndTimeMillis": MARCH.end,
     }
     running = ("GET", MIGRATIONS, (200, {"status": "RUNNING", **window}))
-    done = ("GET", MIGRATIONS, (200, {"status": "COMPLETED", **window}))
+    done = (
+        "GET",
+        MIGRATIONS,
+        (
+            200,
+            {
+                "status": "COMPLETED",
+                **window,
+                "taskDetails": {"dst": {"status": "COMPLETED", "scheduledBuckets": {}}},
+            },
+        ),
+    )
     env, engine = _wired(
         tmp_path,
         rigged,
@@ -1471,6 +1909,23 @@ def test_logs90_identity_is_the_transport_pin():
     assert Logs90(transport, "a", Secret("b")).identity == "recorded"
 
 
+def test_task_status_stays_running_when_a_node_is_restarting():
+    task = decode_task(
+        {
+            "taskId": "one",
+            "status": "RUNNING",
+            "taskDetails": {
+                "dst-1": {"status": "RUNNING"},
+                "dst-2": {"status": "STARTING"},
+            },
+        },
+        destination="d",
+        now_ms=1700000060000,
+    )
+    assert task.status == "running"
+    assert all(node.status == "running" for node in task.nodes)
+
+
 def test_task_details_from_90_status():
     task = decode_task(
         {
@@ -1744,11 +2199,9 @@ def test_node_inventories_run_in_parallel_and_are_reused(rigged):
     env.on_progress = messages.append
     env.source_cluster()
     env.source_cluster()
-    assert sorted(host for host, op in ssh.reads if op == ReadOperation.USAGE) == [
-        "src-1.lab",
-        "src-2.lab",
-    ]
-    assert len(messages) == 2 and all("sizing" in message for message in messages)
+    assert not [op for _, op in ssh.reads if op == ReadOperation.USAGE]
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2
+    assert not messages
 
 
 def test_plan_warns_that_undated_open_buckets_may_hold_backfill_without_dropping_the_frontier(

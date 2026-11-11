@@ -8,7 +8,7 @@ never credentials, never raw remote text.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
 from .adapters.ssh_errors import SSHFailure
@@ -126,6 +126,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     hosts = step("Source cluster members (SSH)", members) or []
     from concurrent.futures import ThreadPoolExecutor
 
+    if hasattr(env, "load_source_cache"):
+        env.load_source_cache(hosts)
     inventories = []
     pool = ThreadPoolExecutor(max_workers=max(1, len(hosts)))
     futures = {host: pool.submit(env.node_inventory, host) for host in hosts}
@@ -137,7 +139,6 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             sealed = [b for b in inventory.buckets if b.status != "active"]
             active = [b for b in inventory.buckets if b.status == "active"]
             bounded = [b for b in sealed if b.start is not None and b.end is not None]
-            sized = sum(1 for b in inventory.buckets if b.id in inventory.usage)
             space = (
                 f"{inventory.available / 1e9:.1f} GB free"
                 if inventory.available is not None
@@ -145,7 +146,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             )
             detail = (
                 f"service {inventory.service} · {len(sealed)} sealed ({len(bounded)} with dates), "
-                f"{len(active)} active · {sized} sized by du · {space}"
+                f"{len(active)} active · {space}"
             )
             if inventory.unrecognized:
                 detail += (
@@ -160,8 +161,10 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 detail += f" · {len(sealed) - len(bounded)} sealed without dates (excluded)"
             return inventory, detail
 
-        step(f"Node {host} (SSH listing, du, df, service)", node)
+        step(f"Node {host} (SSH listing, df, service)", node)
     pool.shutdown()
+    if hasattr(env, "save_source_cache"):
+        env.save_source_cache(hosts)
 
     def source_cluster():
         cluster = env.source_cluster()
@@ -337,7 +340,13 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 Code.INCOMPLETE,
                 "No sealed groups have usable dates. Check source inventory before planning.",
             )
-        preview = build_plan(source, destination, requested)
+        sized = env.size_source(source, requested)
+        present = {b.id for b in destination.buckets}
+        pending = replace(sized, buckets=tuple(b for b in sized.buckets if b.id not in present))
+        already = sum(1 for b in sized.buckets if b.id in present and b.selected(requested))
+        if already and not any(b.selected(requested) for b in pending.buckets):
+            return None, f"all {already} selected buckets are already on the destination"
+        preview = build_plan(pending, destination, requested)
         detail = (
             f"{len(preview['selected'])} buckets, "
             f"{preview['capacity']['required_bytes'] / 1e9:.2f} GB, "
@@ -348,6 +357,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             "last day covered only by sealed buckets "
             f"{preview['last_fully_sealed_day'] or 'unknown'}"
         )
+        if already:
+            detail += f" · {already} already on the destination, left out"
         if preview["capacity"]["unknown"]:
             detail += " · destination budget unknown"
         return preview, detail
@@ -355,7 +366,9 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     step(
         "Plan preview (no request sent)",
         plan,
-        skip=None
+        skip="Choose dates to preview and size only those buckets."
+        if window is None
+        else None
         if isinstance(source, Cluster) and isinstance(destination, Cluster)
         else "inventory missing",
     )

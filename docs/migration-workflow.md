@@ -28,10 +28,11 @@ A small local bucket-ID ledger prevents sending a bucket twice, including
 adjacent windows selecting the same wide bucket. While a task runs, or if its POST
 response was lost, its whole selection is held. Once the API reports the task
 finished, the ledger keeps only the buckets it actually transferred, so a stopped,
-cancelled or failed task leaves the remainder free to plan again. Ledger updates
-happen when `plan`, `copy`, `verify` or a journal-backed `status`/`stop` observes
-the finished task. There is no local task state machine, close/reconcile procedure
-or tail-rerun bypass.
+cancelled or failed task leaves a remainder. `resume RUN_ID` sends exactly that
+remainder as a new run linked to the first, and `verify` counts across the linked
+runs. Ledger updates happen when `plan`, `copy`, `resume`, `verify` or a
+journal-backed `status`/`stop` observes the finished task. There is no local task
+state machine or tail-rerun bypass.
 
 Verification is cumulative per destination: one result for everything the API has
 reported as received so far, with expected counts attributed per received bucket.

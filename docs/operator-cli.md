@@ -39,14 +39,14 @@ still receive older-dated data (backfill or late agents); the preview warns abou
 that and lists `open_bucket_days`, the requested days shared with an open bucket whose
 dates are known. Such days show as differences at verify.
 
-The preview also shows storage: the selected buckets' total bytes beside each
-destination node's own available repository budget. The API assigns buckets to
-nodes, so every node must be able to hold the whole selection. `copy` re-reads the
-destination and refuses (`insufficient_capacity`, exit 3) when any node falls short;
-an over-budget 9.0 destination retires and deletes its own existing history. A node
-whose budget was not observed (no destination SSH, or 9.1.1) is listed as unknown
-and warned about rather than refused; the API's own 95% disk stop then applies and
-verification shows what landed. The
+The preview estimates each destination node's share as the selected bytes divided by
+the node count, with a 25% margin for uneven bucket sizes, capped at the total
+selection. `copy` refreshes storage and refuses (`insufficient_capacity`, exit 3)
+if the estimate exceeds a node's repository budget or would reach its 95% disk
+limit. This is an estimate, not a guarantee: individual bucket sizes and the API's
+assignment can make a node's actual share larger. An over-budget 9.0 destination
+can retire its own existing history. Missing budget or disk figures are shown as
+unknown and warned about rather than refused. The
 preview warns that the source root password is sent to the destination for the
 transfer and that source retention can remove planned buckets before the run.
 
@@ -202,8 +202,49 @@ logs-migrate --journal /private/migration/run.sqlite \
 ```
 
 The wrapper checks that ID before cancelling, then returns the API's observation.
-It never automatically cancels a transfer because local inventory changed. There
-is no resume/close/reconcile workflow and no local recovery state to clear.
+It never automatically cancels a transfer because local inventory changed.
+
+To finish a stopped or failed transfer, keep the original journal and check the
+remainder before starting it:
+
+```sh
+logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/sealed-populated.fixture \
+  resume RUN_ID --preview
+logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/sealed-populated.fixture \
+  copy NEW_RUN_ID --ack-active "i understand you aren't going to copy the latest data"
+```
+
+The preview reports already received buckets and those still to transfer in plain
+language. Add `--json` to `resume RUN_ID --preview` for the machine-readable form.
+Resume
+checks available space again. It also checks the destination node count when the
+destination's nodes were observed both in the first plan and now (destination SSH on
+9.0). On 9.0 without destination SSH and on 9.1.1 the node count cannot be checked,
+so the preview shows a caution and the time estimate says it assumes the node count
+listed by the earlier task. A missing source bucket,
+unregistered destination directory, changed bucket size, or unresolved receipt
+record stops the preview for investigation. With destination SSH on 9.0, the
+destination's bucket inventory decides what arrived. Without it, a 9.0 task that
+lists the buckets still to do per node is settled from its own report: the run's
+selection minus those buckets and minus the ones it reports skipped. Status, verify
+and the Migration page say plainly that such a record is taken from the task report
+and not confirmed against the destination's bucket store (a disk-limit stop that
+drops buckets without listing them cannot be seen this way). If the task lists some
+received buckets but leaves others unaccounted for, resume requests those unaccounted
+buckets again: the 9.0 destination skips a bucket whose directory is already present.
+Without destination SSH the tool cannot check for a directory that is present but
+missing from the bucket index, so inspect that condition separately if suspected.
+A 9.0 task with neither receipt evidence nor a per-node remaining list stays held,
+with the reason shown, until destination SSH is connected. 9.1.1 has no bucket store: it
+settles only from explicit per-bucket receipt evidence in the task or journal. A
+finished task without it, or one whose received list leaves selected buckets
+unaccounted for, stays held (status names how many buckets are unaccounted for)
+rather than guessing. After the remaining transfer finishes, run `verify NEW_RUN_ID`.
+`resume RUN_ID --ack-active ...` previews and starts in one command; use `--preview`
+when you need to review the remainder first. When the node count could not be
+checked, the one-command form does not start: it prints the caution and exits with
+code 2 unless you also pass `--ack-node-count-unchanged`, confirming that no nodes
+were added or removed since the first run.
 
 A start the appliance refused (any 4xx except 408, or 500 or 501) was never accepted,
 so nothing is held and you can plan and copy again. A start with no answer (timeout,
@@ -217,10 +258,11 @@ even while its status still shows nothing.
 
 - Source operations are read-only. No source stop, bucket delete, overwrite or
   manual-copy fallback exists in the engine path.
-- A new transfer may not select a source bucket the destination already received or
-  that an in-flight task holds. Once the API reports a task finished, only the
-  buckets it transferred stay recorded, so a stopped, cancelled or failed task's
-  remainder can be planned again (use a window that excludes what landed). Preserve
+- A new transfer may not select a source bucket that an in-flight task holds. Buckets
+  the destination already received are split out of the plan and shown as already
+  received; only the remainder is sent. Once the API reports a task finished, only
+  the buckets it transferred stay recorded, so a stopped, cancelled or failed task's
+  remainder is finished with `resume RUN_ID` (no hand-picked dates). Preserve
   the journal for each destination; external transfer history must also be known.
   Adjacent windows selecting the same whole bucket are refused too, especially on
   9.1.1 where destination bucket IDs disappear. A run starts at most once.
@@ -317,10 +359,11 @@ and authentication failures use `authentication_failed`; the other stages use
 
 `selftest` exits 0 when every read-only check passed and 1 otherwise.
 
-On a large source the per-node SSH inventory (bucket listing and `du`) is the slow
-step. Nodes are read in parallel, the CLI prints a per-node progress line and each
-count query to stderr, and an inventory read within the last five minutes is reused
-by later steps; `copy` always re-reads the appliances before it starts.
+On a large source the per-node SSH bucket listing is the slow step. Nodes are read in
+parallel, the CLI prints a per-node progress line and each count query to stderr, and
+a listing read within the last five minutes is reused by later steps (kept in the
+`--journal` file when one is given). `du` sizes only the buckets a window selects;
+`copy` always re-reads the appliances before it starts.
 
 The optional 9.0 fixup implementation is retained in `_set_aside_fixup.py`, marked
 set aside and not instantiable or exposed in CLI help/commands. Reintroduction
