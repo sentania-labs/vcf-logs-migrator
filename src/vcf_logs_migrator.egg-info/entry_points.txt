@@ -1,0 +1,2 @@
+[console_scripts]
+logs-migrate = logs_migrate.cli:main

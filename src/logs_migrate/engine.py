@@ -975,7 +975,7 @@ class Engine:
                 "the node count is unchanged before continuing."
             )
         plan["estimate"] = self._estimate(plan, self._nodes_observed(destination), len(task.nodes))
-        self._overlap(plan)
+        self._overlap(plan, task)
         return source, destination, plan
 
     @safe_boundary
@@ -1066,7 +1066,7 @@ class Engine:
                 Code.INVENTORY_CHANGED,
             )
             task = self._settle(destination.id)
-            self._overlap(fresh)
+            self._overlap(fresh, task)
             require(fresh["capacity"]["fits"], Code.CAPACITY)
             difference = fresh["partition_diff"]
             require(not difference["missing"] and not difference["different"], Code.PARTITIONS)
