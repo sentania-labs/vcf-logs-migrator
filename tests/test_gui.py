@@ -481,6 +481,28 @@ def test_verification_results_bind_to_the_run_that_requested_them(driver):
     assert driver.state.verification is stray
 
 
+@pytest.mark.parametrize("outcome", ["result", "error"])
+def test_leaving_a_run_does_not_leave_verify_stuck(driver, outcome):
+    driver.connect()
+    driver.plan()
+    run_a = driver.state.run_id
+    driver.plan()
+    run_b = driver.state.run_id
+    assert run_a != run_b
+    job = "verify:" + run_a
+    driver.state.verify_run_id = run_a
+    driver.window.worker.pending.add(job)
+    driver.window.job_generation[job] = driver.window.generation
+    if outcome == "result":
+        driver.window._done(job, {"outcome": "verified_success", "complete": True, "daily": []})
+    else:
+        driver.window._failed(job, "connection_failed")
+    assert driver.state.verify_run_id is None
+    assert driver.state.verification is None and driver.state.verify_error is None
+    driver.window.select_run(run_a)
+    assert driver.pages["verification"].verify_button.isEnabled()
+
+
 def test_editing_a_date_retires_the_preview_and_acknowledgment(driver):
     from PySide6.QtCore import QDate
 

@@ -570,13 +570,13 @@ class MainWindow(QMainWindow):
             state.discovered = result
         elif job.startswith("verify:"):
             run_id = job[len("verify:") :]
-            if run_id != state.run_id:
-                return  # The operator moved to another run; this result is not its evidence.
-            state.verify_run_id = None
-            state.verification = result
-            state.verify_error = None
-            self.load_report(run_id)
-            self.submit("runs", "runs")
+            if state.verify_run_id == run_id:
+                state.verify_run_id = None
+            if run_id == state.run_id:
+                state.verification = result
+                state.verify_error = None
+                self.load_report(run_id)
+                self.submit("runs", "runs")
         elif job == "runs":
             state.runs = result
             if state.run_id is None and result:
@@ -640,8 +640,10 @@ class MainWindow(QMainWindow):
         elif job == "discover":
             return
         elif job.startswith("verify:"):
-            if job[len("verify:") :] == state.run_id:
+            run_id = job[len("verify:") :]
+            if state.verify_run_id == run_id:
                 state.verify_run_id = None
+            if run_id == state.run_id:
                 state.verify_error = code
         elif job.startswith("export:"):
             if job[len("export:") :] == state.run_id:
