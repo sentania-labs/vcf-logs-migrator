@@ -607,7 +607,9 @@ class PlanPage(Page):
                 f"{vm.format_eta(estimate['low_seconds'])} to "
                 f"{vm.format_eta(estimate['high_seconds'])} for {estimate['bucket_count']} buckets "
                 f"({vm.format_bytes(estimate['selected_bytes'])}) "
-                f"on {estimate['destination_nodes']} destination nodes. "
+                f"on {estimate['destination_nodes']} destination nodes"
+                + (" (assumed; not inspected)" if estimate.get("destination_nodes_assumed") else "")
+                + ". "
                 f"Rate: {vm.format_rate(estimate['rate_bytes_per_second'])} "
                 f"({estimate['rate_basis']}). "
                 + (

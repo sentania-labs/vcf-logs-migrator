@@ -147,6 +147,15 @@ class SimulatedEnvironment:
             data = dict(self.data[scope])
             data.pop("config", None)
             data.pop("hosts", None)
+            if (
+                scope == "destination"
+                and self.data.get("placeholder_nodes")
+                and not self.data["task"]
+            ):
+                data["nodes"] = data["nodes"][:1]
+                data["buckets"] = [
+                    b for b in data["buckets"] if b["node"] == data["nodes"][0]["id"]
+                ]
             return Cluster.from_dict(data)
 
         return cluster("source"), cluster("destination")

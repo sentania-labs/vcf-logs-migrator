@@ -340,7 +340,12 @@ class Engine:
         )
         existing = []
         for row in self.journal.transfers(destination.id):
-            if row["source"] == source.id and row["closed"] and ids & _ids(row["received"]):
+            if (
+                self._nodes_observed(destination)
+                and row["source"] == source.id
+                and row["closed"]
+                and ids & _ids(row["received"])
+            ):
                 earlier = self.journal.load(row["run"])
                 require(
                     len(earlier["plan"]["destination"]["nodes"]) == len(destination.nodes),
@@ -443,10 +448,16 @@ class Engine:
         first = series[0]
         return first if elapsed - first[0] >= RATE_WINDOW_SECONDS else None
 
-    def _estimate(self, plan):
+    def _nodes_observed(self, destination):
+        return self.attribution or destination.inventory_available
+
+    def _estimate(self, plan, observed=True, listed_nodes=0):
         sizes = sum(b["size"] for b in plan["selected"])
         count = len(plan["selected"])
+        assumed = not observed
         streams = len(plan["destination"]["nodes"])
+        if assumed and listed_nodes:
+            streams = listed_nodes
         observed = None
         for run in reversed(self.journal.runs()):
             if (
@@ -469,6 +480,7 @@ class Engine:
             "selected_bytes": sizes,
             "bucket_count": count,
             "destination_nodes": streams,
+            "destination_nodes_assumed": assumed,
             "rate_bytes_per_second": observed if observed else 4_000_000,
             "rate_basis": "measured overall" if observed else "assumed per destination node",
             "listing_seconds": overhead if not observed else None,
@@ -488,7 +500,7 @@ class Engine:
             if destination.inventory_available:
                 destination = self.env.destination_cluster(fresh=True)
             plan = self._plan_with_existing(source, destination, window)
-            plan["estimate"] = self._estimate(plan)
+            plan["estimate"] = self._estimate(plan, self._nodes_observed(destination))
             plan["source_ingest"] = self._source_ingest()
             growth = plan["source_ingest"]
             if growth["bytes"] is None:
@@ -555,12 +567,13 @@ class Engine:
             and destination.identity == original["destination"]["identity"],
             Code.TOPOLOGY,
         )
-        require(
-            len(destination.nodes) == len(original["destination"]["nodes"]),
-            Code.TOPOLOGY,
-            "The destination node count changed; placement may differ and a resume could "
-            "duplicate buckets. Restore the original node count before continuing.",
-        )
+        if self._nodes_observed(destination):
+            require(
+                len(destination.nodes) == len(original["destination"]["nodes"]),
+                Code.TOPOLOGY,
+                "The destination node count changed; placement may differ and a resume could "
+                "duplicate buckets. Restore the original node count before continuing.",
+            )
         task = self._settle(destination.id)
         require(task.status in TERMINAL, Code.BUSY)
         if destination.inventory_available:
@@ -673,7 +686,14 @@ class Engine:
                 "The destination could not be inspected. Remaining buckets will be requested "
                 "again; some may already be present."
             )
-        plan["estimate"] = self._estimate(plan)
+        if not self._nodes_observed(destination):
+            plan["node_count_unchecked"] = True
+            plan["warnings"].append(
+                "The destination's node count could not be checked. If nodes were added or "
+                "removed since the first run, history may be copied a second time. Confirm "
+                "the node count is unchanged before continuing."
+            )
+        plan["estimate"] = self._estimate(plan, self._nodes_observed(destination), len(task.nodes))
         self._overlap(plan)
         return source, destination, plan
 
@@ -1031,8 +1051,11 @@ class Engine:
         selected = [*root["plan"].get("already_received", []), *root["plan"]["selected"]]
         remaining = [b for b in selected if b["id"] not in received]
         plan = {**root["plan"], "selected": remaining}
+        observed = self.attribution or bool(root["plan"]["destination"].get("inventory_available"))
         try:
-            estimate = self._estimate(plan)
+            estimate = self._estimate(
+                plan, observed, len(root.get("assignment") or run.get("assignment") or {})
+            )
         except Exception:
             estimate = None  # A time estimate must never block status or a transfer.
         return {
@@ -1040,6 +1063,7 @@ class Engine:
             "selected": remaining,
             "estimate": estimate,
             "re_requested_unconfirmed": any(row.get("basis") == TASK_REPORT for row in rows),
+            "node_count_unchecked": not observed,
         }
 
     @safe_boundary

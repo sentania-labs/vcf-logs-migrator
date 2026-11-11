@@ -960,6 +960,32 @@ def test_no_ssh_partial_received_list_can_resume_and_verify(tmp_path):
     assert "requested again" in result["receipt_note"]
 
 
+def test_no_ssh_resume_does_not_refuse_on_a_placeholder_node_count(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path, {"cancel_after": 1, "placeholder_nodes": True})
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    assert len(first["plan"]["destination"]["nodes"]) == 1
+    assert first["plan"]["estimate"]["destination_nodes"] == 1
+    assert first["plan"]["estimate"]["destination_nodes_assumed"]
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    status = engine.status(first["id"])
+    assert status["status"] == "cancelled"
+    assert status["remainder"]["node_count_unchecked"]
+    assert status["remainder"]["estimate"]["destination_nodes_assumed"]
+    del env.data["cancel_after"]
+    resumed = engine.resume(first["id"])
+    plan = resumed["plan"]
+    assert plan["node_count_unchecked"]
+    assert any("node count could not be checked" in w for w in plan["warnings"])
+    assert plan["estimate"]["destination_nodes"] == len(env.data["destination"]["nodes"]) == 3
+    assert plan["estimate"]["destination_nodes_assumed"]
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
 def test_no_ssh_unrelated_receipt_does_not_release_the_selection(tmp_path):
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
     from logs_migrate.ports import Transfer

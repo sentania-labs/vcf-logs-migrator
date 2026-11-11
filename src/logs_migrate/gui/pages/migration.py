@@ -209,6 +209,13 @@ class MigrationPage(Page):
                     if plan.get("re_requested_unconfirmed")
                     else ""
                 )
+                + (
+                    " The destination's node count could not be checked. If nodes were added "
+                    "or removed since the first run, history may be copied a second time; "
+                    "confirm it is unchanged before continuing."
+                    if plan.get("node_count_unchecked")
+                    else ""
+                )
             )
             self.remainder_title.setText("Ready to resume" if preview else "Migration stopped")
         self.remainder_card.setVisible(preview or show_summary)

@@ -460,6 +460,12 @@ def main(argv=None):
                     "The destination could not be inspected. Remaining buckets will be "
                     "requested again; some may already be there."
                 )
+            if plan.get("node_count_unchecked"):
+                print(
+                    "The destination's node count could not be checked. If nodes were added "
+                    "or removed since the first run, history may be copied a second time. "
+                    "Confirm it is unchanged before continuing."
+                )
             print(f"Preview run ID: {result['id']} (use with copy to start)")
         else:
             print(json.dumps(result, sort_keys=True))
