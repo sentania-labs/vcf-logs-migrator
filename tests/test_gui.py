@@ -45,13 +45,43 @@ def test_window_walks_the_workflow_off_the_ui_thread(driver):
         path.startswith(str(driver.exports)) for path in state.exported
     )
     driver.plan()
-    assert state.plan_error.partition(": ")[0] in {
-        "overlapping_transfer",
-        "bucket_identity_conflict",
-    }
-    assert driver.pages["plan"].stack.currentIndex() == 1
-    driver.theme("dark")
-    assert state.settings.theme == "dark"
+    assert state.plan_error is None
+    assert not state.plan_run["plan"]["selected"]
+    assert state.plan_run["plan"]["already_received"]
+    assert not plan_page.start_button.isEnabled()
+
+
+def test_resume_preview_and_finish_in_the_window():
+    import json
+
+    driver = Driver(FIXTURES / "sealed-populated.fixture", knobs={"cancel_after": 1})
+    try:
+        driver.connect()
+        driver.plan()
+        driver.acknowledge()
+        driver.start()
+        driver.poll_until_finished()
+        assert driver.state.status["status"] == "cancelled"
+        state_path = driver.journal.with_suffix(".simulated-state")
+        data = json.loads(state_path.read_text())
+        del data["cancel_after"]
+        state_path.write_text(json.dumps(data))
+        page = driver.pages["migration"]
+        assert page.resume_button.isVisible()
+        page.resume_button.click()
+        driver.until(lambda: "resume" not in driver.window.worker.pending)
+        driver.idle()
+        assert page.remainder_card.isVisible()
+        assert "Already received: 1 bucket" in page.remainder.text()
+        assert page.start_remainder_button.isEnabled()
+        page.start_remainder_button.click()
+        driver.until(lambda: "start" not in driver.window.worker.pending)
+        driver.idle()
+        driver.poll_until_finished()
+        driver.verify()
+        assert driver.state.verification["outcome"] == "verified_success"
+    finally:
+        driver.close()
 
 
 def _live_simulator(monkeypatch, driver, *, refuse=False):
@@ -302,7 +332,7 @@ def test_cancel_button_confirms_then_cancels_the_task():
         assert driver.state.status["status"] == "running"
         assert driver.cancel(), "the real Cancel button must send the stop request"
         assert driver.state.status["status"] == "cancelled"
-        assert "CANCELLED" in driver.pages["migration"].banner.text()
+        assert "Transfer cancelled" in driver.pages["migration"].banner.text()
     finally:
         driver.close()
 
@@ -391,14 +421,16 @@ def test_blocked_preview_keeps_the_date_editors_reachable(driver):
     driver.acknowledge()
     driver.start()
     driver.poll_until_finished()
-    driver.plan()
+    driver.show("plan")
+    driver.state.plan_error = "overlapping_transfer: An in-flight transfer holds these groups."
     page = driver.pages["plan"]
+    page.refresh()
     assert page.stack.currentIndex() == 1 and page.change_button.isVisible()
     page.change_dates()
     driver.wait(30)
     assert page.stack.currentIndex() == 0
     assert page.start_date.isEnabled() and page.refresh_button.isEnabled()
-    assert "blocked" in page.error.text().lower() and page.error.isVisible()
+    assert "needs attention" in page.error.text().lower() and page.error.isVisible()
 
 
 def test_blocked_page_shows_the_refusal_it_received(driver):
@@ -407,8 +439,10 @@ def test_blocked_page_shows_the_refusal_it_received(driver):
     driver.acknowledge()
     driver.start()
     driver.poll_until_finished()
-    driver.plan()
+    driver.show("plan")
+    driver.state.plan_error = "overlapping_transfer: An in-flight transfer holds these groups."
     page = driver.pages["plan"]
+    page.refresh()
     assert page.stack.currentIndex() == 1
     refused = dict(page.overlap_rows.rows())["Refused"]
     assert refused == vm.plan_error_text(
@@ -416,7 +450,7 @@ def test_blocked_page_shows_the_refusal_it_received(driver):
         driver.state.discovered,
         vm.window_from_days(*page.current_dates()),
     )
-    assert "already exist" in refused or "already exists" in refused
+    assert "in-flight transfer" in refused
 
 
 def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(driver):

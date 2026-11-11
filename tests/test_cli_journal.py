@@ -50,6 +50,48 @@ def test_cli_persistent_flow_and_offline_reports(tmp_path, capsys, fixture, comp
     assert "verified_success" in capsys.readouterr().out
 
 
+def test_cli_resume_survives_reopening_the_journal(tmp_path, capsys):
+    fixture = tmp_path / "fixture.json"
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    data["cancel_after"] = 1
+    fixture.write_text(json.dumps(data))
+    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture)]
+    assert (
+        main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
+        == 0
+    )
+    first = json.loads(capsys.readouterr().out)
+    assert main([*base, "copy", first["id"], "--ack-active", ACTIVE_ACK]) == 0
+    capsys.readouterr()
+    assert main([*base, "status", first["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "cancelled"
+    state_file = tmp_path / "j.simulated-state"
+    remote = json.loads(state_file.read_text())
+    del remote["cancel_after"]
+    state_file.write_text(json.dumps(remote))
+    assert main([*base, "resume", first["id"], "--preview"]) == 0
+    resumed = json.loads(capsys.readouterr().out)
+    assert len(resumed["plan"]["already_received"]) == 1
+    assert len(resumed["plan"]["selected"]) == 2
+    assert main([*base, "copy", resumed["id"], "--ack-active", ACTIVE_ACK]) == 0
+    capsys.readouterr()
+    assert main([*base, "status", resumed["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "completed"
+    assert main([*base, "verify", resumed["id"]]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "verified_success"
+
+
+def test_inventory_cache_expires_and_does_not_use_future_timestamps(tmp_path):
+    journal = Journal(tmp_path / "cache.sqlite")
+    try:
+        journal.inventory_put("cluster-node", 1000, "listing")
+        assert journal.inventory_get("cluster-node", 1299, 300) == "listing"
+        assert journal.inventory_get("cluster-node", 1300, 300) is None
+        assert journal.inventory_get("cluster-node", 999, 300) is None
+    finally:
+        journal.close()
+
+
 def test_journal_private_and_exclusive(rig):
     _, _, journal = rig
     if os.name == "posix":
@@ -91,7 +133,7 @@ def test_cli_does_not_echo_pasted_secrets(tmp_path, capsys, command):
     assert "Hunter2" not in "".join(capsys.readouterr())
 
 
-@pytest.mark.parametrize("command", ["fixup", "recover", "close", "resume", "run", "start"])
+@pytest.mark.parametrize("command", ["fixup", "recover", "close", "run", "start"])
 def test_removed_controllers_are_unavailable(command, capsys):
     with pytest.raises(SystemExit) as error:
         main([command])

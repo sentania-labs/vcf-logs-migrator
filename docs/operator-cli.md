@@ -202,8 +202,26 @@ logs-migrate --journal /private/migration/run.sqlite \
 ```
 
 The wrapper checks that ID before cancelling, then returns the API's observation.
-It never automatically cancels a transfer because local inventory changed. There
-is no resume/close/reconcile workflow and no local recovery state to clear.
+It never automatically cancels a transfer because local inventory changed.
+
+To finish a stopped or failed transfer, keep the original journal and check the
+remainder before starting it:
+
+```sh
+logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/sealed-populated.fixture \
+  resume RUN_ID --preview
+logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/sealed-populated.fixture \
+  copy NEW_RUN_ID --ack-active "i understand you aren't going to copy the latest data"
+```
+
+The preview reports already received buckets and those still to transfer. Resume
+checks destination node count and available space again. A missing source bucket,
+unregistered destination directory, changed bucket size, or unresolved receipt
+record stops the preview for investigation. On 9.0, destination SSH inventory is
+required to check what arrived; 9.1.1 relies on the journal and explicit task
+receipt evidence. After the remaining transfer finishes, run `verify NEW_RUN_ID`.
+`resume RUN_ID --ack-active ...` previews and starts in one command; use `--preview`
+when you need to review the remainder first.
 
 A start the appliance refused (any 4xx except 408, or 500 or 501) was never accepted,
 so nothing is held and you can plan and copy again. A start with no answer (timeout,

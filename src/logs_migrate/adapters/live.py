@@ -660,6 +660,7 @@ class LiveEnvironment:
         self.inventory_journal = None
         self._cached_listings = {}
         self._new_listings = {}
+        self._listing_seconds = {}
         self.on_progress = None
 
     # Identity trust ----------------------------------------------------------------------
@@ -852,7 +853,9 @@ class LiveEnvironment:
         capacity, used, available = parse_space(read(ReadOperation.SPACE, "disk space check"))
         listing = self._cached_listings.get(cache_key)
         if listing is None:
+            started = time.monotonic()
             listing = read(ReadOperation.INVENTORY, "bucket listing")
+            self._listing_seconds[host] = time.monotonic() - started
             self._new_listings[cache_key] = listing
         buckets = parse_listing(listing)
         unrecognized = (bool(listing.strip()) and not buckets) or any(
@@ -973,33 +976,40 @@ class LiveEnvironment:
             ),
         )
 
+    def load_source_cache(self, members):
+        if self.inventory_journal is None or self.source_client is None:
+            return
+        self._cached_listings.clear()
+        for host in members:
+            saved = self.inventory_journal.inventory_get(
+                f"source:{self.source_client.identity}:{host}:{self.connection.source_ssh_user}",
+                time.time(),
+                300,
+            )
+            if isinstance(saved, str):
+                self._cached_listings[(host, "source_ssh", None)] = saved
+
+    def save_source_cache(self, members):
+        if self.inventory_journal is None or self.source_client is None:
+            return
+        for host in members:
+            key = (host, "source_ssh", None)
+            if key in self._new_listings:
+                self.inventory_journal.inventory_put(
+                    f"source:{self.source_client.identity}:{host}:{self.connection.source_ssh_user}",
+                    time.time(),
+                    self._new_listings.pop(key),
+                )
+
     def source_cluster(self, window: Window | None = None) -> Cluster:
         require(self.source_client is not None, Code.STATE)
         version = self.source_version()
         partitions = partition_models(parse_partitions(self.source_client.partitions()))
         members = self.members or self.source_members()
-        identity = self.source_client.identity
-        now = time.time()
-        if self.inventory_journal is not None:
-            self._cached_listings.clear()
-            for host in members:
-                key = (host, "source_ssh", None)
-                saved = self.inventory_journal.inventory_get(
-                    f"source:{identity}:{host}:{self.connection.source_ssh_user}", now, 300
-                )
-                if isinstance(saved, str):
-                    self._cached_listings[key] = saved
+        self.load_source_cache(members)
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
             inventories = list(pool.map(self.node_inventory, members))
-        if self.inventory_journal is not None:
-            for host in members:
-                key = (host, "source_ssh", None)
-                if key in self._new_listings:
-                    self.inventory_journal.inventory_put(
-                        f"source:{identity}:{host}:{self.connection.source_ssh_user}",
-                        now,
-                        self._new_listings.pop(key),
-                    )
+        self.save_source_cache(members)
         if window is not None:
             inventories = self._size_inventories(inventories, window)
         self.notes["source_listing_keys"] = sorted({k for i in inventories for k in i.listing_keys})
@@ -1017,6 +1027,37 @@ class LiveEnvironment:
         self._new_listings.clear()
         if self.inventory_journal is not None:
             self.inventory_journal.inventory_clear()
+
+    def inspect_destination_buckets(self, cluster: Cluster, ids: set[str]) -> Cluster:
+        """Find selected directories, including ones not registered in the bucket index."""
+        require(
+            cluster.inventory_available,
+            Code.INCOMPLETE,
+            "Destination SSH inventory is needed to resume safely.",
+        )
+        updated = []
+        for node in cluster.nodes:
+            ssh = self._ssh(node.id, "destination_ssh", self.connection.destination_ssh_user)
+            usage = {}
+            ordered = sorted(ids)
+            for start in range(0, len(ordered), 256):
+                usage.update(parse_usage(ssh.existing_bucket_usage(ordered[start : start + 256])))
+            indexed = {b.id: b for b in cluster.buckets if b.node == node.id and b.id in ids}
+            missing = set(usage) - indexed.keys()
+            require(
+                not missing,
+                Code.INCOMPLETE,
+                f"{node.id}: a bucket directory exists without an index entry: "
+                + ", ".join(sorted(missing))
+                + ". Inspect it before resuming.",
+            )
+            require(
+                set(indexed) <= usage.keys(),
+                Code.INCOMPLETE,
+                f"{node.id}: could not inspect every indexed bucket directory.",
+            )
+            updated.extend(replace(b, size=usage[b.id]) for b in indexed.values())
+        return replace(cluster, buckets=tuple(updated))
 
     def destination_topology(self) -> tuple[str, str]:
         require(self.destination_client is not None, Code.STATE)

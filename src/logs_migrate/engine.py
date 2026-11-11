@@ -3,7 +3,7 @@
 import re
 from collections import Counter
 from contextlib import ExitStack, contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -200,6 +200,16 @@ class Engine:
                 if not row.get("acknowledged"):
                     self.journal.note_transfer_task(row["run"], task.id or "")
                 cluster = self.env.destination_cluster(fresh=True)
+                require(
+                    all(
+                        node.scheduled_ids is not None
+                        or not any((node.scheduled_buckets or {}).values())
+                        for node in task.nodes
+                    ),
+                    Code.INCOMPLETE,
+                    "The destination reported remaining buckets without usable identities; "
+                    "retry status.",
+                )
                 pending = {
                     bucket
                     for node in task.nodes
@@ -214,10 +224,15 @@ class Engine:
                         sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in arrived),
                     )
                 elif received:
-                    self.journal.settle_transfer(
-                        row["run"],
-                        sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
+                    skipped = _ids(
+                        {*task.skipped, *(k for node in task.nodes for k in node.skipped)}
                     )
+                    accounted = received_ids | skipped | pending
+                    if _ids(row["keys"]) <= accounted:
+                        self.journal.settle_transfer(
+                            row["run"],
+                            sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
+                        )
                 # No inventory and no explicit receipt list leaves an unresolved row.
                 # Treating the selection as received or absent would both be guesses.
 
@@ -285,12 +300,125 @@ class Engine:
             "partition_diff": partition_diff(source, destination),
         }
 
+    def _plan_with_existing(self, source, destination, window):
+        selected = [b for b in source.buckets if b.selected(window)]
+        ids = {b.id for b in selected}
+        require(
+            len(ids) == len(selected),
+            Code.COLLISION,
+            "Source groups have duplicate identities. "
+            "Inspect the source inventory before retrying.",
+        )
+        existing = []
+        for row in self.journal.transfers(destination.id):
+            if row["source"] == source.id and row["closed"] and ids & _ids(row["received"]):
+                earlier = self.journal.load(row["run"])
+                require(
+                    len(earlier["plan"]["destination"]["nodes"]) == len(destination.nodes),
+                    Code.TOPOLOGY,
+                    "The destination node count changed since these buckets were received; "
+                    "resubmitting the dates could create duplicates.",
+                )
+        inspect = getattr(self.env, "inspect_destination_buckets", None)
+        if not destination.preview and (destination.inventory_available or self.attribution):
+            if inspect is not None:
+                destination = inspect(destination, ids)
+            existing = [b for b in destination.buckets if b.id in ids]
+            by_id = {b.id: b for b in selected}
+            require(
+                len({b.id for b in existing}) == len(existing),
+                Code.COLLISION,
+                "The destination contains duplicate bucket identities.",
+            )
+            require(
+                all(b.registered and b.complete for b in existing),
+                Code.INCOMPLETE,
+                "A destination bucket is incomplete or missing its index entry; inspect it first.",
+            )
+            require(
+                all(b.size == by_id[b.id].size for b in existing),
+                Code.COLLISION,
+                "A destination bucket has a different size from the source copy.",
+            )
+            received = {b.id for b in existing}
+        elif destination.preview:
+            received = (
+                _ids(
+                    {
+                        key
+                        for row in self.journal.transfers(destination.id)
+                        if row["closed"] and row["source"] == source.id
+                        for key in row["received"]
+                    }
+                )
+                & ids
+            )
+        else:
+            received = set()
+        filtered = replace(source, buckets=tuple(b for b in source.buckets if b.id not in received))
+        if selected and len(received) == len(selected):
+            from .planning import capacity
+
+            empty_destination = replace(
+                destination, buckets=tuple(b for b in destination.buckets if b.id not in received)
+            )
+            plan = build_plan(source, empty_destination, window)
+            plan["selected"] = []
+            plan["capacity"] = capacity(destination, ())
+            plan["warnings"].append(
+                "All selected buckets are already present; nothing remains to copy."
+            )
+        else:
+            plan = build_plan(filtered, destination, window)
+        plan["already_received"] = [asdict(b) for b in selected if b.id in received]
+        return plan
+
+    def _estimate(self, plan):
+        sizes = sum(b["size"] for b in plan["selected"])
+        count = len(plan["selected"])
+        streams = len(plan["destination"]["nodes"])
+        observed = None
+        for run in reversed(self.journal.runs()):
+            if (
+                run["plan"]["source"]["identity"] == plan["source"]["identity"]
+                and run["plan"]["destination"]["identity"] == plan["destination"]["identity"]
+                and len(run["plan"]["destination"]["nodes"]) == streams
+                and run.get("measured_rate_bytes_per_second", 0) > 0
+            ):
+                observed = run["measured_rate_bytes_per_second"]
+                break
+        times = list(getattr(self.env, "_listing_seconds", {}).values())
+        overhead = sum(times) / len(times) if times else 18.0
+        if observed:
+            seconds = sizes / observed
+        else:
+            seconds = count * overhead / streams + sizes / (streams * 4_000_000)
+        return {
+            "low_seconds": seconds / 2,
+            "high_seconds": seconds * 2,
+            "selected_bytes": sizes,
+            "bucket_count": count,
+            "destination_nodes": streams,
+            "rate_bytes_per_second": observed if observed else 4_000_000,
+            "rate_basis": "measured overall" if observed else "assumed per destination node",
+            "listing_seconds": overhead if not observed else None,
+            "listing_basis": "measured"
+            if times and not observed
+            else "assumed"
+            if not observed
+            else None,
+        }
+
     @safe_boundary
     def plan(self, window, policy=None):
         with self._exclusive():
             discover = getattr(self.env, "discover_window", None)
             source, destination = discover(window) if discover else self.env.discover()
-            plan = build_plan(source, destination, window)
+            self._settle(destination.id)
+            if destination.inventory_available:
+                destination = self.env.destination_cluster(fresh=True)
+            plan = self._plan_with_existing(source, destination, window)
+            plan["estimate"] = self._estimate(plan)
             plan["source_ingest"] = self._source_ingest()
             growth = plan["source_ingest"]
             if growth["bytes"] is None:
@@ -306,6 +434,9 @@ class Engine:
                 for host in sorted(getattr(self.env, "listing_warnings", ()))
             ]
             plan["partial_days"] = partial_days(source, plan)
+            if plan["already_received"]:
+                days = day_window(window)
+                plan["partial_days"] = [_day(day) for day in range(days.start, days.end, DAY)]
             requested = day_window(window)
             plan["open_bucket_days"] = sorted(
                 {
@@ -325,7 +456,6 @@ class Engine:
                     + ", ".join(plan["open_bucket_days"])
                     + "."
                 )
-            self._settle(destination.id)
             self._overlap(plan)
             run = {
                 "schema_version": 2,
@@ -338,6 +468,148 @@ class Engine:
                 "verification": {"outcome": Verification.PENDING.value, "complete": False},
             }
             self._audit(run, "plan_previewed")
+            return run
+
+    def _resume_plan(self, root):
+        original = root["plan"]
+        window = Window(**original["window"])
+        invalidate = getattr(self.env, "invalidate_inventory", None)
+        if invalidate is not None:
+            invalidate()
+        discover = getattr(self.env, "discover_window", None)
+        source, destination = discover(window) if discover else self.env.discover()
+        require(
+            source.id == original["source"]["id"]
+            and source.identity == original["source"]["identity"]
+            and destination.id == original["destination"]["id"]
+            and destination.identity == original["destination"]["identity"],
+            Code.TOPOLOGY,
+        )
+        require(
+            len(destination.nodes) == len(original["destination"]["nodes"]),
+            Code.TOPOLOGY,
+            "The destination node count changed; placement may differ and a resume could "
+            "duplicate buckets. Restore the original node count before continuing.",
+        )
+        task = self._settle(destination.id)
+        require(task.status in TERMINAL, Code.BUSY)
+        if destination.inventory_available:
+            destination = self.env.destination_cluster(fresh=True)
+            require(
+                destination.id == original["destination"]["id"]
+                and destination.identity == original["destination"]["identity"]
+                and len(destination.nodes) == len(original["destination"]["nodes"]),
+                Code.TOPOLOGY,
+                "The destination topology changed while checking the remainder.",
+            )
+        rows = self.journal.transfers(destination.id)
+        root_row = next((r for r in rows if r["run"] == root["id"]), None)
+        require(
+            root_row is not None and root_row["closed"],
+            Code.INCOMPLETE,
+            "The earlier transfer has no settled receipt record; inspect it before resuming.",
+        )
+        previously_present = {b["id"] for b in original.get("already_received", [])}
+        intended = {
+            b["id"]: b for b in (*original["selected"], *original.get("already_received", []))
+        }
+        selected_now = [b for b in source.buckets if b.selected(window)]
+        current = {b.id: b for b in selected_now}
+        require(
+            len(current) == len(selected_now),
+            Code.COLLISION,
+            "Source groups have duplicate identities. Inspect them before resuming.",
+        )
+        require(
+            set(current) <= intended.keys(),
+            Code.INVENTORY_CHANGED,
+            "New source buckets now overlap these dates. Review a new plan before continuing.",
+        )
+        if destination.preview:
+            received = (
+                _ids(
+                    {
+                        k
+                        for row in rows
+                        if row["closed"] and row["source"] == source.id
+                        for k in row["received"]
+                    }
+                )
+                & intended.keys()
+            )
+        else:
+            inspect = getattr(self.env, "inspect_destination_buckets", None)
+            if inspect is not None:
+                destination = inspect(destination, set(intended))
+            else:
+                require(
+                    self.attribution or destination.inventory_available,
+                    Code.INCOMPLETE,
+                    "Destination inventory is required to resume safely.",
+                )
+            existing = [b for b in destination.buckets if b.id in intended]
+            require(
+                all(b.registered and b.complete for b in existing),
+                Code.INCOMPLETE,
+                "A destination bucket is incomplete or missing its index entry; inspect it first.",
+            )
+            require(
+                len({b.id for b in existing}) == len(existing),
+                Code.COLLISION,
+                "The destination contains duplicate bucket identities.",
+            )
+            require(
+                all(b.size == intended[b.id]["size"] for b in existing),
+                Code.COLLISION,
+                "A destination bucket has a different size from the original source copy.",
+            )
+            received = {b.id for b in existing}
+        require(
+            previously_present <= received,
+            Code.INCOMPLETE,
+            "Buckets present before this run are no longer accounted for; inspect the destination.",
+        )
+        missing = set(intended) - received
+        require(missing, Code.STATE, "All selected buckets are already present; verify the run.")
+        require(
+            missing <= current.keys(),
+            Code.INVENTORY_CHANGED,
+            "A source bucket needed to finish this run has been retired.",
+        )
+        require(
+            all(asdict(current[i]) == intended[i] for i in missing),
+            Code.INVENTORY_CHANGED,
+            "A source bucket needed for this run has changed.",
+        )
+        filtered = replace(source, buckets=tuple(b for b in source.buckets if b.id not in received))
+        plan = build_plan(filtered, destination, window)
+        plan["already_received"] = [intended[i] for i in sorted(received)]
+        plan["original_selected"] = original["selected"]
+        plan["original_coverage"] = original["coverage"]
+        plan["estimate"] = self._estimate(plan)
+        self._overlap(plan)
+        return source, destination, plan
+
+    @safe_boundary
+    def resume(self, run_id):
+        """Preview a linked remainder; run() starts it after the usual fresh checks."""
+        with self._exclusive():
+            previous = self.journal.load(run_id)
+            root = self.journal.load(previous.get("resume_root", run_id))
+            _, _, plan = self._resume_plan(root)
+            run = {
+                "schema_version": 2,
+                "id": str(uuid4()),
+                "created_at": self.clock.now(),
+                "plan": plan,
+                "plan_hash": digest(plan),
+                "active_ack": bool(root.get("active_ack")),
+                "query_policy": root["query_policy"],
+                "resume_root": root["id"],
+                "resume_parent": run_id,
+                "verification": {"outcome": Verification.PENDING.value, "complete": False},
+            }
+            self._audit(run, "resume_previewed")
             return run
 
     def _counts(self, policy, scope, window, keys):
@@ -371,6 +643,11 @@ class Engine:
             require(run.get("schema_version") == 2, Code.SCHEMA)
             require(not run["plan"]["active_skipped"] or active_ack == ACTIVE_ACK, Code.ACK)
             require(
+                bool(run["plan"]["selected"]),
+                Code.STATE,
+                "All selected buckets are already present; there is nothing to copy.",
+            )
+            require(
                 all(
                     t["run"] != run_id
                     for t in self.journal.transfers(run["plan"]["destination"]["id"])
@@ -385,13 +662,19 @@ class Engine:
             if invalidate is not None:
                 invalidate()
             window = Window(**run["plan"]["window"])
-            discover = getattr(self.env, "discover_window", None)
-            source, destination = discover(window) if discover else self.env.discover()
-            fresh = build_plan(source, destination, window)
+            if run.get("resume_root"):
+                source, destination, fresh = self._resume_plan(
+                    self.journal.load(run["resume_root"])
+                )
+            else:
+                discover = getattr(self.env, "discover_window", None)
+                source, destination = discover(window) if discover else self.env.discover()
+                fresh = self._plan_with_existing(source, destination, window)
             require(
                 fresh["source"] == run["plan"]["source"]
                 and fresh["destination"] == run["plan"]["destination"]
-                and fresh["selected"] == run["plan"]["selected"],
+                and fresh["selected"] == run["plan"]["selected"]
+                and fresh.get("already_received", []) == run["plan"].get("already_received", []),
                 Code.INVENTORY_CHANGED,
             )
             task = self._settle(destination.id)
@@ -428,7 +711,16 @@ class Engine:
                         raise
                     run["baseline"] = None
                 run["partial_days"] = partial_days(source, fresh)
+                if fresh.get("already_received") and not run.get("resume_root"):
+                    days = day_window(window)
+                    run["partial_days"] = [_day(day) for day in range(days.start, days.end, DAY)]
+                if run.get("resume_root"):
+                    root = self.journal.load(run["resume_root"])
+                    for key in ("baseline", "source_counts", "count_window", "partial_days"):
+                        if key in root:
+                            run[key] = root[key]
             run["active_ack"] = active_ack == ACTIVE_ACK
+            run["capacity_at_start"] = fresh["capacity"]
             self._audit(run, "transfer_authorized")
             # Protect against duplicate sends even if the POST response is lost. This is an
             # overlap record, not a locally maintained task state or a destination-wide lock.
@@ -445,25 +737,52 @@ class Engine:
                 raise MigrationError(Code.UNCERTAIN) from None
             try:
                 self.journal.note_transfer_task(run_id, task.id or "")
+                self._observe_assignment(run, task)
                 self._audit(run, "api_start_response", asdict(task))
             except MigrationError:
                 raise MigrationError(Code.UNCERTAIN) from None
+            warning = self._capacity_assignment(task, fresh, run.get("assignment"))
+            progress = self._progress(task, run)
+            progress["capacity_warning"] = warning
             return {
                 "run_id": run_id,
-                "task": self._progress(task),
-                "capacity_warning": self._capacity_assignment(task, fresh),
+                "task": progress,
+                "capacity_warning": warning,
                 "verification": run["verification"],
             }
 
-    def _capacity_assignment(self, task, plan):
+    def _observe_assignment(self, run, task):
+        if run.get("assignment") or not task.nodes:
+            return
+        assignment = {}
+        for node in task.nodes:
+            if node.scheduled_ids is None or node.total_buckets is None:
+                return
+            if set(node.scheduled_ids) != set(node.total_buckets) or any(
+                len(ids) != node.total_buckets[source] for source, ids in node.scheduled_ids.items()
+            ):
+                return
+            assignment[node.node] = [item for ids in node.scheduled_ids.values() for item in ids]
+        ids = [item for items in assignment.values() for item in items]
+        planned = {b["id"] for b in run["plan"]["selected"]}
+        if len(ids) == len(set(ids)) and set(ids) == planned:
+            run["assignment"] = assignment
+            self._audit(run, "bucket_assignment_observed")
+
+    def _capacity_assignment(self, task, plan, assignment=None):
         """Check the remaining assigned buckets when the API reports their identities."""
         sizes = {bucket["id"]: bucket["size"] for bucket in plan["selected"]}
         budgets = {node["id"]: node for node in plan["capacity"]["nodes"]}
         result = []
         for node in task.nodes:
-            if node.scheduled_ids is None or node.node not in budgets:
+            if node.node not in budgets:
                 continue
-            ids = [bucket for group in node.scheduled_ids.values() for bucket in group]
+            if assignment and node.node in assignment:
+                ids = assignment[node.node]
+            elif node.scheduled_ids is not None:
+                ids = [bucket for group in node.scheduled_ids.values() for bucket in group]
+            else:
+                continue
             if len(set(ids)) != len(ids) or any(bucket not in sizes for bucket in ids):
                 continue
             needed = sum(sizes[bucket] for bucket in ids)
@@ -473,7 +792,7 @@ class Engine:
                 result.append({"node": node.node, "scheduled_bytes": needed})
         return result
 
-    def _progress(self, task):
+    def _progress(self, task, run=None):
         result = asdict(task)
         elapsed = task.elapsed_seconds
         rate = (
@@ -508,6 +827,80 @@ class Engine:
             result["eta_seconds"] = 0
         elif task.status != "running":
             result["eta_seconds"] = None
+        for node, output in zip(task.nodes, result["nodes"], strict=True):
+            elapsed_node = node.elapsed_seconds or task.elapsed_seconds
+            rate_node = (
+                node.bytes_transferred / elapsed_node
+                if node.bytes_transferred and elapsed_node and elapsed_node > 0
+                else None
+            )
+            output["rate_bytes_per_second"] = rate_node
+            output["eta_seconds"] = (
+                elapsed_node * (100 - node.progress) / node.progress
+                if node.status == "running" and elapsed_node and node.progress and node.progress > 0
+                else None
+            )
+            if (
+                node.status == "running"
+                and node.scheduled_buckets is not None
+                and node.total_buckets
+            ):
+                count = sum(node.total_buckets.values())
+                pending_count = sum(node.scheduled_buckets.values())
+                if pending_count <= count:
+                    output["buckets_done"] = count - pending_count
+                    output["buckets_total"] = count
+        assignment = run.get("assignment") if run else None
+        if (
+            assignment
+            and task.status == "running"
+            and all(node.status == "running" for node in task.nodes)
+        ):
+            sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}
+            node_results = []
+            for node, output in zip(task.nodes, result["nodes"], strict=True):
+                if node.node not in assignment or node.scheduled_ids is None:
+                    break
+                remaining = {item for ids in node.scheduled_ids.values() for item in ids}
+                assigned = set(assignment[node.node])
+                if not remaining <= assigned:
+                    break
+                done = assigned - remaining
+                copied = sum(sizes[item] for item in done)
+                left = sum(sizes[item] for item in remaining)
+                elapsed = node.elapsed_seconds or task.elapsed_seconds
+                node_rate = copied / elapsed if copied and elapsed and elapsed > 0 else None
+                output.update(
+                    {
+                        "buckets_done": len(done),
+                        "buckets_total": len(assigned),
+                        "bytes_transferred": copied,
+                        "total_bytes": copied + left,
+                        "rate_bytes_per_second": node_rate,
+                        "eta_seconds": left / node_rate
+                        if node_rate and node.status == "running"
+                        else None,
+                    }
+                )
+                node_results.append(output)
+            if len(node_results) == len(task.nodes):
+                copied = sum(n["bytes_transferred"] for n in node_results)
+                remaining = sum(n["total_bytes"] - n["bytes_transferred"] for n in node_results)
+                elapsed = task.elapsed_seconds
+                rate = copied / elapsed if copied and elapsed and elapsed > 0 else None
+                result.update(
+                    {
+                        "bytes_transferred": copied,
+                        "buckets_done": sum(n["buckets_done"] for n in node_results),
+                        "buckets_total": sum(n["buckets_total"] for n in node_results),
+                        "rate_bytes_per_second": rate,
+                    }
+                )
+                if task.status == "running" and all(
+                    n["eta_seconds"] is not None for n in node_results
+                ):
+                    result["eta_seconds"] = max(n["eta_seconds"] for n in node_results)
+                result["total_bytes"] = copied + remaining
         result["observation"] = (
             "destination API; estimates derive from API counters and elapsed time"
         )
@@ -600,8 +993,88 @@ class Engine:
             if not task_id:
                 self.journal.note_transfer_task(run_id, task.id)
             self._record(task, destination)
-            result = self._progress(task)
-            result["capacity_warning"] = self._capacity_assignment(task, run["plan"])
+            self._observe_assignment(run, task)
+            result = self._progress(task, run)
+            elapsed = task.elapsed_seconds
+            copied = result.get("bytes_transferred")
+            sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}
+            pending_now = {}
+            for node in task.nodes:
+                if node.status != "running" or node.scheduled_ids is None:
+                    continue
+                ids = {item for group in node.scheduled_ids.values() for item in group}
+                if ids <= sizes.keys():
+                    pending_now[node.node] = sorted(ids)
+            prior_pending = run.get("pending_sample")
+            if task.status == "running" and elapsed is not None and pending_now:
+                if prior_pending and elapsed > prior_pending["elapsed"]:
+                    interval = elapsed - prior_pending["elapsed"]
+                    for output in result["nodes"]:
+                        name = output["node"]
+                        if name not in pending_now or name not in prior_pending["nodes"]:
+                            continue
+                        before = set(prior_pending["nodes"][name])
+                        after = set(pending_now[name])
+                        if not after <= before:
+                            continue
+                        rate = sum(sizes[item] for item in before - after) / interval
+                        if rate > 0:
+                            output["rate_bytes_per_second"] = rate
+                            output["eta_seconds"] = sum(sizes[item] for item in after) / rate
+                    active = [n for n in result["nodes"] if pending_now.get(n["node"])]
+                    if (
+                        active
+                        and all(n.node in pending_now for n in task.nodes)
+                        and all(n.get("rate_bytes_per_second") for n in active)
+                    ):
+                        result["rate_bytes_per_second"] = sum(
+                            n["rate_bytes_per_second"] for n in active
+                        )
+                        if all(n.get("eta_seconds") is not None for n in active):
+                            result["eta_seconds"] = max(n["eta_seconds"] for n in active)
+                if prior_pending is None or elapsed > prior_pending["elapsed"]:
+                    run["pending_sample"] = {"elapsed": elapsed, "nodes": pending_now}
+                    self._audit(run, "pending_sampled")
+            previous = run.get("rate_sample")
+            if task.status == "running" and elapsed is not None and copied is not None:
+                if previous and elapsed > previous["elapsed"] and copied >= previous["bytes"]:
+                    current = (copied - previous["bytes"]) / (elapsed - previous["elapsed"])
+                    result["rate_bytes_per_second"] = current
+                    if result.get("total_bytes") is not None:
+                        result["eta_seconds"] = (
+                            max(0, result["total_bytes"] - copied) / current
+                            if current > 0
+                            else None
+                        )
+                if previous is None or elapsed > previous["elapsed"]:
+                    run["rate_sample"] = {"elapsed": elapsed, "bytes": copied}
+                    self._audit(run, "progress_sampled")
+            if (
+                task.elapsed_seconds is not None
+                and task.elapsed_seconds >= 180
+                and result.get("bytes_transferred") is not None
+                and result["bytes_transferred"] > 0
+            ):
+                run["measured_rate_bytes_per_second"] = (
+                    result["bytes_transferred"] / task.elapsed_seconds
+                )
+                self._audit(run, "rate_observed")
+            elif (
+                task.elapsed_seconds is not None
+                and task.elapsed_seconds >= 180
+                and result.get("rate_bytes_per_second")
+            ):
+                run["measured_rate_bytes_per_second"] = result["rate_bytes_per_second"]
+                self._audit(run, "rate_observed")
+            capacity_plan = {
+                **run["plan"],
+                "capacity": run.get("capacity_at_start", run["plan"]["capacity"]),
+            }
+            result["capacity_warning"] = (
+                self._capacity_assignment(task, capacity_plan, run.get("assignment"))
+                if task.status == "running"
+                else []
+            )
             return result
 
     @safe_boundary
@@ -639,7 +1112,7 @@ class Engine:
                 )
                 bucket_check = None
                 if not self.attribution and destination.inventory_available:
-                    selected = run["plan"]["selected"]
+                    selected = run["plan"].get("original_selected", run["plan"]["selected"])
                     by_id = {b.id: b for b in destination.buckets}
                     matched, unknown, unmatched = [], [], []
                     for b in selected:
@@ -779,7 +1252,19 @@ class Engine:
             Code.INCOMPLETE,
             "The destination has no closed transfer recorded for this run.",
         )
-        received = set(row["received"])
+        root_id = run.get("resume_root", run["id"])
+        linked = {
+            r["id"]
+            for r in self.journal.runs()
+            if r["id"] == root_id or r.get("resume_root") == root_id
+        }
+        related = [r for r in self.journal.transfers(destination) if r["run"] in linked]
+        require(
+            all(r["closed"] for r in related),
+            Code.INCOMPLETE,
+            "A linked transfer has no settled receipt record.",
+        )
+        received = {key for r in related for key in r["received"]}
         require(
             bool(received),
             Code.INCOMPLETE,
@@ -805,8 +1290,12 @@ class Engine:
         result = reconcile(source, baseline, actual, ingest)
         # Bucket metadata supplies the selected total; daily queries cover only the
         # recorded baseline window and cannot attribute arrivals to individual groups.
-        result["expected_count"] = selected_message_count(run["plan"]["selected"])
-        coverage_days = day_window(Window(**run["plan"]["coverage"]))
+        result["expected_count"] = selected_message_count(
+            run["plan"].get("original_selected", run["plan"]["selected"])
+        )
+        coverage_days = day_window(
+            Window(**run["plan"].get("original_coverage", run["plan"]["coverage"]))
+        )
         measured_start = max(days.start, coverage_days.start)
         measured_end = min(days.end, coverage_days.end)
         measured_days = max(0, measured_end - measured_start) // DAY
@@ -852,7 +1341,7 @@ class Engine:
         )
         result["buckets"] = {
             "covered": sorted(received),
-            "not_received": sorted(set(row["keys"]) - received),
+            "not_received": sorted({key for r in related for key in r["keys"]} - received),
         }
         result["covered_days"] = [day for day, _ in source.daily]
         if result["buckets"]["not_received"]:

@@ -41,7 +41,7 @@ from .state import AppState
 from .widgets import button, label, section
 from .worker import EngineWorker
 
-PROGRESS_JOBS = {"probe", "connect", "selftest", "plan", "start", "verify", "discover"}
+PROGRESS_JOBS = {"probe", "connect", "selftest", "plan", "start", "resume", "verify", "discover"}
 
 NAV = [
     ("overview", "Overview"),
@@ -526,6 +526,14 @@ class MainWindow(QMainWindow):
             state.export_error = None
             self.submit("runs", "runs")
             self.load_report(result["id"])
+        elif job == "resume":
+            state.plan_run = result
+            state.run_id = result["id"]
+            state.status = None
+            state.status_error = None
+            state.start_error = None
+            state.acknowledged = bool(result.get("active_ack"))
+            self.submit("runs", "runs")
         elif job == "start":
             state.status = result["task"] if result["task"].get("id") else None
             state.status_at = vm.now_iso()
@@ -606,6 +614,8 @@ class MainWindow(QMainWindow):
         elif job == "plan":
             state.plan_run = None
             state.plan_error = code
+        elif job == "resume":
+            state.start_error = "gui:pre_start:" + vm.describe_error(code)
         elif job == "start":
             state.start_error = code
             state.status = None

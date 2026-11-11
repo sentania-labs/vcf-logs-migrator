@@ -677,11 +677,11 @@ def test_selftest_failure_detail_is_plain_for_the_cli_and_named_in_the_window(ri
     assert "ZeroDivisionError" in rows["Source API version"]
 
 
-def test_selftest_plans_without_a_window_despite_the_open_bucket(rigged):
+def test_selftest_without_a_window_does_not_size_all_sealed_buckets(rigged):
     env, destination, result = _run_selftest(rigged, None)
     (plan,) = [s for s in result.steps if s.name == "Plan preview (no request sent)"]
-    assert plan.status == "pass", plan.detail
-    assert "active skipped" in plan.detail
+    assert plan.status == "skip"
+    assert "Choose dates" in plan.detail
 
 
 def test_engine_live_path_verifies_covered_days_without_attribution(tmp_path):
@@ -766,6 +766,35 @@ def _live_rig(tmp_path, data_changes=None):
     env.attribution = False
     clock = SimulatedClock()
     return env, Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
+
+
+def test_destination_directory_inspection_detects_unregistered_bucket(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    env, _ = _live_rig(tmp_path)
+    source, destination = env.discover()
+    bucket = replace(source.buckets[0], node=destination.nodes[0].id)
+    destination = replace(destination, buckets=(bucket,), inventory_available=True)
+
+    class SSH:
+        def __init__(self, host):
+            self.host = host
+
+        def existing_bucket_usage(self, ids):
+            if self.host == destination.nodes[0].id:
+                return f"{bucket.size} /store/{bucket.id}\n"
+            return ""
+
+    adapter = SimpleNamespace(
+        connection=SimpleNamespace(destination_ssh_user="root"),
+        _ssh=lambda host, credential, user: SSH(host),
+    )
+    inspected = LiveEnvironment.inspect_destination_buckets(adapter, destination, {bucket.id})
+    assert inspected.buckets[0].size == bucket.size
+    orphan = replace(destination, buckets=())
+    with pytest.raises(MigrationError, match=Code.INCOMPLETE):
+        LiveEnvironment.inspect_destination_buckets(adapter, orphan, {bucket.id})
 
 
 def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path):
@@ -1553,6 +1582,23 @@ def test_cli_expect_fingerprint_enrolls_and_proceeds_only_on_a_match(monkeypatch
 def test_logs90_identity_is_the_transport_pin():
     transport = RecordedTransport([])
     assert Logs90(transport, "a", Secret("b")).identity == "recorded"
+
+
+def test_task_status_stays_running_when_a_node_is_restarting():
+    task = decode_task(
+        {
+            "taskId": "one",
+            "status": "RUNNING",
+            "taskDetails": {
+                "dst-1": {"status": "RUNNING"},
+                "dst-2": {"status": "STARTING"},
+            },
+        },
+        destination="d",
+        now_ms=1700000060000,
+    )
+    assert task.status == "running"
+    assert all(node.status == "running" for node in task.nodes)
 
 
 def test_task_details_from_90_status():

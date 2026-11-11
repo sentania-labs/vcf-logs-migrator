@@ -99,11 +99,9 @@ def test_stopped_transfer_records_only_what_landed_and_the_remainder_can_be_repl
     stopped = engine.status()
     assert stopped["status"] == "cancelled" and len(stopped["completed"]) == 1
     landed = stopped["completed"][0].rsplit("/", 1)[-1]
-    with pytest.raises(MigrationError) as error:
-        engine.plan(Window(start, start + 3 * DAY), Policy(poll_seconds=0))
-    assert error.value.code == Code.OVERLAP
+    remainder = engine.plan(Window(start, start + 3 * DAY), Policy(poll_seconds=0))
+    assert [b["id"] for b in remainder["plan"]["already_received"]] == [landed]
     del env.data["cancel_after"]
-    remainder = engine.plan(Window(start + DAY, start + 3 * DAY), Policy(poll_seconds=0))
     remaining = {b["id"] for b in remainder["plan"]["selected"]}
     assert landed not in remaining and len(remaining) == 2
     execute(engine, remainder)
@@ -358,9 +356,13 @@ def test_overlap_guard_survives_current_task_replacement_and_missing_destination
     env.data["task"] = None
     env.data["history"] = []
     env.data["destination"]["buckets"] = []
-    with pytest.raises(MigrationError) as error:
-        planned(Engine(env, journal, engine.clock))
-    assert error.value.code == Code.OVERLAP
+    if preview:
+        plan = planned(Engine(env, journal, engine.clock))["plan"]
+        assert not plan["selected"] and plan["already_received"]
+    else:
+        with pytest.raises(MigrationError) as error:
+            planned(Engine(env, journal, engine.clock))
+        assert error.value.code == Code.OVERLAP
 
 
 def test_whole_bucket_cannot_be_sent_twice_in_adjacent_windows(rig):
@@ -370,9 +372,10 @@ def test_whole_bucket_cannot_be_sent_twice_in_adjacent_windows(rig):
     first = engine.plan(Window(start, start + 500), Policy(poll_seconds=0))
     execute(engine, first)
     engine.status()
-    with pytest.raises(MigrationError) as error:
-        engine.plan(Window(start + 500, start + 1001))
-    assert error.value.code == Code.OVERLAP
+    plan = engine.plan(Window(start + 500, start + 1001))
+    assert not plan["plan"]["selected"] and plan["plan"]["already_received"]
+    with pytest.raises(MigrationError, match=Code.STATE):
+        execute(engine, plan)
 
 
 @pytest.mark.parametrize("change", ["partition", "fields", "history", "inventory"])
@@ -440,14 +443,167 @@ def test_skipped_bucket_with_count_loss_stays_a_discrepancy(rig):
     assert result["reason"] == Code.NOT_RECEIVED and result["buckets"]["not_received"] == [skipped]
 
 
+def test_cancel_resume_and_verify_all_received_buckets(rig):
+    engine, env, _ = rig
+    env.data["cancel_after"] = 1
+    first = planned(engine)
+    execute(engine, first)
+    assert engine.status(first["id"])["status"] == "cancelled"
+    resumed = engine.resume(first["id"])
+    assert len(resumed["plan"]["already_received"]) == 1
+    assert len(resumed["plan"]["selected"]) == 2
+    del env.data["cancel_after"]
+    execute(engine, resumed)
+    assert engine.status(resumed["id"])["status"] == "completed"
+    result = engine.verify(resumed["id"])
+    assert result["outcome"] == "verified_success"
+    assert len(result["buckets"]["covered"]) == 3
+
+
+@pytest.mark.parametrize("failure", ["node", "disk"])
+def test_resume_after_one_node_fails_or_hits_disk_limit(rig, failure):
+    from logs_migrate.models import digest
+
+    engine, env, _ = rig
+    first = planned(engine)
+    bucket = first["plan"]["selected"][0]
+    key = bucket["node"] + "/" + bucket["id"]
+    nodes = env.data["destination"]["nodes"]
+    node = nodes[int(digest(bucket["id"])[:8], 16) % len(nodes)]["id"]
+    if failure == "node":
+        env.data["failed_nodes"] = [node]
+    else:
+        env.data["skip_buckets"] = [key]
+    execute(engine, first)
+    status = engine.status(first["id"])
+    assert status["status"] == ("failed" if failure == "node" else "completed")
+    if failure == "node":
+        assert any(n["status"] == "failed" for n in status["nodes"])
+        assert any(n["status"] == "completed" for n in status["nodes"])
+    env.data.pop("failed_nodes", None)
+    env.data.pop("skip_buckets", None)
+    resumed = engine.resume(first["id"])
+    assert any(b["id"] == bucket["id"] for b in resumed["plan"]["selected"])
+    execute(engine, resumed)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+def test_resume_without_original_journal_refuses(rig, tmp_path):
+    from logs_migrate.journal import Journal
+
+    engine, env, _ = rig
+    first = planned(engine)
+    execute(engine, first)
+    engine.status(first["id"])
+    lost = Journal(tmp_path / "replacement.sqlite")
+    try:
+        with pytest.raises(MigrationError, match=Code.INVALID_INPUT):
+            Engine(env, lost, engine.clock).resume(first["id"])
+    finally:
+        lost.close()
+
+
+def test_resume_911_uses_journal_receipts(rig):
+    _, _, journal = rig
+    env = SimulatedEnvironment(json.loads((FIXTURES / "sealed-911.fixture").read_text()))
+    engine = Engine(env, journal)
+    env.data["cancel_after"] = 1
+    first = planned(engine)
+    execute(engine, first)
+    assert engine.status(first["id"])["status"] == "cancelled"
+    resumed = engine.resume(first["id"])
+    assert len(resumed["plan"]["already_received"]) == 1
+    del env.data["cancel_after"]
+    execute(engine, resumed)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+def test_resume_a_plan_that_already_included_previously_received_buckets(rig):
+    engine, env, _ = rig
+    start = env.data["source"]["buckets"][0]["start"]
+    earlier = engine.plan(Window(start, start + DAY), Policy(poll_seconds=0))
+    execute(engine, earlier)
+    engine.status(earlier["id"])
+    env.data["cancel_after"] = 1
+    first = engine.plan(Window(start, start + 3 * DAY), Policy(poll_seconds=0))
+    assert len(first["plan"]["already_received"]) == 1
+    execute(engine, first)
+    engine.status(first["id"])
+    resumed = engine.resume(first["id"])
+    assert len(resumed["plan"]["already_received"]) == 2
+    assert len(resumed["plan"]["selected"]) == 1
+    del env.data["cancel_after"]
+    execute(engine, resumed)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+def test_resume_refuses_retired_or_unregistered_remaining_bucket(rig):
+    engine, env, _ = rig
+    env.data["cancel_after"] = 1
+    first = planned(engine)
+    execute(engine, first)
+    engine.status(first["id"])
+    remaining = first["plan"]["selected"][1]["id"]
+    env.data["source"]["buckets"] = [
+        b for b in env.data["source"]["buckets"] if b["id"] != remaining
+    ]
+    with pytest.raises(MigrationError, match=Code.INVENTORY_CHANGED):
+        engine.resume(first["id"])
+
+
+def test_resume_refuses_a_present_unregistered_bucket(rig):
+    engine, env, _ = rig
+    first = planned(engine)
+    env.data["partial_at_bucket"] = (
+        first["plan"]["selected"][0]["node"] + "/" + first["plan"]["selected"][0]["id"]
+    )
+    execute(engine, first)
+    assert engine.status(first["id"])["status"] == "failed"
+    with pytest.raises(MigrationError, match=Code.INCOMPLETE):
+        engine.resume(first["id"])
+
+
+def test_replanning_also_refuses_changed_destination_node_count(rig):
+    engine, env, _ = rig
+    env.data["cancel_after"] = 1
+    first = planned(engine)
+    execute(engine, first)
+    engine.status(first["id"])
+    env.data["destination"]["nodes"].append(
+        dict(env.data["destination"]["nodes"][0], id="dst-extra")
+    )
+    with pytest.raises(MigrationError, match=Code.TOPOLOGY):
+        planned(engine)
+
+
+def test_resume_refuses_changed_node_count(rig):
+    engine, env, _ = rig
+    env.data["cancel_after"] = 1
+    first = planned(engine)
+    execute(engine, first)
+    engine.status(first["id"])
+    extra = dict(env.data["destination"]["nodes"][0], id="dst-extra")
+    env.data["destination"]["nodes"].append(extra)
+    with pytest.raises(MigrationError, match=Code.TOPOLOGY):
+        engine.resume(first["id"])
+
+
 def test_destination_restart_or_inventory_drift_does_not_cancel_transfer(rig):
     engine, env, _ = rig
     run = planned(engine)
     env.data["complete_after_polls"] = 3
     execute(engine, run)
     env.data["destination"]["nodes"][0]["used"] += 1
-    assert engine.status()["status"] == "running"
+    restarting = env.data["destination"]["nodes"][0]["id"]
+    env.data["node_statuses"] = {restarting: "unknown"}
+    status = engine.status()
+    assert status["status"] == "running"
+    assert any(n["node"] == restarting and n["status"] == "unknown" for n in status["nodes"])
     assert not any(t["operation"] == "cancel" for t in env.data["trace"])
+    del env.data["node_statuses"]
     engine.status()
     assert engine.verify(run["id"])["outcome"] == "verified_success"
 
@@ -479,6 +635,102 @@ def test_plan_shows_space_and_copy_refuses_when_a_node_cannot_hold_the_selection
         execute(engine, short)
     assert error.value.code == Code.CAPACITY
     assert not env.data["trace"]
+
+
+def test_status_uses_rate_between_samples(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    destination = run["plan"]["destination"]["id"]
+    samples = iter(
+        [
+            Transfer(
+                "sim-1",
+                "running",
+                bytes_transferred=100,
+                destination=destination,
+                elapsed_seconds=10,
+                total_bytes=1000,
+            ),
+            Transfer(
+                "sim-1",
+                "running",
+                bytes_transferred=400,
+                destination=destination,
+                elapsed_seconds=20,
+                total_bytes=1000,
+            ),
+        ]
+    )
+    env.transfer = lambda: next(samples)
+    engine.status(run["id"])
+    progress = engine.status(run["id"])
+    assert progress["rate_bytes_per_second"] == 30
+    assert progress["eta_seconds"] == 20
+
+
+def test_node_rate_uses_later_pending_samples_when_initial_assignment_was_missed(rig):
+    engine, env, _ = rig
+    run = planned(engine)
+    execute(engine, run)
+    selected = run["plan"]["selected"]
+    ids = [b["id"] for b in selected]
+    destination = run["plan"]["destination"]["id"]
+    node = NodeTransfer(
+        "dst-1",
+        "running",
+        bytes_transferred=None,
+        total_buckets={"source": len(ids)},
+        scheduled_ids={"source": tuple(ids[1:])},
+        elapsed_seconds=10,
+    )
+    first = Transfer(
+        "sim-1",
+        "running",
+        bytes_transferred=None,
+        nodes=(node,),
+        destination=destination,
+        elapsed_seconds=10,
+    )
+    second = replace(
+        first,
+        elapsed_seconds=20,
+        nodes=(replace(node, elapsed_seconds=20, scheduled_ids={"source": tuple(ids[2:])}),),
+    )
+    samples = iter((first, second))
+    env.transfer = lambda: next(samples)
+    engine.status(run["id"])
+    progress = engine.status(run["id"])
+    assert progress["nodes"][0]["rate_bytes_per_second"] == selected[1]["size"] / 10
+    assert progress["nodes"][0]["eta_seconds"] == 10
+
+
+def test_observed_assignment_provides_progress_and_measured_preview(rig):
+    engine, _, journal = rig
+    run = planned(engine)
+    selected = run["plan"]["selected"]
+    ids = tuple(b["id"] for b in selected)
+    node = NodeTransfer(
+        "dst-1",
+        "running",
+        scheduled_ids={"source": ids},
+        total_buckets={"source": len(ids)},
+        elapsed_seconds=300,
+    )
+    task = Transfer("test", "running", nodes=(node,), elapsed_seconds=300)
+    engine._observe_assignment(run, task)
+    later = replace(task, nodes=(replace(node, scheduled_ids={"source": ids[1:]}),))
+    progress = engine._progress(later, run)
+    assert progress["buckets_done"] == 1
+    assert progress["bytes_transferred"] == selected[0]["size"]
+    assert progress["nodes"][0]["eta_seconds"] is not None
+    run["measured_rate_bytes_per_second"] = 12_000_000
+    journal.save(run, "rate_observed")
+    estimate = engine._estimate(run["plan"])
+    assert estimate["rate_basis"] == "measured overall"
+    assert estimate["rate_bytes_per_second"] == 12_000_000
+    terminal = engine._progress(replace(later, status="completed"), run)
+    assert "buckets_done" not in terminal
 
 
 def test_capacity_warns_when_api_assignment_exceeds_node_budget(rig):

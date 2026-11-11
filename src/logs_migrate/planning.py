@@ -47,9 +47,15 @@ def capacity(destination: Cluster, buckets: tuple[Bucket, ...]) -> dict:
             else None
         )
         known = [value for value in (budget, disk) if value is not None]
+        disk_stopped = (
+            bool(buckets)
+            and node.capacity is not None
+            and node.used is not None
+            and node.used * 100 >= node.capacity * 95
+        )
         fits = (
             False
-            if any(value < estimate for value in known)
+            if disk_stopped or any(value < estimate for value in known)
             else (True if len(known) == 2 else None)
         )
         nodes.append(
@@ -181,7 +187,7 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
         )
         + (
             [
-                "Destination repository budget was not observed for: "
+                "Destination budget or disk headroom was not observed for: "
                 + ", ".join(space["unknown"])
                 + ". The API stops copying at 95% disk and reports the skipped buckets; "
                 "verification shows what landed."

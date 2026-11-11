@@ -82,6 +82,18 @@ class NodeSSH:
             return ""
         return self._read_command("du -sB1 " + " ".join(f"{STORE}/{i}" for i in ids))
 
+    def existing_bucket_usage(self, ids: list[str]) -> str:
+        require(
+            all(re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", i) for i in ids),
+            Code.SCHEMA,
+        )
+        if not ids:
+            return ""
+        checks = " ".join(f"{STORE}/{i}" for i in ids)
+        return self._read_command(
+            f'for path in {checks}; do if [ -e "$path" ]; then du -sB1 "$path" || exit 1; fi; done'
+        )
+
     def _read_command(self, command: str) -> str:
         client = None
         stage = "host"

@@ -72,6 +72,12 @@ The API user defaults to `admin` and the source SSH user to `root`. The [lab gui
    Read-only: nothing was started, written or stopped.
    ```
 
+**Sizing a migration.** A reference 3-node 8.18 to 3-node 9.0 migration over 1 GbE
+copied 1,037 buckets (393 GB) in 8 hours 42 minutes, about 12.6 MB/s overall. Storage
+load and the number of buckets affect the rate, so start with a small window and
+extrapolate from your own run. The preview gives a rough range and its assumptions;
+a rate measured for several minutes on the same cluster pair improves later previews.
+
 2. **Plan.** Pick a private path for `migration.sqlite` and stick with it. Read through the selected groups, the skipped open groups, partition differences, capacity and warnings before you continue. The output below is trimmed from an evaluation, with identifiers masked, so yours will look different.
 
    ```text

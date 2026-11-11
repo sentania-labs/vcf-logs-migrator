@@ -126,6 +126,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     hosts = step("Source cluster members (SSH)", members) or []
     from concurrent.futures import ThreadPoolExecutor
 
+    if hasattr(env, "load_source_cache"):
+        env.load_source_cache(hosts)
     inventories = []
     pool = ThreadPoolExecutor(max_workers=max(1, len(hosts)))
     futures = {host: pool.submit(env.node_inventory, host) for host in hosts}
@@ -161,6 +163,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
 
         step(f"Node {host} (SSH listing, df, service)", node)
     pool.shutdown()
+    if hasattr(env, "save_source_cache"):
+        env.save_source_cache(hosts)
 
     def source_cluster():
         cluster = env.source_cluster()
@@ -354,7 +358,9 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
     step(
         "Plan preview (no request sent)",
         plan,
-        skip=None
+        skip="Choose dates to preview and size only those buckets."
+        if window is None
+        else None
         if isinstance(source, Cluster) and isinstance(destination, Cluster)
         else "inventory missing",
     )

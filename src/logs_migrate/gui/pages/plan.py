@@ -159,12 +159,15 @@ class PlanPage(Page):
         checks_card, checks_layout = card("Checks")
         self.checks = KeyValues()
         checks_layout.addWidget(self.checks)
+        estimate_card, estimate_layout = card("Estimated time")
+        self.estimate = label("Preview the dates to see an estimate.", "body", wrap=True)
+        estimate_layout.addWidget(self.estimate)
         storage_card, storage_layout = card("Destination storage")
-        self.storage = Table(["Node", "Available", "Required", "Spare"])
+        self.storage = Table(["Node", "Available", "Estimated share", "Spare"])
         storage_layout.addWidget(self.storage)
         storage_layout.addWidget(
             label(
-                "Within each node's repository budget. The API assigns groups to nodes.",
+                "Estimated share includes a margin for uneven bucket sizes and the 95% disk limit.",
                 "hint",
                 wrap=True,
             )
@@ -185,6 +188,7 @@ class PlanPage(Page):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(12)
         right_layout.addWidget(checks_card)
+        right_layout.addWidget(estimate_card)
         right_layout.addWidget(storage_card)
         right_layout.addWidget(retention_card)
         right_layout.addStretch(1)
@@ -209,9 +213,9 @@ class PlanPage(Page):
         layout.setSpacing(12)
         layout.addWidget(
             banner(
-                "Migration blocked · overlapping history",
-                "The requested window selects groups already present on the destination or held by "
-                "an in-flight task. No second API request will be sent.",
+                "Migration needs attention",
+                "A transfer may still be running, or a group on the destination may differ. "
+                "Review the details before continuing.",
                 "bad",
             )
         )
@@ -232,9 +236,8 @@ class PlanPage(Page):
         next_card, next_layout = card("Next step")
         next_layout.addWidget(
             label(
-                "Choose a window that selects only history not already imported, then refresh the "
-                "preview. If no separate window is possible, export the evidence for the appliance "
-                "administrator.",
+                "If a transfer is running, wait for it to finish and refresh. If a group differs, "
+                "inspect the source and destination before continuing.",
                 "body",
                 wrap=True,
             )
@@ -440,8 +443,8 @@ class PlanPage(Page):
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
             self.set_heading(
-                "Selected history overlaps a previous import",
-                "Applies to both 9.0 and 9.1.1 destinations",
+                "Migration needs attention",
+                "Review the reason before continuing",
             )
             self.overlap_rows.set_rows(
                 [
@@ -458,7 +461,7 @@ class PlanPage(Page):
                         f"{self.start_date.date().toString('yyyy-MM-dd')} – "
                         f"{self.end_date.date().toString('yyyy-MM-dd')} UTC",
                     ),
-                    ("Rule", "Whole groups already received or in flight are never sent twice"),
+                    ("Rule", "Groups in an active transfer cannot be submitted again"),
                     (
                         "Why dates alone are insufficient",
                         "The API imports whole overlapping groups",
@@ -470,10 +473,7 @@ class PlanPage(Page):
             self.group_ids_row.setVisible(bool(lines))
             if not lines:
                 self.group_ids.hide()
-            self.note.setText(
-                "No bypass or overlapping retry action is offered. "
-                "Choose Change dates to pick a different window."
-            )
+            self.note.setText("Resolve the issue or choose Change dates to adjust the window.")
             self.start_button.setEnabled(False)
             self.start_button.setText("Start migration · unavailable")
             self.refresh_button.setEnabled(False)
@@ -484,9 +484,8 @@ class PlanPage(Page):
         if blocked:
             set_banner(
                 self.error,
-                "Migration blocked · overlapping history",
-                "The previous dates selected history already on the destination. "
-                "Pick a window that excludes received groups, then refresh the preview.",
+                "Migration needs attention",
+                "Resolve the issue shown in the previous preview, then refresh.",
                 "bad",
             )
             self.error.show()
@@ -546,6 +545,7 @@ class PlanPage(Page):
             self.groups.set_rows([])
             self.checks.set_rows([("Preview", "Not run")])
             self.storage.set_rows([])
+            self.estimate.setText("Preview the dates to see an estimate.")
             self.warnings.setText("")
             self.ack.setVisible(False)
             self._update_actions()
@@ -599,6 +599,29 @@ class PlanPage(Page):
         self.groups.set_rows(view["groups"], tips=view["group_tips"])
         self.checks.set_rows(view["checks"])
         self.storage.set_rows(view["storage"])
+        plan = state.plan_run["plan"]
+        estimate = plan.get("estimate")
+        if estimate:
+            received = plan.get("already_received", [])
+            self.estimate.setText(
+                f"{vm.format_eta(estimate['low_seconds'])} to "
+                f"{vm.format_eta(estimate['high_seconds'])} for {estimate['bucket_count']} buckets "
+                f"({vm.format_bytes(estimate['selected_bytes'])}) "
+                f"on {estimate['destination_nodes']} destination nodes. "
+                f"Rate: {vm.format_rate(estimate['rate_bytes_per_second'])} "
+                f"({estimate['rate_basis']}). "
+                + (
+                    f"Source listing: {estimate['listing_seconds']:.1f} seconds "
+                    f"({estimate['listing_basis']}). "
+                    if estimate.get("listing_seconds") is not None
+                    else ""
+                )
+                + "Actual time varies. "
+                + f"Already received: {len(received)} buckets "
+                f"({vm.format_bytes(sum(b['size'] for b in received))})."
+            )
+        else:
+            self.estimate.setText("No time estimate is available for this earlier preview.")
         self.warnings.setText("\n".join(view["warnings"]))
         self.warning_ids.setPlainText("\n".join(view["overlap_ids"]))
         self.warning_ids_toggle.setVisible(bool(view["overlap_ids"]))

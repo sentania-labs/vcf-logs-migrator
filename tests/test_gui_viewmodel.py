@@ -151,11 +151,11 @@ def test_progress_view_marks_stale_estimates_unavailable():
     live = vm.progress_view(status, stale=False, last_ok="2026-11-06T15:22:38+00:00", zone="UTC")
     assert live["banner"][0] == "info" and live["progress"] == 77
     assert [t[1] for t in live["tiles"]] == ["553 / 712 B", "~13 B/s", "00:38", "~13 sec"]
-    assert live["nodes"][1][4] == "1 skipped by the API"
+    assert live["nodes"][1][-1] == "1 skipped by the API"
     stale = vm.progress_view(status, stale=True, last_ok=None, zone="UTC")
     assert stale["banner"][0] == "warn"
     assert [t[1] for t in stale["tiles"]] == ["553 / 712 B", "Unavailable", "00:38", "Unavailable"]
-    assert stale["nodes"][1][1] == "Unknown" and stale["nodes"][1][4] == "Last response stale"
+    assert stale["nodes"][1][1] == "Unknown" and stale["nodes"][1][-1] == "Last response stale"
     idle = vm.progress_view(None, stale=False, last_ok=None, zone="UTC")
     assert idle["state"] == "idle" and idle["progress"] is None
     failed = vm.progress_view({**status, "status": "failed"}, stale=False, last_ok=None, zone="UTC")

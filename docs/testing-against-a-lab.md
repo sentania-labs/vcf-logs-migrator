@@ -97,7 +97,9 @@ with `authentication_failed` until you forget the old entry.
 logs-migrate selftest
 ```
 
-Correct output looks like this (hosts and numbers will differ):
+This earlier capture includes a full-history preview. Current self-tests skip the
+preview when no dates are supplied; pass `--since` and `--until` to preview and
+size only that window. Other output looks like this (hosts and numbers will differ):
 
 ```
 PASS  Source API version                                 8.18.7
