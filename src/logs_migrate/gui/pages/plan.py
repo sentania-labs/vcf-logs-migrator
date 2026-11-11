@@ -211,15 +211,9 @@ class PlanPage(Page):
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addWidget(
-            banner(
-                "Migration needs attention",
-                "A transfer may still be running, or a group on the destination may differ. "
-                "Review the details before continuing.",
-                "bad",
-            )
-        )
-        evidence, evidence_layout = card("Overlap evidence")
+        self.blocked_banner = banner("Preview unavailable", "Review the details below.", "bad")
+        layout.addWidget(self.blocked_banner)
+        evidence, evidence_layout = card("Preview details")
         self.overlap_rows = KeyValues()
         evidence_layout.addWidget(self.overlap_rows)
         self.group_ids = QPlainTextEdit()
@@ -234,14 +228,8 @@ class PlanPage(Page):
         evidence_layout.addWidget(self.group_ids)
         layout.addWidget(evidence)
         next_card, next_layout = card("Next step")
-        next_layout.addWidget(
-            label(
-                "If a transfer is running, wait for it to finish and refresh. If a group differs, "
-                "inspect the source and destination before continuing.",
-                "body",
-                wrap=True,
-            )
-        )
+        self.blocked_next = label("", "body", wrap=True)
+        next_layout.addWidget(self.blocked_next)
         next_layout.addWidget(
             label(
                 "The tool never deletes, overwrites or repairs destination history "
@@ -250,7 +238,6 @@ class PlanPage(Page):
                 wrap=True,
             )
         )
-        next_layout.addWidget(row(button("Change dates", "primary", self.change_dates)))
         layout.addWidget(next_card)
         layout.addStretch(1)
         return holder
@@ -436,12 +423,30 @@ class PlanPage(Page):
         self.preview_badge.setVisible(state.preview)
         blocked = bool(
             state.plan_error
-            and state.plan_error.partition(": ")[0] in BLOCKED
+            and (
+                state.plan_error.partition(": ")[0] in BLOCKED
+                or "destination bucket is" in state.plan_error
+                or "destination buckets are" in state.plan_error
+                or "destination bucket needs attention" in state.plan_error
+                or "destination buckets need attention" in state.plan_error
+                or "destination has multiple copies" in state.plan_error
+                or "different node than a new copy" in state.plan_error
+                or "node count changed" in state.plan_error
+                or "without an index entry" in state.plan_error
+                or "listed bucket" in state.plan_error
+            )
             and not vm.is_duplicate_identity(state.plan_error)
         )
-        self.change_button.setVisible(blocked and not self.blocked_dismissed)
+        self.change_button.setVisible(False)
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
+            detail = vm.plan_error_text(
+                state.plan_error, discovered, vm.window_from_days(*self.current_dates())
+            )
+            set_banner(self.blocked_banner, "Preview unavailable", detail, "bad")
+            self.blocked_next.setText(
+                "Resolve the problem described above, then refresh the preview."
+            )
             self.set_heading(
                 "Migration needs attention",
                 "Review the reason before continuing",
@@ -461,22 +466,28 @@ class PlanPage(Page):
                         f"{self.start_date.date().toString('yyyy-MM-dd')} – "
                         f"{self.end_date.date().toString('yyyy-MM-dd')} UTC",
                     ),
-                    ("Rule", "Groups in an active transfer cannot be submitted again"),
-                    (
-                        "Why dates alone are insufficient",
-                        "The API imports whole overlapping groups",
-                    ),
                 ]
             )
             lines = vm.conflict_group_lines(state.plan_error, discovered)
+            if "multiple destination entries: " in state.plan_error:
+                lines = [state.plan_error.partition("multiple destination entries: ")[2]]
+            elif (
+                "destination bucket is" in state.plan_error
+                or "destination buckets are" in state.plan_error
+            ):
+                lines = [state.plan_error.partition(": ")[2]]
+            elif not lines and ": " in state.plan_error:
+                lines = [state.plan_error.partition(": ")[2]]
             self.group_ids.setPlainText("\n".join(lines))
             self.group_ids_row.setVisible(bool(lines))
             if not lines:
                 self.group_ids.hide()
-            self.note.setText("Resolve the issue or choose Change dates to adjust the window.")
+            self.note.setText("Resolve the issue, then refresh the preview.")
             self.start_button.setEnabled(False)
             self.start_button.setText("Start migration · unavailable")
-            self.refresh_button.setEnabled(False)
+            self.refresh_button.setEnabled(
+                state.connected and "plan" not in self.app.worker.pending
+            )
             return
         self.stack.setCurrentIndex(0)
         self.date_hint.setText(self.date_message)

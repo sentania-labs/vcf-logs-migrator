@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from gui_driver import FIXTURES, Driver  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from logs_migrate.gui import viewmodel as vm  # noqa: E402
 
@@ -534,7 +535,7 @@ def test_editing_a_date_retires_the_preview_and_acknowledgment(driver):
     assert page.start_button.isEnabled()
 
 
-def test_blocked_preview_keeps_the_date_editors_reachable(driver):
+def test_blocked_preview_offers_refresh_without_asking_for_dates(driver):
     driver.connect()
     driver.plan()
     driver.acknowledge()
@@ -544,12 +545,9 @@ def test_blocked_preview_keeps_the_date_editors_reachable(driver):
     driver.state.plan_error = "overlapping_transfer: An in-flight transfer holds these groups."
     page = driver.pages["plan"]
     page.refresh()
-    assert page.stack.currentIndex() == 1 and page.change_button.isVisible()
-    page.change_dates()
-    driver.wait(30)
-    assert page.stack.currentIndex() == 0
-    assert page.start_date.isEnabled() and page.refresh_button.isEnabled()
-    assert "needs attention" in page.error.text().lower() and page.error.isVisible()
+    assert page.stack.currentIndex() == 1 and not page.change_button.isVisible()
+    assert page.refresh_button.isEnabled() and not page.start_button.isEnabled()
+    assert "refresh" in page.blocked_next.text().lower()
 
 
 def test_blocked_page_shows_the_refusal_it_received(driver):
@@ -570,6 +568,27 @@ def test_blocked_page_shows_the_refusal_it_received(driver):
         vm.window_from_days(*page.current_dates()),
     )
     assert "in-flight transfer" in refused
+
+
+def test_destination_conflict_shows_and_copies_the_affected_bucket(driver):
+    driver.connect()
+    driver.show("plan")
+    bucket_id = "00000000-0000-0000-0000-000000000001"
+    driver.state.plan_error = (
+        "bucket_identity_conflict: 1 destination bucket needs attention: "
+        f"{bucket_id} (2026-03-01 to 2026-03-01 UTC; destination: dst-1; "
+        "source size 1000 bytes, destination size 1 bytes). "
+        "The listed destination copies must be removed before this window can be copied."
+    )
+    page = driver.pages["plan"]
+    page.refresh()
+    assert page.stack.currentIndex() == 1
+    assert "source size" in page.blocked_banner.text()
+    assert "transfer" not in page.blocked_banner.text().lower()
+    page.group_ids_toggle.click()
+    assert bucket_id in page.group_ids.toPlainText()
+    page.group_ids_copy.click()
+    assert bucket_id in QApplication.clipboard().text()
 
 
 def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(driver):

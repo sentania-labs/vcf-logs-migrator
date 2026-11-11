@@ -49,6 +49,145 @@ def _day(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, UTC).date().isoformat()
 
 
+def _affected_error(code, message, ids):
+    error = MigrationError(code, message)
+    error.affected_ids = set(ids)
+    return error
+
+
+def _inspect_destination(inspect, destination, originals):
+    try:
+        return inspect(destination, set(originals))
+    except MigrationError as error:
+        dates = []
+        for bucket_id in sorted(getattr(error, "affected_ids", set())):
+            original = originals.get(bucket_id)
+            if original is None:
+                continue
+            start = original.start if hasattr(original, "start") else original.get("start")
+            end = original.end if hasattr(original, "end") else original.get("end")
+            if start is not None and end is not None:
+                dates.append(f"{bucket_id}: {_day(start)} to {_day(end)} UTC")
+        if dates:
+            error.message += " Affected dates: " + "; ".join(dates) + "."
+        raise
+
+
+def _check_destination_copies(existing, originals):
+    bad = []
+    incomplete = False
+    for bucket in existing:
+        original = originals[bucket.id]
+        size = original.size if hasattr(original, "size") else original["size"]
+        messages = original.messages if hasattr(original, "messages") else original.get("messages")
+        start = original.start if hasattr(original, "start") else original.get("start")
+        end = original.end if hasattr(original, "end") else original.get("end")
+        problems = []
+        if not bucket.complete or not bucket.registered:
+            incomplete = True
+            problems.append("incomplete or not indexed")
+        if bucket.size != size:
+            problems.append(f"source size {size} bytes, destination size {bucket.size} bytes")
+        if messages is not None and bucket.messages is not None and messages != bucket.messages:
+            problems.append(f"source {messages} messages, destination {bucket.messages} messages")
+        if problems:
+            dates = (
+                f"{_day(start)} to {_day(end)} UTC"
+                if start is not None and end is not None
+                else "dates unknown"
+            )
+            bad.append(
+                (
+                    bucket.id,
+                    f"{bucket.id} ({dates}; destination: {bucket.node}; "
+                    + "; ".join(problems)
+                    + ")",
+                )
+            )
+    if bad:
+        count = len({bucket_id for bucket_id, _ in bad})
+        raise _affected_error(
+            Code.INCOMPLETE if incomplete else Code.COLLISION,
+            f"{count} destination bucket{'s need' if count != 1 else ' needs'} attention: "
+            + "; ".join(detail for _, detail in bad)
+            + ". The listed destination copies must be removed before this window can be copied. "
+            "Inspect them and refresh; this tool does not remove them.",
+            {bucket_id for bucket_id, _ in bad},
+        )
+
+
+def _check_duplicate_destination(existing, originals, selected_ids, placements):
+    counts = Counter(bucket.id for bucket in existing)
+    duplicate_ids = sorted(bucket_id for bucket_id, count in counts.items() if count > 1)
+    details = []
+    unsafe = []
+    for bucket_id in duplicate_ids:
+        original = originals[bucket_id]
+        start = original.start if hasattr(original, "start") else original.get("start")
+        end = original.end if hasattr(original, "end") else original.get("end")
+        dates = (
+            f"{_day(start)} to {_day(end)} UTC"
+            if start is not None and end is not None
+            else "dates unknown"
+        )
+        copies = [b for b in existing if b.id == bucket_id]
+        nodes = {b.node for b in copies}
+        description = f"{bucket_id} ({dates}; destination: {', '.join(sorted(nodes))})"
+        details.append(description)
+        if len(nodes) != len(copies):
+            raise MigrationError(
+                Code.INCOMPLETE,
+                "A destination node listed the same bucket more than once; the locations "
+                "could not be distinguished: "
+                + description
+                + ". Inspect the listing before retrying.",
+            )
+        manifest = original.manifest if hasattr(original, "manifest") else original.get("manifest")
+        if manifest is not None and any(
+            b.manifest is not None and b.manifest != manifest for b in copies
+        ):
+            unsafe.append(description)
+    if unsafe:
+        count = len(unsafe)
+        raise _affected_error(
+            Code.COLLISION,
+            f"{count} selected bucket{'s have' if count != 1 else ' has'} "
+            "multiple destination entries: "
+            + "; ".join(unsafe)
+            + ". The copies differ from the source. "
+            "Inspect the listed destination copies before retrying.",
+            [detail.split(" ", 1)[0] for detail in unsafe],
+        )
+    if selected_ids - {b.id for b in existing}:
+        misplaced = []
+        for bucket_id in sorted({b.id for b in existing}):
+            nodes = {b.node for b in existing if b.id == bucket_id}
+            assigned = placements.get(bucket_id)
+            if assigned is not None and assigned not in nodes:
+                original = originals[bucket_id]
+                start = original.start if hasattr(original, "start") else original.get("start")
+                end = original.end if hasattr(original, "end") else original.get("end")
+                dates = (
+                    f"{_day(start)} to {_day(end)} UTC"
+                    if start is not None and end is not None
+                    else "dates unknown"
+                )
+                misplaced.append(
+                    f"{bucket_id} ({dates}; destination: {', '.join(sorted(nodes))}; "
+                    f"new copy: {assigned})"
+                )
+        if misplaced:
+            raise _affected_error(
+                Code.TOPOLOGY,
+                "These destination buckets are on a different node than a new copy would use. "
+                "Submitting this window would add another copy: "
+                + "; ".join(misplaced)
+                + ". Inspect the copies before continuing.",
+                [detail.split(" ", 1)[0] for detail in misplaced],
+            )
+    return details
+
+
 def partial_days(source, plan: dict) -> list[str]:
     """Requested days whose source events are not all in the selected buckets: days shared
     with an unselected sealed bucket, and days at or after the active tail. The tail starts
@@ -270,23 +409,109 @@ class Engine:
         self._record(task, destination)
         return task
 
-    def _overlap(self, plan):
+    def _overlap(self, plan, task=None):
         destination = plan["destination"]["id"]
         selected = {b["id"] for b in plan["selected"]}
         for prior in self.journal.transfers(destination):
             held = prior["received"] if prior["closed"] else prior["keys"]
-            if selected.intersection(_ids(held)):
+            affected = selected.intersection(_ids(held))
+            if affected:
                 # An open row whose start was never acknowledged is an uncertain start: the
                 # window is held with that reason until it is stale and the appliance shows
                 # no task for it.
                 uncertain = not prior["closed"] and not prior.get("acknowledged")
-                raise MigrationError(Code.UNCERTAIN_START if uncertain else Code.OVERLAP)
+                groups = [b for b in plan["selected"] if b["id"] in affected]
+                details = "; ".join(
+                    f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
+                    for b in groups
+                )
+                running = (
+                    task is not None
+                    and task.status == "running"
+                    and (not prior.get("task_id") or task.id == prior["task_id"])
+                )
+                inspected = plan["destination"].get("inventory_available") or (
+                    self.attribution and not plan["destination"]["version"].startswith("9.1.1")
+                )
+                reason = (
+                    "A transfer is running for these buckets. Wait for it to finish and refresh: "
+                    if running
+                    else "An earlier record says these buckets arrived, but the destination "
+                    "inventory does not show them. Inspect the destination before retrying: "
+                    if prior["closed"] and inspected
+                    else "An earlier task reported these buckets, but destination inventory "
+                    "is unavailable. Inspect the destination before retrying: "
+                    if prior["closed"]
+                    else "An earlier transfer has not been reconciled for these buckets: "
+                )
+                if running and task.nodes:
+                    details += ". Destination nodes: " + ", ".join(n.node for n in task.nodes)
+                raise _affected_error(
+                    Code.UNCERTAIN_START
+                    if uncertain
+                    else Code.INCOMPLETE
+                    if prior["closed"] and inspected
+                    else Code.OVERLAP,
+                    reason + details + ".",
+                    affected,
+                )
+        if task is not None and task.status == "running":
+            task_ids = _ids(
+                {
+                    *task.bucket_keys,
+                    *(
+                        bucket
+                        for node in task.nodes
+                        for group in (node.scheduled_ids or {}).values()
+                        for bucket in group
+                    ),
+                }
+            )
+            if task_ids:
+                affected = selected & task_ids
+            elif task.window is not None:
+                affected = {
+                    b["id"]
+                    for b in plan["selected"]
+                    if Window(b["start"], b["end"] + 1).overlaps(task.window)
+                }
+            else:
+                affected = set()
+            if affected:
+                details = "; ".join(
+                    f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
+                    for b in plan["selected"]
+                    if b["id"] in affected
+                )
+                nodes = ", ".join(node.node for node in task.nodes) or "not reported"
+                raise _affected_error(
+                    Code.OVERLAP,
+                    f"A transfer is running for {len(affected)} selected buckets: {details}. "
+                    f"Destination task nodes: {nodes}. Wait for it to finish and refresh.",
+                    affected,
+                )
         # Include transfers started outside this journal, wherever the appliance exposes them.
         ours = {row["task_id"] for row in self.journal.transfers(destination) if row.get("task_id")}
         for prior in self.env.history():
             if prior.destination != destination or (prior.task_id and prior.task_id in ours):
                 continue
-            require(not selected.intersection(prior.bucket_ids), Code.OVERLAP)
+            historical = selected.intersection(prior.bucket_ids)
+            if historical:
+                groups = [b for b in plan["selected"] if b["id"] in historical]
+                details = "; ".join(
+                    f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
+                    for b in groups
+                )
+                message = "An earlier task reported these buckets: " + details + "."
+                if plan["destination"].get("inventory_available"):
+                    plan["warnings"].append(message + " Destination inventory was checked.")
+                else:
+                    raise _affected_error(
+                        Code.OVERLAP,
+                        message
+                        + " Destination inventory is unavailable; inspect it before retrying.",
+                        historical,
+                    )
             if not prior.bucket_ids and (prior.complete or prior.partial):
                 # A finished transfer with no received list (one started from the product UI,
                 # say), or one that lists only what it skipped, covered whole buckets in its
@@ -329,6 +554,26 @@ class Engine:
             "partition_diff": partition_diff(source, destination),
         }
 
+    def _known_placements(self, destination, ids):
+        placement = getattr(self.env, "bucket_placement", None)
+        if placement is not None:
+            return {bucket_id: placement(bucket_id, destination) for bucket_id in ids}
+        nodes = [node.id for node in destination.nodes]
+        if len(nodes) == 1:
+            return dict.fromkeys(ids, nodes[0])
+        known = {}
+        for row in self.journal.transfers(destination.id):
+            previous = self.journal.load(row["run"])
+            if [node["id"] for node in previous["plan"]["destination"]["nodes"]] != nodes:
+                continue
+            for node, assigned in previous.get("assignment", {}).items():
+                for bucket_id in ids.intersection(assigned):
+                    if bucket_id not in known:
+                        known[bucket_id] = node
+                    elif known[bucket_id] != node:
+                        known[bucket_id] = None
+        return known
+
     def _plan_with_existing(self, source, destination, window):
         selected = [b for b in source.buckets if b.selected(window)]
         ids = {b.id for b in selected}
@@ -344,32 +589,39 @@ class Engine:
                 earlier = self.journal.load(row["run"])
                 if not self._nodes_comparable(destination, earlier["plan"]["destination"]):
                     continue
-                require(
-                    len(earlier["plan"]["destination"]["nodes"]) == len(destination.nodes),
-                    Code.TOPOLOGY,
-                    "The destination node count changed since these buckets were received; "
-                    "resubmitting the dates could create duplicates.",
-                )
+                if len(earlier["plan"]["destination"]["nodes"]) != len(destination.nodes):
+                    held = ids & _ids(row["received"])
+                    details = "; ".join(
+                        f"{b.id} ({_day(b.start)} to {_day(b.end)} UTC; destination: "
+                        + (
+                            ", ".join(sorted({d.node for d in destination.buckets if d.id == b.id}))
+                            or "not observed"
+                        )
+                        + ")"
+                        for b in selected
+                        if b.id in held
+                    )
+                    raise _affected_error(
+                        Code.TOPOLOGY,
+                        f"The destination node count changed since {len(held)} buckets "
+                        "were received; "
+                        "resubmitting them could create duplicates: " + details + ". "
+                        "Restore the original node count before continuing.",
+                        held,
+                    )
         inspect = getattr(self.env, "inspect_destination_buckets", None)
         if not destination.preview and (destination.inventory_available or self.attribution):
-            if inspect is not None:
-                destination = inspect(destination, ids)
-            existing = [b for b in destination.buckets if b.id in ids]
             by_id = {b.id: b for b in selected}
-            require(
-                len({b.id for b in existing}) == len(existing),
-                Code.COLLISION,
-                "The destination contains duplicate bucket identities.",
-            )
-            require(
-                all(b.registered and b.complete for b in existing),
-                Code.INCOMPLETE,
-                "A destination bucket is incomplete or missing its index entry; inspect it first.",
-            )
-            require(
-                all(b.size == by_id[b.id].size for b in existing),
-                Code.COLLISION,
-                "A destination bucket has a different size from the source copy.",
+            if inspect is not None:
+                destination = _inspect_destination(inspect, destination, by_id)
+            existing = [b for b in destination.buckets if b.id in ids]
+            _check_destination_copies(existing, by_id)
+            placements = self._known_placements(destination, ids)
+            duplicates = _check_duplicate_destination(
+                existing,
+                by_id,
+                ids,
+                placements,
             )
             received = {b.id for b in existing}
         elif destination.preview:
@@ -402,6 +654,35 @@ class Engine:
         else:
             plan = build_plan(filtered, destination, window)
         plan["already_received"] = [asdict(b) for b in selected if b.id in received]
+        if received:
+            dates = sorted(
+                {f"{_day(b.start)} to {_day(b.end)} UTC" for b in selected if b.id in received}
+            )
+            unknown_placement = (
+                not destination.preview
+                and (destination.inventory_available or self.attribution)
+                and any(placements.get(b.id) is None for b in existing)
+                and bool(plan["selected"])
+            )
+            suffix = (
+                f"; {len(plan['selected'])} buckets remain to be copied."
+                if unknown_placement
+                else f" and will be left as they are; {len(plan['selected'])} will be copied."
+            )
+            plan["warnings"].append(
+                f"{len(received)} buckets ({'; '.join(dates)}) are already on the destination"
+                + suffix
+            )
+        if not destination.preview and (destination.inventory_available or self.attribution):
+            if duplicates:
+                plan["warnings"].append("Multiple destination copies: " + "; ".join(duplicates))
+            unknown = sorted({b.id for b in existing if placements.get(b.id) is None})
+            if unknown and plan["selected"]:
+                plan["warnings"].append(
+                    "The destination node for a new copy could not be checked for "
+                    + ", ".join(unknown)
+                    + ". A copy may be created on another node; inspect placement before starting."
+                )
         return plan
 
     @staticmethod
@@ -498,7 +779,7 @@ class Engine:
         with self._exclusive():
             discover = getattr(self.env, "discover_window", None)
             source, destination = discover(window) if discover else self.env.discover()
-            self._settle(destination.id)
+            task = self._settle(destination.id)
             if destination.inventory_available:
                 destination = self.env.destination_cluster(fresh=True)
             plan = self._plan_with_existing(source, destination, window)
@@ -540,7 +821,7 @@ class Engine:
                     + ", ".join(plan["open_bucket_days"])
                     + "."
                 )
-            self._overlap(plan)
+            self._overlap(plan, task)
             run = {
                 "schema_version": 2,
                 "id": str(uuid4()),
@@ -639,7 +920,7 @@ class Engine:
         else:
             inspect = getattr(self.env, "inspect_destination_buckets", None)
             if inspect is not None:
-                destination = inspect(destination, set(intended))
+                destination = _inspect_destination(inspect, destination, intended)
             else:
                 require(
                     self.attribution or destination.inventory_available,
@@ -647,20 +928,12 @@ class Engine:
                     "Destination inventory is required to resume safely.",
                 )
             existing = [b for b in destination.buckets if b.id in intended]
-            require(
-                all(b.registered and b.complete for b in existing),
-                Code.INCOMPLETE,
-                "A destination bucket is incomplete or missing its index entry; inspect it first.",
-            )
-            require(
-                len({b.id for b in existing}) == len(existing),
-                Code.COLLISION,
-                "The destination contains duplicate bucket identities.",
-            )
-            require(
-                all(b.size == intended[b.id]["size"] for b in existing),
-                Code.COLLISION,
-                "A destination bucket has a different size from the original source copy.",
+            _check_destination_copies(existing, intended)
+            duplicates = _check_duplicate_destination(
+                existing,
+                intended,
+                set(intended),
+                self._known_placements(destination, set(intended)),
             )
             received = {b.id for b in existing}
         require(
@@ -684,6 +957,8 @@ class Engine:
         plan_destination = replace(destination, buckets=()) if journal_only else destination
         plan = build_plan(filtered, plan_destination, window)
         plan["already_received"] = [intended[i] for i in sorted(received)]
+        if not journal_only and duplicates:
+            plan["warnings"].append("Multiple destination copies: " + "; ".join(duplicates))
         plan["original_selected"] = original["selected"]
         plan["original_coverage"] = original["coverage"]
         if journal_only and not destination.preview:
@@ -1262,6 +1537,25 @@ class Engine:
                     destination.id == planned["id"] and destination.identity == planned["identity"],
                     Code.TOPOLOGY,
                 )
+                if not destination.preview and (
+                    destination.inventory_available or self.attribution
+                ):
+                    selected_for_inspection = {
+                        b["id"]: b
+                        for b in (
+                            *run["plan"].get("original_selected", run["plan"]["selected"]),
+                            *run["plan"].get("already_received", []),
+                        )
+                    }
+                    inspect = getattr(self.env, "inspect_destination_buckets", None)
+                    if inspect is not None:
+                        destination = _inspect_destination(
+                            inspect, destination, selected_for_inspection
+                        )
+                    _check_destination_copies(
+                        [b for b in destination.buckets if b.id in selected_for_inspection],
+                        selected_for_inspection,
+                    )
                 bucket_check = None
                 if not self.attribution and destination.inventory_available:
                     selected = run["plan"].get("original_selected", run["plan"]["selected"])

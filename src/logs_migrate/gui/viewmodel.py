@@ -42,7 +42,7 @@ ERROR_TEXT = {
     Code.INCOMPLETE: "The evidence was incomplete.",
     Code.VERIFICATION_PENDING: "Verification is pending.",
     Code.UNCERTAIN: "The remote outcome is uncertain. Refresh the API status.",
-    Code.BUSY: "The destination already has a running task or another client holds the lock.",
+    Code.BUSY: "The destination is busy or another client holds the lock. Wait and refresh.",
     Code.SERVICE: "A service state could not be confirmed.",
     Code.RECOVERY: "A service recovery is required.",
     Code.INTEGRITY: "The simulator state does not match the fixture.",

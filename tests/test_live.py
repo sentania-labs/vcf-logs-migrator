@@ -63,6 +63,7 @@ LISTING = "\n".join(
 def test_listing_parser_reads_real_8187_lines_and_keeps_key_names_only():
     buckets = parse_listing(LISTING)
     assert [b.id for b in buckets] == [A, B, C, D]
+
     first, second, third, fourth = buckets
     assert first.status == "archived" and first.partition == ""
     assert (first.size, first.messages) == (479923834, 1893963)
@@ -75,6 +76,25 @@ def test_listing_parser_reads_real_8187_lines_and_keeps_key_names_only():
     assert fourth.start is None and fourth.end is None and fourth.messages is None
     assert "starttime" in first.keys and "generation" in first.keys
     assert all("1893963" not in k for k in first.keys)
+
+
+def test_member_aliases_are_inventoried_once_but_ambiguous_names_are_retained(monkeypatch):
+    replies = {
+        "node.example": ["192.0.2.1"],
+        "192.0.2.1": ["192.0.2.1"],
+        "other.example": ["192.0.2.2"],
+        "ambiguous.example": ["192.0.2.1", "192.0.2.3"],
+    }
+    monkeypatch.setattr(
+        live.socket,
+        "getaddrinfo",
+        lambda host, port, type: [(None, None, None, None, (ip, port)) for ip in replies[host]],
+    )
+    assert live.unique_member_endpoints(list(replies)) == [
+        "node.example",
+        "other.example",
+        "ambiguous.example",
+    ]
 
 
 def test_listing_parser_still_reads_comma_separated_dates_in_both_shapes():
@@ -333,6 +353,11 @@ class FakeSSH:
 @pytest.fixture
 def rigged(tmp_path, monkeypatch):
     """A live environment with recorded TLS, SSH and REST; returns env plus the transports."""
+
+    def no_dns(*args, **kwargs):
+        raise OSError("no recorded DNS")
+
+    monkeypatch.setattr(live.socket, "getaddrinfo", no_dns)
     store = TrustStore(tmp_path / "cfg")
     pins = {"src.lab": "a" * 64, "dst.lab": "c" * 64}
     monkeypatch.setattr(
@@ -851,6 +876,37 @@ def test_destination_directory_inspection_detects_unregistered_bucket(tmp_path):
     orphan = replace(destination, buckets=())
     with pytest.raises(MigrationError, match=Code.INCOMPLETE):
         LiveEnvironment.inspect_destination_buckets(adapter, orphan, {bucket.id})
+
+
+def test_destination_inspection_retains_copies_from_each_node(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    env, _ = _live_rig(tmp_path)
+    source, destination = env.discover()
+    bucket = source.buckets[0]
+    nodes = destination.nodes[:2]
+    destination = replace(
+        destination,
+        buckets=tuple(replace(bucket, node=node.id) for node in nodes),
+        inventory_available=True,
+    )
+
+    class SSH:
+        def __init__(self, host):
+            self.host = host
+
+        def existing_bucket_usage(self, ids):
+            return (
+                f"{bucket.size} /store/{bucket.id}\n" if self.host in {n.id for n in nodes} else ""
+            )
+
+    adapter = SimpleNamespace(
+        connection=SimpleNamespace(destination_ssh_user="root"),
+        _ssh=lambda host, credential, user: SSH(host),
+    )
+    inspected = LiveEnvironment.inspect_destination_buckets(adapter, destination, {bucket.id})
+    assert {b.node for b in inspected.buckets} == {node.id for node in nodes}
 
 
 def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path):
@@ -2076,6 +2132,17 @@ def test_active_buckets_keep_recorded_dates(rigged):
         7,
         True,
     )
+
+
+def test_repeated_listing_on_one_node_reports_the_ambiguous_bucket(rigged):
+    env, _, _, _ = trusted(rigged)
+    inventory = env.node_inventory("src-1.lab")
+    duplicate = inventory.buckets[0]
+    inventory.buckets.append(duplicate)
+    with pytest.raises(MigrationError) as error:
+        env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    assert error.value.code == Code.INCOMPLETE
+    assert duplicate.id in error.value.message and "src-1.lab" in error.value.message
 
 
 def test_empty_active_bucket_sentinel_has_no_dates():

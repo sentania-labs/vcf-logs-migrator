@@ -13,6 +13,7 @@ start, cancel and config writes. Nothing stops a service or deletes a bucket.
 from __future__ import annotations
 
 import re
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -261,6 +262,30 @@ def parse_members(text: str, fallback: str) -> list[str]:
             if host and host not in hosts and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", host):
                 hosts.append(host)
     return hosts or [fallback]
+
+
+def unique_member_endpoints(hosts: list[str]) -> list[str]:
+    """Collapse names that resolve to the same single SSH endpoint.
+
+    Ambiguous or failed lookups are retained; they do not prove node identity.
+    Paramiko uses the same local resolver when it connects.
+    """
+    result = []
+    seen = set()
+    for host in hosts:
+        try:
+            addresses = {
+                item[4][0] for item in socket.getaddrinfo(host, 22, type=socket.SOCK_STREAM)
+            }
+        except OSError:
+            addresses = set()
+        if len(addresses) == 1:
+            address = next(iter(addresses))
+            if address in seen:
+                continue
+            seen.add(address)
+        result.append(host)
+    return result
 
 
 def parse_partitions(response) -> list[dict]:
@@ -824,7 +849,7 @@ class LiveEnvironment:
         # An unreadable member list fails closed: the API copies from every member, so a
         # plan and ledger built from one node would be short.
         text = self._ssh(host, credential, username).read(ReadOperation.MEMBERS)
-        return parse_members(text, host.lower())
+        return unique_member_endpoints(parse_members(text, host.lower()))
 
     def source_members(self) -> list[str]:
         return self._members(
@@ -924,6 +949,16 @@ class LiveEnvironment:
                         active and listed.empty_proven,
                     )
                 )
+        seen = set()
+        for bucket in buckets:
+            if bucket.key in seen:
+                raise MigrationError(
+                    Code.INCOMPLETE,
+                    f"{bucket.node} listed bucket {bucket.id} more than once. "
+                    "The listing does not identify the storage locations; "
+                    "inspect them before retrying.",
+                )
+            seen.add(bucket.key)
         nodes = tuple(Node(i.host, i.capacity, i.used, i.available, i.service) for i in inventories)
         return Cluster(
             ident,
@@ -1050,27 +1085,41 @@ class LiveEnvironment:
             "Destination SSH inventory is needed to resume safely.",
         )
         updated = []
+        missing_by_node = {}
         for node in cluster.nodes:
             ssh = self._ssh(node.id, "destination_ssh", self.connection.destination_ssh_user)
             usage = {}
             ordered = sorted(ids)
             for start in range(0, len(ordered), 256):
                 usage.update(parse_usage(ssh.existing_bucket_usage(ordered[start : start + 256])))
-            indexed = {b.id: b for b in cluster.buckets if b.node == node.id and b.id in ids}
-            missing = set(usage) - indexed.keys()
+            indexed = [b for b in cluster.buckets if b.node == node.id and b.id in ids]
+            indexed_ids = {b.id for b in indexed}
+            missing = set(usage) - indexed_ids
+            if missing:
+                missing_by_node[node.id] = missing
             require(
-                not missing,
-                Code.INCOMPLETE,
-                f"{node.id}: a bucket directory exists without an index entry: "
-                + ", ".join(sorted(missing))
-                + ". Inspect it before resuming.",
-            )
-            require(
-                set(indexed) <= usage.keys(),
+                indexed_ids <= usage.keys(),
                 Code.INCOMPLETE,
                 f"{node.id}: could not inspect every indexed bucket directory.",
             )
-            updated.extend(replace(b, size=usage[b.id]) for b in indexed.values())
+            updated.extend(replace(b, size=usage[b.id]) for b in indexed)
+        if missing_by_node:
+            missing_ids = set().union(*missing_by_node.values())
+            locations = "; ".join(
+                f"{node}: {', '.join(sorted(bucket_ids))}"
+                for node, bucket_ids in sorted(missing_by_node.items())
+            )
+            error = MigrationError(
+                Code.INCOMPLETE,
+                f"{len(missing_ids)} destination "
+                f"bucket{'s have' if len(missing_ids) != 1 else ' has'} "
+                "a directory without an index entry: "
+                + locations
+                + ". The listed destination copies must be removed before this window "
+                "can be copied. Inspect them and refresh; this tool does not remove them.",
+            )
+            error.affected_ids = missing_ids
+            raise error
         return replace(cluster, buckets=tuple(updated))
 
     def destination_topology(self) -> tuple[str, str]:

@@ -259,8 +259,11 @@ even while its status still shows nothing.
 - Source operations are read-only. No source stop, bucket delete, overwrite or
   manual-copy fallback exists in the engine path.
 - A new transfer may not select a source bucket that an in-flight task holds. Buckets
-  the destination already received are split out of the plan and shown as already
-  received; only the remainder is sent. Once the API reports a task finished, only
+  the destination already received are shown separately from the remainder. The API
+  receives the original dates and selects whole overlapping buckets; it skips a bucket
+  only on the node to which it assigns that bucket. If placement cannot be checked,
+  inspect it before starting because another copy could be created. Once the API reports
+  a task finished, only
   the buckets it transferred stay recorded, so a stopped, cancelled or failed task's
   remainder is finished with `resume RUN_ID` (no hand-picked dates). Preserve
   the journal for each destination; external transfer history must also be known.
@@ -276,7 +279,16 @@ even while its status still shows nothing.
   identities before start. `verify` re-checks the destination identity and reports
   incomplete verification if it changed; source retention after a completed transfer
   is permitted. Existing destination
-  bucket collisions, unknown history and incompatible partitions block transfer.
+  copies that are incomplete, missing their index entry, or differ in size or message
+  count block the window. The preview lists the affected copies; they must be removed
+  from the destination before that window can be copied. This tool does not remove them.
+  Unknown history and incompatible partitions can also block transfer.
+- To investigate repeated destination entries, the read-only command
+  `/usr/lib/loginsight/application/sbin/bucket-index show` can be run on each destination
+  node. Share the affected bucket lines with the node names, and compare their IDs,
+  counts and dates with the preview.
+  The listing alone does not establish whether a bucket on another node would be skipped
+  by the destination's placement logic.
 - Verification uses complete=true and two agreeing count responses, then confirms
   destination and ingest observations still agree. Missing or unstable evidence
   returns incomplete, never success. Any running or unknown API task also prevents
