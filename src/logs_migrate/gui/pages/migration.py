@@ -121,6 +121,7 @@ class MigrationPage(Page):
     def back_from_remainder(self) -> None:
         run = self.app.state.plan_run
         if run and run.get("resume_parent"):
+            self.app.state.plan_run = None
             self.app.select_run(run["resume_parent"])
 
     def start_remainder(self) -> None:
@@ -172,6 +173,7 @@ class MigrationPage(Page):
         preview = bool(
             state.plan_run
             and state.plan_run.get("resume_root")
+            and state.run_id == state.plan_run["id"]
             and "source_by_bucket" not in state.plan_run
             and state.started_run_id != state.plan_run["id"]
         )

@@ -108,6 +108,37 @@ def test_resume_preview_and_finish_in_the_window():
         driver.close()
 
 
+def test_go_back_from_resume_preview_returns_to_the_stopped_run():
+    import json
+
+    driver = Driver(FIXTURES / "sealed-populated.fixture", knobs={"cancel_after": 1})
+    try:
+        driver.connect()
+        driver.plan()
+        driver.acknowledge()
+        driver.start()
+        driver.poll_until_finished()
+        old_run = driver.state.run_id
+        driver.show("migration")
+        state_path = driver.journal.with_suffix(".simulated-state")
+        data = json.loads(state_path.read_text())
+        del data["cancel_after"]
+        state_path.write_text(json.dumps(data))
+        page = driver.pages["migration"]
+        page.resume_button.click()
+        driver.until(lambda: "resume" not in driver.window.worker.pending)
+        driver.idle()
+        assert driver.state.run_id != old_run
+        assert page.start_remainder_button.isVisible()
+        page.back_button.click()
+        driver.idle()
+        assert driver.state.run_id == old_run
+        assert not page.start_remainder_button.isVisible()
+        assert not page.back_button.isVisible()
+    finally:
+        driver.close()
+
+
 def test_refused_resume_explains_which_action_failed():
     import json
 
