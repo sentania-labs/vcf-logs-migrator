@@ -93,6 +93,7 @@ class Engine:
             environment.inventory_journal = journal
         self.clock = clock or SystemClock()
         self.on_event = on_event
+        self._samples = {}
 
     @property
     def attribution(self) -> bool:
@@ -1005,7 +1006,8 @@ class Engine:
                 ids = {item for group in node.scheduled_ids.values() for item in group}
                 if ids <= sizes.keys():
                     pending_now[node.node] = sorted(ids)
-            prior_pending = run.get("pending_sample")
+            samples = self._samples.setdefault(run_id, {})
+            prior_pending = samples.get("pending")
             if task.status == "running" and elapsed is not None and pending_now:
                 if prior_pending and elapsed > prior_pending["elapsed"]:
                     interval = elapsed - prior_pending["elapsed"]
@@ -1033,9 +1035,8 @@ class Engine:
                         if all(n.get("eta_seconds") is not None for n in active):
                             result["eta_seconds"] = max(n["eta_seconds"] for n in active)
                 if prior_pending is None or elapsed > prior_pending["elapsed"]:
-                    run["pending_sample"] = {"elapsed": elapsed, "nodes": pending_now}
-                    self._audit(run, "pending_sampled")
-            previous = run.get("rate_sample")
+                    samples["pending"] = {"elapsed": elapsed, "nodes": pending_now}
+            previous = samples.get("rate")
             if task.status == "running" and elapsed is not None and copied is not None:
                 if previous and elapsed > previous["elapsed"] and copied >= previous["bytes"]:
                     current = (copied - previous["bytes"]) / (elapsed - previous["elapsed"])
@@ -1047,25 +1048,17 @@ class Engine:
                             else None
                         )
                 if previous is None or elapsed > previous["elapsed"]:
-                    run["rate_sample"] = {"elapsed": elapsed, "bytes": copied}
-                    self._audit(run, "progress_sampled")
-            if (
-                task.elapsed_seconds is not None
-                and task.elapsed_seconds >= 180
-                and result.get("bytes_transferred") is not None
-                and result["bytes_transferred"] > 0
-            ):
-                run["measured_rate_bytes_per_second"] = (
-                    result["bytes_transferred"] / task.elapsed_seconds
-                )
-                self._audit(run, "rate_observed")
-            elif (
-                task.elapsed_seconds is not None
-                and task.elapsed_seconds >= 180
-                and result.get("rate_bytes_per_second")
-            ):
-                run["measured_rate_bytes_per_second"] = result["rate_bytes_per_second"]
-                self._audit(run, "rate_observed")
+                    samples["rate"] = {"elapsed": elapsed, "bytes": copied}
+            measured = None
+            if task.elapsed_seconds is not None and task.elapsed_seconds >= 180:
+                if result.get("bytes_transferred"):
+                    measured = result["bytes_transferred"] / task.elapsed_seconds
+                elif result.get("rate_bytes_per_second"):
+                    measured = result["rate_bytes_per_second"]
+            stored = run.get("measured_rate_bytes_per_second")
+            if measured and (not stored or abs(measured - stored) > stored * 0.1):
+                run["measured_rate_bytes_per_second"] = measured
+                self.journal.save(run, "rate_observed")
             capacity_plan = {
                 **run["plan"],
                 "capacity": run.get("capacity_at_start", run["plan"]["capacity"]),

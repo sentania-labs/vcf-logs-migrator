@@ -1150,10 +1150,7 @@ def verification_view(
         if result.get("detail"):
             why += f" {result['detail']}"
         if task in {"cancelled", "failed"}:
-            why += (
-                f" The API task {task}; plan the remainder with a window that excludes "
-                "received groups."
-            )
+            why += f" The API task {task}; use Resume to send the remainder."
         expected = result.get("expected_count")
         measured = result.get("measured_arrival_count")
         share = (

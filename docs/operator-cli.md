@@ -235,10 +235,11 @@ even while its status still shows nothing.
 
 - Source operations are read-only. No source stop, bucket delete, overwrite or
   manual-copy fallback exists in the engine path.
-- A new transfer may not select a source bucket the destination already received or
-  that an in-flight task holds. Once the API reports a task finished, only the
-  buckets it transferred stay recorded, so a stopped, cancelled or failed task's
-  remainder can be planned again (use a window that excludes what landed). Preserve
+- A new transfer may not select a source bucket that an in-flight task holds. Buckets
+  the destination already received are split out of the plan and shown as already
+  received; only the remainder is sent. Once the API reports a task finished, only
+  the buckets it transferred stay recorded, so a stopped, cancelled or failed task's
+  remainder is finished with `resume RUN_ID` (no hand-picked dates). Preserve
   the journal for each destination; external transfer history must also be known.
   Adjacent windows selecting the same whole bucket are refused too, especially on
   9.1.1 where destination bucket IDs disappear. A run starts at most once.

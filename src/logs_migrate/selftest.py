@@ -8,7 +8,7 @@ never credentials, never raw remote text.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
 from .adapters.ssh_errors import SSHFailure
@@ -340,7 +340,13 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 Code.INCOMPLETE,
                 "No sealed groups have usable dates. Check source inventory before planning.",
             )
-        preview = build_plan(env.size_source(source, requested), destination, requested)
+        sized = env.size_source(source, requested)
+        present = {b.id for b in destination.buckets}
+        pending = replace(sized, buckets=tuple(b for b in sized.buckets if b.id not in present))
+        already = sum(1 for b in sized.buckets if b.id in present and b.selected(requested))
+        if already and not any(b.selected(requested) for b in pending.buckets):
+            return None, f"all {already} selected buckets are already on the destination"
+        preview = build_plan(pending, destination, requested)
         detail = (
             f"{len(preview['selected'])} buckets, "
             f"{preview['capacity']['required_bytes'] / 1e9:.2f} GB, "
@@ -351,6 +357,8 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             "last day covered only by sealed buckets "
             f"{preview['last_fully_sealed_day'] or 'unknown'}"
         )
+        if already:
+            detail += f" · {already} already on the destination, left out"
         if preview["capacity"]["unknown"]:
             detail += " · destination budget unknown"
         return preview, detail

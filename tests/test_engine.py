@@ -865,3 +865,22 @@ def test_plan_warning_for_an_unrecognized_listing_names_the_host_only(rig):
     (warning,) = [w for w in run["plan"]["warnings"] if "src-1.lab" in w]
     assert "no recognizable groups" in warning and "by hand" in warning
     assert "first line" not in warning
+
+
+def test_status_polling_does_not_write_the_journal(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    destination = run["plan"]["destination"]["id"]
+    before = len(journal.events(run["id"]))
+    for elapsed, copied in ((10, 100), (20, 400), (30, 700)):
+        env.transfer = lambda e=elapsed, c=copied: Transfer(
+            "sim-1",
+            "running",
+            bytes_transferred=c,
+            destination=destination,
+            elapsed_seconds=e,
+            total_bytes=1000,
+        )
+        engine.status(run["id"])
+    assert len(journal.events(run["id"])) == before
