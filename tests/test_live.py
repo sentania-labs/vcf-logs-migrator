@@ -2541,6 +2541,45 @@ def test_live_bucket_verification_checks_destination_counts(tmp_path):
     assert len(result["bucket_check"]["unmatched"]) == 1
 
 
+@pytest.mark.parametrize("matching_last", [True, False])
+def test_verification_rejects_conflicting_repeated_destination_entries(tmp_path, matching_last):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], active_ack=ACTIVE_ACK)
+    engine.status()
+    source, destination = env.discover()
+    ids = {b["id"] for b in run["plan"]["selected"]}
+    matching = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids
+    )
+    differing = replace(matching[0], messages=matching[0].messages - 1)
+    copies = (differing, matching[0]) if matching_last else (matching[0], differing)
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=(*copies, *matching[1:]), inventory_available=True
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] != "verified_success"
+    assert any(matching[0].id in key for key in result["bucket_check"]["unmatched"])
+    env.destination_cluster = lambda fresh=False: replace(
+        destination,
+        buckets=(replace(matching[0], messages=None), differing, matching[0], *matching[1:]),
+        inventory_available=True,
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=(matching[0], matching[0], *matching[1:]), inventory_available=True
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_success"
+    assert result["bucket_check"]["matched_groups"] == len(matching)
+
+
 def test_live_verification_reports_count_loss_and_incomplete_copy_separately(tmp_path):
     from dataclasses import replace
 

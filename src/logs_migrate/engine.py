@@ -1501,21 +1501,33 @@ class Engine:
                     for b in destination.buckets
                     if b.id in checked and not (b.complete and b.registered)
                 )
+                counts_by_copy = {}
+                for bucket in destination.buckets:
+                    if bucket.id in checked and bucket.messages is not None:
+                        counts_by_copy.setdefault(bucket.key, set()).add(bucket.messages)
+                conflicting_copies = sorted(
+                    key for key, counts in counts_by_copy.items() if len(counts) > 1
+                )
                 bucket_check = None
                 if not self.attribution and destination.inventory_available:
                     selected = run["plan"].get("original_selected", run["plan"]["selected"])
-                    by_id = {b.id: b for b in destination.buckets}
+                    by_id = {}
+                    for bucket in destination.buckets:
+                        by_id.setdefault(bucket.id, []).append(bucket)
                     matched, unknown, unmatched = [], [], []
                     for b in selected:
-                        seen = by_id.get(b["id"])
-                        if seen is None:
+                        copies = by_id.get(b["id"], [])
+                        if not copies:
                             unmatched.append(b)
-                        elif b["messages"] is None or seen.messages is None:
+                        elif b["messages"] is not None and any(
+                            copy.messages is not None and copy.messages != b["messages"]
+                            for copy in copies
+                        ):
+                            unmatched.append(b)
+                        elif b["messages"] is None or any(copy.messages is None for copy in copies):
                             unknown.append(b)
-                        elif seen.messages == b["messages"]:
-                            matched.append(b)
                         else:
-                            unmatched.append(b)
+                            matched.append(b)
                     bucket_check = {
                         "matched_groups": len(matched),
                         "total_groups": len(selected),
@@ -1539,6 +1551,8 @@ class Engine:
                     }
                 if unsafe_copies:
                     result["incomplete_destination_copies"] = unsafe_copies
+                if conflicting_copies:
+                    result["conflicting_destination_copies"] = conflicting_copies
                 if bucket_check is not None:
                     result["bucket_check"] = bucket_check
                     result["daily_outcome"] = result["outcome"]
@@ -1583,6 +1597,10 @@ class Engine:
                     "Check the source inventory."
                 )
             if result.get("incomplete_destination_copies") and (
+                result["outcome"] == Verification.SUCCESS.value
+            ):
+                result["outcome"] = Verification.DISCREPANCY.value
+            if result.get("conflicting_destination_copies") and (
                 result["outcome"] == Verification.SUCCESS.value
             ):
                 result["outcome"] = Verification.DISCREPANCY.value

@@ -1099,6 +1099,26 @@ def test_mismatched_group_count_uses_a_label_and_offers_its_id(driver):
     assert page.group_ids_toggle.isVisible()
 
 
+def test_conflicting_destination_entries_are_visible_without_raw_ids(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.verify()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    result = driver.state.verification
+    result["outcome"] = "verified_discrepancy"
+    result["conflicting_destination_copies"] = ["dst-1/" + group["id"]]
+    page = driver.pages["verification"]
+    page.refresh()
+    assert "conflicting message counts" in page.banner.text().lower()
+    assert "dst-1" in page.banner.text() and group["id"] not in page.banner.text()
+    assert page.group_ids_toggle.isVisible()
+    page.group_ids_toggle.click()
+    assert group["id"] in page.group_ids.toPlainText()
+
+
 @pytest.mark.parametrize("code", ["bucket_identity_conflict", "incomplete_evidence"])
 def test_blocked_reason_stays_visible_when_changing_dates(driver, code):
     from PySide6.QtCore import QDate

@@ -173,6 +173,13 @@ def markdown(run, events):
             + ".",
             "",
         ]
+    if verification.get("conflicting_destination_copies"):
+        lines += [
+            "Destination groups with conflicting message counts: "
+            + ", ".join(verification["conflicting_destination_copies"])
+            + ".",
+            "",
+        ]
     if verification.get("reason"):
         lines += [f"Reason: {verification['reason']}.", ""]
         if verification.get("detail"):

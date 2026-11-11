@@ -155,6 +155,22 @@ def test_verification_reports_a_copy_that_became_incomplete(rig):
     assert f"{copy['node']}/{copy['id']}" in report
 
 
+def test_verification_rejects_conflicting_same_node_entries_in_simulation(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    assert engine.status()["status"] == "completed"
+    original = env.data["destination"]["buckets"][0]
+    differing = {**original, "messages": original["messages"] - 1}
+    env.data["destination"]["buckets"].insert(0, differing)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["conflicting_destination_copies"] == [f"{original['node']}/{original['id']}"]
+    report = markdown(journal.load(run["id"]), journal.events(run["id"]))
+    assert "conflicting message counts" in report
+    assert f"{original['node']}/{original['id']}" in report
+
+
 @pytest.mark.parametrize("fixture_name", ["sealed-populated.fixture", "sealed-911.fixture"])
 def test_api_flow_preserves_source_and_verifies_daily_counts(rig, fixture_name):
     engine, _, journal = rig

@@ -945,7 +945,14 @@ def outcome_label(verification: dict | None) -> str:
     if verification.get("incomplete_destination_copies"):
         daily_differs = any(row.get("difference") for row in verification.get("daily", []))
         prefix = "counts differ · " if daily_differs else ""
-        return prefix + "incomplete destination groups"
+        detail = (
+            "incomplete and conflicting"
+            if verification.get("conflicting_destination_copies")
+            else "incomplete"
+        )
+        return prefix + detail + " destination groups"
+    if verification.get("conflicting_destination_copies"):
+        return "conflicting destination group listings"
     missing = verification.get("buckets", {}).get("not_received", [])
     if missing:
         state = "counts differ" if outcome == "verified_discrepancy" else "incomplete"
@@ -1287,7 +1294,8 @@ def verification_view(
                 f"{groups} {daily}",
             )
     incomplete_copies = result.get("incomplete_destination_copies", [])
-    if incomplete_copies:
+    conflicting_copies = result.get("conflicting_destination_copies", [])
+    if incomplete_copies or conflicting_copies:
         originals = []
         if run:
             originals = [
@@ -1295,21 +1303,32 @@ def verification_view(
                 *run["plan"].get("already_received", []),
                 *run["plan"].get("original_selected", []),
             ]
-        descriptions = []
-        for key in incomplete_copies:
-            node, _, bucket_id = key.rpartition("/")
-            bucket = next((b for b in originals if b["id"] == bucket_id), None)
-            dates = (
-                format_day_range(bucket.get("start"), bucket.get("end"), inclusive_end=True)
-                if bucket
-                else "dates unavailable"
+
+        def describe_copies(keys):
+            descriptions = []
+            for key in keys:
+                node, _, bucket_id = key.rpartition("/")
+                bucket = next((b for b in originals if b["id"] == bucket_id), None)
+                dates = (
+                    format_day_range(bucket.get("start"), bucket.get("end"), inclusive_end=True)
+                    if bucket
+                    else "dates unavailable"
+                )
+                descriptions.append(f"{dates} on {node or 'an unknown node'}")
+            return "; ".join(descriptions)
+
+        details = []
+        if incomplete_copies:
+            details.append("Incomplete: " + describe_copies(incomplete_copies) + ".")
+        if conflicting_copies:
+            details.append(
+                "Conflicting message counts: " + describe_copies(conflicting_copies) + "."
             )
-            descriptions.append(f"{dates} on {node or 'an unknown node'}")
         banner = (
             "bad",
-            "Destination groups are incomplete",
-            "; ".join(descriptions)
-            + ". Inspect these destination copies before continuing. "
+            "Destination groups need attention",
+            " ".join(details)
+            + " Inspect these destination copies before continuing. "
             + (
                 f"{banner[1]}: {banner[2]}"
                 if daily_outcome == "verified_discrepancy" and differing

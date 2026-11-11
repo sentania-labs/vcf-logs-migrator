@@ -78,6 +78,8 @@ class VerificationPage(Page):
         title = "Verification" + (" · 9.1.1 Preview" if preview else "")
         if (state.verification or {}).get("incomplete_destination_copies"):
             title += " · incomplete destination groups"
+        elif (state.verification or {}).get("conflicting_destination_copies"):
+            title += " · conflicting destination group listings"
         elif view["outcome"] == "verified_discrepancy":
             title += " · daily mismatch"
         elif view["outcome"] == "incomplete_verification":
@@ -113,6 +115,7 @@ class VerificationPage(Page):
                     *exact.get("unknown", []),
                     *exact.get("unmatched", []),
                     *result.get("incomplete_destination_copies", []),
+                    *result.get("conflicting_destination_copies", []),
                 ]
             )
         )
