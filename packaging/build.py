@@ -15,6 +15,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -28,9 +29,10 @@ BUNDLE_ID = "net.sentania.vcf-logs-migrator"
 
 
 def version() -> str:
-    from setuptools_scm import get_version
-
-    return get_version(root=ROOT)
+    # The CLI reads pyproject.toml, just like the build backend that embeds metadata.
+    return subprocess.check_output(
+        [sys.executable, "-m", "setuptools_scm"], cwd=ROOT, text=True
+    ).strip()
 
 
 def executable(platform: str) -> Path:
@@ -145,6 +147,39 @@ def build(platform: str) -> Path:
     return program
 
 
+def create_dmg(staging: Path, artifact: Path) -> None:
+    command = [
+        "hdiutil",
+        "create",
+        "-volname",
+        "VCF Logs Migrator",
+        "-srcfolder",
+        str(staging),
+        "-format",
+        "UDZO",
+        str(artifact),
+    ]
+    for attempt in range(3):
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(result.stdout, end="")
+            return
+        if "Resource busy" not in result.stderr or attempt == 2:
+            print(result.stderr, end="", file=sys.stderr)
+            raise subprocess.CalledProcessError(
+                result.returncode, command, output=result.stdout, stderr=result.stderr
+            )
+        print(f"hdiutil create: {result.stderr.strip()}; retrying", file=sys.stderr)
+        artifact.unlink(missing_ok=True)
+        info = subprocess.run(["hdiutil", "info", "-plist"], check=True, capture_output=True)
+        for image in plistlib.loads(info.stdout).get("images", []):
+            for entity in image.get("system-entities", []):
+                mount = entity.get("mount-point", "")
+                if mount == "/Volumes/VCF Logs Migrator":
+                    subprocess.run(["hdiutil", "detach", mount], check=True)
+        time.sleep(2 * (attempt + 1))
+
+
 def package(platform: str, label: str) -> Path:
     stem = f"vcf-logs-migrator-{label}-{platform}"
     if platform.startswith("macos-"):
@@ -156,20 +191,7 @@ def package(platform: str, label: str) -> Path:
         (staging / "Applications").symlink_to("/Applications")
         artifact = DIST / f"{stem}.dmg"
         artifact.unlink(missing_ok=True)
-        subprocess.run(
-            [
-                "hdiutil",
-                "create",
-                "-volname",
-                "VCF Logs Migrator",
-                "-srcfolder",
-                str(staging),
-                "-format",
-                "UDZO",
-                str(artifact),
-            ],
-            check=True,
-        )
+        create_dmg(staging, artifact)
     else:
         artifact = DIST / (stem + (".exe" if platform == "windows-x64" else ""))
         shutil.copy2(executable(platform), artifact)
