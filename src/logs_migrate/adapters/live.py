@@ -952,17 +952,30 @@ class LiveEnvironment:
                 self.on_progress(f"{inventory.host}: sizing {len(ids):,} selected buckets")
             ssh = self._ssh(inventory.host, "source_ssh", self.connection.source_ssh_user)
             usage = {}
-            for start in range(0, len(ids), 256):
-                usage.update(parse_usage(ssh.active_usage(ids[start : start + 256])))
+            try:
+                for start in range(0, len(ids), 256):
+                    usage.update(parse_usage(ssh.active_usage(ids[start : start + 256])))
+            except MigrationError as error:
+                detail = getattr(error, "message", None) or "The read did not complete."
+                raise MigrationError(
+                    error.code,
+                    f"{inventory.host}: could not size the selected buckets. {detail} "
+                    "The saved bucket listing was cleared; retry.",
+                ) from None
             require(
                 set(ids) <= usage.keys(),
                 Code.INCOMPLETE,
-                f"{inventory.host}: could not size every selected bucket; refresh and retry.",
+                f"{inventory.host}: could not size every selected bucket. "
+                "The saved bucket listing was cleared; retry.",
             )
             return replace(inventory, usage=usage)
 
-        with ThreadPoolExecutor(max_workers=max(1, len(inventories))) as pool:
-            return list(pool.map(size_selected, inventories))
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, len(inventories))) as pool:
+                return list(pool.map(size_selected, inventories))
+        except MigrationError:
+            self.invalidate_inventory()
+            raise
 
     def size_source(self, source: Cluster, window: Window) -> Cluster:
         inventories = [self.node_inventory(node.id) for node in source.nodes]

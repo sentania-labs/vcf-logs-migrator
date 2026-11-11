@@ -491,6 +491,52 @@ def test_selected_sizing_only_reads_overlapping_sealed_buckets(rigged):
     assert not any(op == ReadOperation.USAGE for _, op in ssh.reads)
 
 
+def test_failed_selected_sizing_clears_the_saved_listing_so_a_retry_refreshes(rigged, tmp_path):
+    from logs_migrate.journal import Journal
+
+    env, source, _, ssh = trusted(rigged)
+    journal = Journal(tmp_path / "inventory.db")
+    env.inventory_journal = journal
+    source.records += [session()] + [
+        entry
+        for _ in range(3)
+        for entry in (
+            record("GET", "/api/v1/version", {"version": "8.18.7"}),
+            record("GET", "/api/v1/partitioning", {"partitions": []}),
+        )
+    ]
+    old_client = ssh.client
+    broken = {"on": False}
+
+    def client(host):
+        result = old_client(host)
+        original = result.active_usage
+
+        def selected(ids):
+            if broken["on"]:
+                raise MigrationError(Code.CONNECTION)
+            return original(ids)
+
+        result.active_usage = selected
+        return result
+
+    ssh.client = client
+    window = Window(1790000000000, 1790000000001)
+    env.source_cluster()
+    listings = len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY])
+    env._inventory_cache.clear()
+    broken["on"] = True
+    with pytest.raises(MigrationError) as failure:
+        env.source_cluster(window)
+    assert failure.value.code == Code.CONNECTION
+    assert "src-1.lab" in failure.value.message and "retry" in failure.value.message
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == listings
+    broken["on"] = False
+    env.source_cluster(window)
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2 * listings
+    journal.close()
+
+
 def test_source_listing_journal_cache_survives_a_new_session(rigged, tmp_path):
     from logs_migrate.journal import Journal
 
