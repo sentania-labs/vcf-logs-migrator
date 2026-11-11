@@ -163,7 +163,6 @@ class Engine:
             return
         received = {*task.completed, *(k for n in task.nodes for k in n.completed)}
         received_ids = _ids(received)
-        skipped_ids = _ids({*task.skipped, *(k for n in task.nodes for k in n.skipped)})
         every = self.journal.transfers(destination)
         if task.id and task.id in {r["task_id"] for r in every if r["closed"] and r.get("task_id")}:
             return
@@ -189,20 +188,38 @@ class Engine:
                     # Live: a finished task that is not this selection's, the start was
                     # never acknowledged, and the uncertain start is stale.
                     self.journal.release_transfer(row["run"])
-            elif received or self.attribution:
+            elif self.attribution:
                 self.journal.settle_transfer(
                     row["run"],
                     sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
                 )
             else:
-                # No per-bucket detail: by the API's own account a completed task moved
-                # everything it did not list as skipped; a cancelled or failed one may have
-                # moved any of it. The selection minus the skipped stays recorded so it is
-                # never submitted twice, and the skipped can be planned again.
-                self.journal.settle_transfer(
-                    row["run"],
-                    sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] not in skipped_ids),
-                )
+                # The live API may report COMPLETED even when a node dropped work. Only
+                # registered destination inventory or explicit per-bucket evidence proves
+                # receipt. A still-scheduled bucket is not yet safe to count.
+                if not row.get("acknowledged"):
+                    self.journal.note_transfer_task(row["run"], task.id or "")
+                cluster = self.env.destination_cluster(fresh=True)
+                pending = {
+                    bucket
+                    for node in task.nodes
+                    for group in (node.scheduled_ids or {}).values()
+                    for bucket in group
+                }
+                if cluster.inventory_available:
+                    seen = {b.id for b in cluster.buckets if b.registered}
+                    arrived = (seen - pending) & _ids(row["keys"])
+                    self.journal.settle_transfer(
+                        row["run"],
+                        sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in arrived),
+                    )
+                elif received:
+                    self.journal.settle_transfer(
+                        row["run"],
+                        sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
+                    )
+                # No inventory and no explicit receipt list leaves an unresolved row.
+                # Treating the selection as received or absent would both be guesses.
 
     def _settle(self, destination):
         task = self.env.transfer()

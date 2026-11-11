@@ -768,6 +768,40 @@ def _live_rig(tmp_path, data_changes=None):
     return env, Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
 
 
+def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+    from logs_migrate.ports import NodeTransfer, Transfer
+
+    env, engine = _live_rig(tmp_path)
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], active_ack=ACTIVE_ACK)
+    destination_id = run["plan"]["destination"]["id"]
+    source, destination = env.discover()
+    selected_ids = [b["id"] for b in run["plan"]["selected"]]
+    registered = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in selected_ids[:2]
+    )
+    env.destination_cluster = lambda **kw: replace(
+        destination, buckets=registered, inventory_available=True
+    )
+    task = Transfer(
+        "sim-1",
+        "completed",
+        destination=destination_id,
+        nodes=(NodeTransfer("dst-1", "completed", scheduled_ids={"src-1": (selected_ids[1],)}),),
+    )
+    env.transfer = lambda: task
+    engine.status(run["id"])
+    (row,) = engine.journal.transfers(destination_id)
+    assert row["closed"]
+    assert {key.rsplit("/", 1)[-1] for key in row["received"]} == {selected_ids[0]}
+
+
 def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_list(tmp_path):
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
     from logs_migrate.ports import Transfer
@@ -784,14 +818,9 @@ def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_l
     env.transfer = lambda: Transfer("sim-1", "completed", (), (first,), destination=destination)
     engine.status()
     (row,) = engine.journal.transfers(destination)
-    assert row["closed"] and first not in {k.rsplit("/", 1)[-1] for k in row["received"]}
-    assert len(row["received"]) == 2
+    assert not row["closed"] and row["received"] == []
     result = engine.verify(run["id"])
-    assert result["buckets"]["not_received"] == ["src-1/" + first]
-    assert (
-        result["outcome"] != "verified_success"
-        and result["reason"] == "selected_buckets_not_received"
-    )
+    assert result["outcome"] != "verified_success"
 
 
 def test_live_ledger_stays_open_while_status_still_shows_the_previous_task(tmp_path):
@@ -1019,11 +1048,11 @@ def test_an_uncertain_start_whose_task_appears_in_history_settles_instead_of_rel
     with pytest.raises(MigrationError, match=Code.UNCERTAIN_START):
         engine.plan(MARCH, Policy(poll_seconds=0))
     engine.clock.sleep(900)
-    # Finished on our window: the row settles as usual and the window is overlap-protected.
+    # The task is known, but without inventory receipt remains unproven and held.
     with pytest.raises(MigrationError, match=Code.OVERLAP):
         engine.plan(MARCH, Policy(poll_seconds=0))
     (row,) = engine.journal.transfers(destination)
-    assert row["closed"] and row["received"]
+    assert not row["closed"] and not row["received"] and row["acknowledged"]
 
 
 @pytest.mark.parametrize("status", [408, 502, 503, 504])
@@ -1057,7 +1086,7 @@ def test_a_gateway_answer_after_the_start_holds_the_window_until_the_task_settle
     with pytest.raises(MigrationError, match=Code.OVERLAP):
         engine.plan(MARCH, Policy(poll_seconds=0))
     (row,) = engine.journal.transfers(destination)
-    assert row["closed"] and row["received"]
+    assert not row["closed"] and not row["received"] and row["acknowledged"]
 
 
 def test_an_uncertain_start_is_not_released_by_an_unrelated_finished_task_until_stale(
