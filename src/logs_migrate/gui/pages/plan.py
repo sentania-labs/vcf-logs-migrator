@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...errors import Code
 from .. import viewmodel as vm
 from ..widgets import (
     KeyValues,
@@ -35,7 +36,7 @@ from ..widgets import (
 )
 
 # Both codes mean the selection is already on the destination; neither is retried.
-BLOCKED = {"overlapping_transfer", "bucket_identity_conflict"}
+BLOCKED = {Code.OVERLAP.value, Code.COLLISION.value, Code.TOPOLOGY.value}
 
 
 def _qdate(value: date) -> QDate:
@@ -421,23 +422,13 @@ class PlanPage(Page):
         self.ack.setChecked(state.acknowledged)
         self.ack.blockSignals(False)
         self.preview_badge.setVisible(state.preview)
+        code = (state.plan_error or "").partition(": ")[0]
         blocked = bool(
             state.plan_error
-            and (
-                state.plan_error.partition(": ")[0] in BLOCKED
-                or "destination bucket is" in state.plan_error
-                or "destination buckets are" in state.plan_error
-                or "destination bucket needs attention" in state.plan_error
-                or "destination buckets need attention" in state.plan_error
-                or "destination has multiple copies" in state.plan_error
-                or "different node than a new copy" in state.plan_error
-                or "node count changed" in state.plan_error
-                or "without an index entry" in state.plan_error
-                or "listed bucket" in state.plan_error
-            )
+            and (code in BLOCKED or (code == Code.INCOMPLETE.value and state.plan_affected))
             and not vm.is_duplicate_identity(state.plan_error)
         )
-        self.change_button.setVisible(False)
+        self.change_button.setVisible(blocked and not self.blocked_dismissed)
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
             detail = vm.plan_error_text(
@@ -468,16 +459,7 @@ class PlanPage(Page):
                     ),
                 ]
             )
-            lines = vm.conflict_group_lines(state.plan_error, discovered)
-            if "multiple destination entries: " in state.plan_error:
-                lines = [state.plan_error.partition("multiple destination entries: ")[2]]
-            elif (
-                "destination bucket is" in state.plan_error
-                or "destination buckets are" in state.plan_error
-            ):
-                lines = [state.plan_error.partition(": ")[2]]
-            elif not lines and ": " in state.plan_error:
-                lines = [state.plan_error.partition(": ")[2]]
+            lines = state.plan_affected or vm.conflict_group_lines(state.plan_error, discovered)
             self.group_ids.setPlainText("\n".join(lines))
             self.group_ids_row.setVisible(bool(lines))
             if not lines:

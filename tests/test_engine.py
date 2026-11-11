@@ -83,6 +83,83 @@ def test_running_external_transfer_names_overlapping_buckets(rig):
     assert bucket.id in error.value.message and "2026-03-01" in error.value.message
 
 
+def _earlier_task_listing(env, bucket):
+    env.data["destination"]["inventory_available"] = True
+    env.data["history"] = [
+        {
+            "source": env.data["source"]["id"],
+            "destination": env.data["destination"]["id"],
+            "window": {"start": bucket.start, "end": bucket.end + 1},
+            "destination_nodes": [],
+            "bucket_ids": [bucket.id],
+            "complete": True,
+            "task_id": "earlier-1",
+        }
+    ]
+
+
+def test_finished_task_listing_a_bucket_the_destination_lacks_does_not_block(rig):
+    engine, env, _ = rig
+    bucket = env.discover()[0].buckets[0]
+    _earlier_task_listing(env, bucket)
+    plan = planned(engine)["plan"]
+    assert bucket.id in {b["id"] for b in plan["selected"]}
+    note = next(w for w in plan["warnings"] if "earlier transfer listed" in w)
+    assert bucket.id in note and "not on the destination" in note
+
+
+def test_unreadable_task_status_holds_a_bucket_an_earlier_task_listed(rig):
+    engine, env, _ = rig
+    bucket = env.discover()[0].buckets[0]
+    _earlier_task_listing(env, bucket)
+    env.transfer = lambda: Transfer("earlier-1", "unknown")
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert error.value.code == Code.OVERLAP
+    assert bucket.id in error.value.message and "still running" in error.value.message
+    assert error.value.affected_ids == {bucket.id}
+
+
+def test_bucket_that_arrives_during_planning_asks_for_a_refresh(rig):
+    engine, env, _ = rig
+    source = env.discover()[0]
+    bucket = source.buckets[0]
+    _earlier_task_listing(env, bucket)
+    original = env.destination_cluster
+    history = env.history
+    arrived = []
+
+    def lagging(*, fresh=False):
+        cluster = original(fresh=fresh)
+        if not arrived:
+            return cluster
+        return replace(cluster, buckets=(*cluster.buckets, replace(bucket, node="dst-1")))
+
+    def listed():
+        arrived.append(True)
+        return history()
+
+    env.destination_cluster = lagging
+    env.history = listed
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert error.value.code == Code.INVENTORY_CHANGED
+    assert bucket.id in error.value.message
+
+
+def test_repeated_destination_listing_on_one_node_is_incomplete_only_when_selected(rig):
+    engine, env, _ = rig
+    source = env.data["source"]["buckets"][0]
+    env.data["destination"]["buckets"] += [{**source, "node": "dst-1"}] * 2
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert error.value.code == Code.INCOMPLETE
+    assert source["id"] in error.value.message
+    other = env.data["source"]["buckets"][1]
+    plan = engine.plan(Window(other["start"], other["end"] + 1), Policy(poll_seconds=0))["plan"]
+    assert source["id"] not in {b["id"] for b in plan["selected"]}
+
+
 @pytest.mark.parametrize(
     "field,value", [("complete", False), ("registered", False), ("size", 1), ("messages", 1)]
 )

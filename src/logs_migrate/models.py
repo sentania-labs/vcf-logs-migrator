@@ -218,7 +218,6 @@ class Cluster:
         require(
             bool(self.nodes) and len({n.id for n in self.nodes}) == len(self.nodes), Code.SCHEMA
         )
-        require(len({b.key for b in self.buckets}) == len(self.buckets), Code.SCHEMA)
         require(all(b.node in {n.id for n in self.nodes} for b in self.buckets), Code.SCHEMA)
         require(len({p.name for p in self.partitions}) == len(self.partitions), Code.SCHEMA)
 

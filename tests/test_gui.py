@@ -545,9 +545,14 @@ def test_blocked_preview_offers_refresh_without_asking_for_dates(driver):
     driver.state.plan_error = "overlapping_transfer: An in-flight transfer holds these groups."
     page = driver.pages["plan"]
     page.refresh()
-    assert page.stack.currentIndex() == 1 and not page.change_button.isVisible()
+    assert page.stack.currentIndex() == 1 and page.change_button.isVisible()
     assert page.refresh_button.isEnabled() and not page.start_button.isEnabled()
     assert "refresh" in page.blocked_next.text().lower()
+    page.change_dates()
+    driver.wait(30)
+    assert page.stack.currentIndex() == 0
+    assert page.start_date.isEnabled() and page.refresh_button.isEnabled()
+    assert "needs attention" in page.error.text().lower() and page.error.isVisible()
 
 
 def test_blocked_page_shows_the_refusal_it_received(driver):
@@ -580,15 +585,31 @@ def test_destination_conflict_shows_and_copies_the_affected_bucket(driver):
         "source size 1000 bytes, destination size 1 bytes). "
         "The listed destination copies must be removed before this window can be copied."
     )
+    driver.state.plan_affected = [bucket_id]
     page = driver.pages["plan"]
     page.refresh()
     assert page.stack.currentIndex() == 1
     assert "source size" in page.blocked_banner.text()
     assert "transfer" not in page.blocked_banner.text().lower()
     page.group_ids_toggle.click()
-    assert bucket_id in page.group_ids.toPlainText()
+    assert page.group_ids.toPlainText() == bucket_id
     page.group_ids_copy.click()
-    assert bucket_id in QApplication.clipboard().text()
+    assert QApplication.clipboard().text() == bucket_id
+
+
+def test_blocked_page_is_chosen_by_error_code_not_by_message_wording(driver):
+    driver.connect()
+    driver.show("plan")
+    page = driver.pages["plan"]
+    driver.state.plan_error = "topology_changed: Wording nobody matches on."
+    page.refresh()
+    assert page.stack.currentIndex() == 1
+    driver.state.plan_error = "incomplete_evidence: A destination bucket needs attention."
+    page.refresh()
+    assert page.stack.currentIndex() == 0
+    driver.state.plan_affected = ["b1"]
+    page.refresh()
+    assert page.stack.currentIndex() == 1
 
 
 def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(driver):

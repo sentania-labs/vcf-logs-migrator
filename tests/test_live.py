@@ -63,7 +63,6 @@ LISTING = "\n".join(
 def test_listing_parser_reads_real_8187_lines_and_keeps_key_names_only():
     buckets = parse_listing(LISTING)
     assert [b.id for b in buckets] == [A, B, C, D]
-
     first, second, third, fourth = buckets
     assert first.status == "archived" and first.partition == ""
     assert (first.size, first.messages) == (479923834, 1893963)
@@ -2134,15 +2133,12 @@ def test_active_buckets_keep_recorded_dates(rigged):
     )
 
 
-def test_repeated_listing_on_one_node_reports_the_ambiguous_bucket(rigged):
+def test_repeated_listing_on_one_node_does_not_fail_discovery(rigged):
     env, _, _, _ = trusted(rigged)
     inventory = env.node_inventory("src-1.lab")
-    duplicate = inventory.buckets[0]
-    inventory.buckets.append(duplicate)
-    with pytest.raises(MigrationError) as error:
-        env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
-    assert error.value.code == Code.INCOMPLETE
-    assert duplicate.id in error.value.message and "src-1.lab" in error.value.message
+    inventory.buckets.append(inventory.buckets[0])
+    cluster = env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    assert len(cluster.buckets) == len(inventory.buckets)
 
 
 def test_empty_active_bucket_sentinel_has_no_dates():

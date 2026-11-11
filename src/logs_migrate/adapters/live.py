@@ -949,16 +949,6 @@ class LiveEnvironment:
                         active and listed.empty_proven,
                     )
                 )
-        seen = set()
-        for bucket in buckets:
-            if bucket.key in seen:
-                raise MigrationError(
-                    Code.INCOMPLETE,
-                    f"{bucket.node} listed bucket {bucket.id} more than once. "
-                    "The listing does not identify the storage locations; "
-                    "inspect them before retrying.",
-                )
-            seen.add(bucket.key)
         nodes = tuple(Node(i.host, i.capacity, i.used, i.available, i.service) for i in inventories)
         return Cluster(
             ident,

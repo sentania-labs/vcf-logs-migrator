@@ -409,7 +409,36 @@ class Engine:
         self._record(task, destination)
         return task
 
-    def _overlap(self, plan, task=None):
+    def _hold_unarrived(self, plan, task, ids, message):
+        if task.status not in TERMINAL:
+            raise _affected_error(
+                Code.OVERLAP,
+                "A transfer that includes these buckets is still running or its status cannot "
+                "be read. Wait and refresh: " + message,
+                ids,
+            )
+        if not plan["destination"].get("inventory_available"):
+            raise _affected_error(
+                Code.OVERLAP,
+                message + " Destination inventory is unavailable; inspect it before retrying.",
+                ids,
+            )
+        shown = ids & {
+            b.id for b in self.env.destination_cluster(fresh=True).buckets if b.registered
+        }
+        if shown:
+            raise _affected_error(
+                Code.INVENTORY_CHANGED,
+                "The destination inventory changed while planning. Refresh the preview: "
+                + ", ".join(sorted(shown))
+                + ".",
+                shown,
+            )
+        plan["warnings"].append(
+            message + " They are not on the destination, so they may be copied."
+        )
+
+    def _overlap(self, plan, task):
         destination = plan["destination"]["id"]
         selected = {b["id"] for b in plan["selected"]}
         for prior in self.journal.transfers(destination):
@@ -502,16 +531,13 @@ class Engine:
                     f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
                     for b in groups
                 )
-                message = "An earlier task reported these buckets: " + details + "."
-                if plan["destination"].get("inventory_available"):
-                    plan["warnings"].append(message + " Destination inventory was checked.")
-                else:
-                    raise _affected_error(
-                        Code.OVERLAP,
-                        message
-                        + " Destination inventory is unavailable; inspect it before retrying.",
-                        historical,
-                    )
+                self._hold_unarrived(
+                    plan,
+                    task,
+                    historical,
+                    "An earlier transfer listed these buckets, but they are not on the "
+                    "destination: " + details + ".",
+                )
             if not prior.bucket_ids and (prior.complete or prior.partial):
                 # A finished transfer with no received list (one started from the product UI,
                 # say), or one that lists only what it skipped, covered whole buckets in its
@@ -533,10 +559,7 @@ class Engine:
                         f"{_day(prior.window.end - 1)} UTC. Selected groups crossing "
                         f"that window: {groups}."
                     )
-                    if plan["destination"].get("inventory_available"):
-                        plan["warnings"].append(detail + " Destination identities were checked.")
-                    else:
-                        raise MigrationError(Code.OVERLAP, detail)
+                    self._hold_unarrived(plan, task, {b["id"] for b in crossing}, detail)
 
     def _source_ingest(self) -> dict:
         try:
