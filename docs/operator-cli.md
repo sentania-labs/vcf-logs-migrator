@@ -218,15 +218,20 @@ The preview reports already received buckets and those still to transfer. Resume
 checks destination node count and available space again. A missing source bucket,
 unregistered destination directory, changed bucket size, or unresolved receipt
 record stops the preview for investigation. With destination SSH on 9.0, the
-destination's bucket inventory decides what arrived. Without it, a finished task is
-settled from its own report: the run's selection minus the buckets the task still
-lists as to do and minus those it reports skipped. Status, verify and the Migration
-page say plainly that such a record is taken from the task report and not confirmed
-against the destination's bucket store (a disk-limit stop that drops buckets without
-listing them cannot be seen this way). A cancelled or failed task that lists no
-remaining buckets stays held, with the reason shown, until destination SSH or a
-readable task record settles it. 9.1.1 relies on the journal and explicit task
-receipt evidence. After the remaining transfer finishes, run `verify NEW_RUN_ID`.
+destination's bucket inventory decides what arrived. Without it, a 9.0 task that
+lists the buckets still to do per node is settled from its own report: the run's
+selection minus those buckets and minus the ones it reports skipped. Status, verify
+and the Migration page say plainly that such a record is taken from the task report
+and not confirmed against the destination's bucket store (a disk-limit stop that
+drops buckets without listing them cannot be seen this way). That record releases
+the hold for `status` and `verify`, but `resume` and a re-`plan` of the same dates
+still need destination SSH, because the remainder cannot be planned without the
+destination inventory. A 9.0 task with no per-node remaining list stays held, with
+the reason shown, until destination SSH is connected. 9.1.1 has no bucket store: it
+settles only from explicit per-bucket receipt evidence in the task or journal. A
+finished task without it, or one whose received list leaves selected buckets
+unaccounted for, stays held (status names how many buckets are unaccounted for)
+rather than guessing. After the remaining transfer finishes, run `verify NEW_RUN_ID`.
 `resume RUN_ID --ack-active ...` previews and starts in one command; use `--preview`
 when you need to review the remainder first.
 

@@ -833,7 +833,7 @@ def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path
 
 def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_list(tmp_path):
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
-    from logs_migrate.ports import Transfer
+    from logs_migrate.ports import NodeTransfer, Transfer
 
     env, engine = _live_rig(tmp_path)
     run = engine.plan(
@@ -844,7 +844,10 @@ def test_live_ledger_records_a_skipped_bucket_as_not_received_without_a_copied_l
     destination = run["plan"]["destination"]["id"]
     # The API's finished task names only what it skipped (the documented disk-limit trap).
     first = "00000000-0000-0000-0000-000000000001"  # A fixture bucket, listed as skipped.
-    env.transfer = lambda: Transfer("sim-1", "completed", (), (first,), destination=destination)
+    node = NodeTransfer("dst-1", "completed", scheduled_ids={})
+    env.transfer = lambda: Transfer(
+        "sim-1", "completed", (), (first,), nodes=(node,), destination=destination
+    )
     engine.status()
     (row,) = engine.journal.transfers(destination)
     assert row["closed"] and first not in {k.rsplit("/", 1)[-1] for k in row["received"]}
@@ -900,6 +903,47 @@ def test_live_ledger_without_inventory_holds_a_stopped_task_with_no_remaining_li
     (row,) = engine.journal.transfers(destination)
     assert not row["closed"] and status["settlement"] == "held"
     assert "stays held" in status["settlement_note"]
+
+
+def _preview_run(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    env.data["destination"]["version"] = "9.1.1"
+    run = engine.plan(
+        Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z")),
+        Policy(poll_seconds=0),
+    )
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    return env, engine, run
+
+
+def test_911_completed_task_without_receipt_evidence_stays_held(tmp_path):
+    from logs_migrate.ports import NodeTransfer, Transfer
+
+    env, engine, run = _preview_run(tmp_path)
+    destination = run["plan"]["destination"]["id"]
+    node = NodeTransfer("dst-1", "completed", scheduled_ids={})
+    env.transfer = lambda: Transfer("sim-1", "completed", nodes=(node,), destination=destination)
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"] and status["settlement"] == "held"
+    assert "9.1.1" in status["settlement_note"]
+    assert "SSH" not in status["settlement_note"]
+
+
+def test_a_partial_received_list_holds_and_names_the_unaccounted_buckets(tmp_path):
+    from logs_migrate.ports import Transfer
+
+    env, engine, run = _preview_run(tmp_path)
+    destination = run["plan"]["destination"]["id"]
+    keys = [f"src-1/{b['id']}" for b in run["plan"]["selected"]]
+    env.transfer = lambda: Transfer("sim-1", "completed", (keys[0],), destination=destination)
+    status = engine.status()
+    (row,) = engine.journal.transfers(destination)
+    assert not row["closed"] and status["settlement"] == "held"
+    assert f"{len(keys) - 1} selected bucket(s) are neither received" in status["settlement_note"]
+    assert "reports no list" not in status["settlement_note"]
 
 
 def test_live_ledger_stays_open_while_status_still_shows_the_previous_task(tmp_path):
@@ -1108,6 +1152,7 @@ def test_an_uncertain_start_whose_task_appears_in_history_settles_instead_of_rel
                 "status": "COMPLETED",
                 "bucketStartTimeMillis": MARCH.start,
                 "bucketEndTimeMillis": MARCH.end,
+                "taskDetails": {"dst": {"status": "COMPLETED", "scheduledBuckets": {}}},
             },
         ),
     )
@@ -1145,7 +1190,18 @@ def test_a_gateway_answer_after_the_start_holds_the_window_until_the_task_settle
         "bucketEndTimeMillis": MARCH.end,
     }
     running = ("GET", MIGRATIONS, (200, {"status": "RUNNING", **window}))
-    done = ("GET", MIGRATIONS, (200, {"status": "COMPLETED", **window}))
+    done = (
+        "GET",
+        MIGRATIONS,
+        (
+            200,
+            {
+                "status": "COMPLETED",
+                **window,
+                "taskDetails": {"dst": {"status": "COMPLETED", "scheduledBuckets": {}}},
+            },
+        ),
+    )
     env, engine = _wired(
         tmp_path,
         rigged,

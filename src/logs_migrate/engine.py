@@ -236,8 +236,10 @@ class Engine:
                             row["run"],
                             sorted(k for k in row["keys"] if k.rsplit("/", 1)[-1] in received_ids),
                         )
-                elif task.status == "completed" or (
-                    task.nodes and all(node.scheduled_ids is not None for node in task.nodes)
+                elif (
+                    not cluster.preview
+                    and task.nodes
+                    and all(node.scheduled_ids is not None for node in task.nodes)
                 ):
                     skipped = _ids(
                         {*task.skipped, *(k for node in task.nodes for k in node.skipped)}
@@ -387,6 +389,35 @@ class Engine:
             plan = build_plan(filtered, destination, window)
         plan["already_received"] = [asdict(b) for b in selected if b.id in received]
         return plan
+
+    @staticmethod
+    def _held_note(task, row, preview):
+        received = _ids({*task.completed, *(k for n in task.nodes for k in n.completed)})
+        skipped = _ids({*task.skipped, *(k for n in task.nodes for k in n.skipped)})
+        pending = {
+            bucket
+            for node in task.nodes
+            for group in (node.scheduled_ids or {}).values()
+            for bucket in group
+        }
+        missing = _ids(row["keys"]) - received - skipped - pending
+        if received:
+            return (
+                f"The task listed {len(received)} received bucket(s), but {len(missing)} "
+                "selected bucket(s) are neither received, skipped nor still to do, so what "
+                "arrived cannot be told. The selection stays held rather than guessed."
+            )
+        if preview:
+            return (
+                "The task finished without a list of the buckets it received, and 9.1.1 has "
+                "no bucket store to read, so what arrived cannot be told. The selection "
+                "stays held rather than guessed."
+            )
+        return (
+            "The task finished but reports no list of buckets still to do, and the "
+            "destination's bucket store was not read, so what arrived cannot be told. The "
+            "selection stays held; connect destination SSH and check status again."
+        )
 
     @staticmethod
     def _baseline(series, elapsed, value):
@@ -1028,11 +1059,8 @@ class Engine:
             if task.status in TERMINAL - {"idle"}:
                 if not settled["closed"]:
                     result["settlement"] = "held"
-                    result["settlement_note"] = (
-                        "The task finished but reports no list of buckets still to do, and the "
-                        "destination's bucket store was not read, so what arrived cannot be "
-                        "told. The selection stays held; connect destination SSH and check "
-                        "status again."
+                    result["settlement_note"] = self._held_note(
+                        task, settled, run["plan"]["destination"]["version"].startswith("9.1.1")
                     )
                 elif settled.get("basis") == TASK_REPORT:
                     result["settlement"] = TASK_REPORT
