@@ -145,10 +145,11 @@ jobs:
           Standalone downloads: the desktop window and the \`logs-migrate\` CLI over one
           engine. No Python install is needed. License notices are embedded and also provided as THIRD-PARTY-NOTICES.txt.
 
-          This release improves appliance planning and configuration, renews expired sessions
-          and ties status to the correct migration, speeds up large-source inventory and
-          verification, and makes migration evidence, errors, self-tests and trust clearer.
-          Standalone downloads also include the SSH runtime.
+          Resume a stopped or failed transfer, check capacity for each destination node,
+          and see the transfer rate and estimated time remaining. Cached inventory makes
+          repeat planning faster. These changes have been validated against the simulator
+          only; live appliance checks remain outstanding:
+          https://github.com/sentania-labs/vcf-logs-migrator/pull/45
 
           | Platform | Download | Signature |
           |---|---|---|
@@ -157,8 +158,8 @@ jobs:
           | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64 | SHA256SUMS |
 
           Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\`. SmartScreen
-          can still warn while the publisher builds reputation. This build runs against real appliances and a
-          built-in simulator; docs/testing-against-a-lab.md is the procedure for real hosts.
+          can still warn while the publisher builds reputation. The built-in simulator is available
+          for testing; docs/testing-against-a-lab.md describes the outstanding real-host checks.
           EOF
           # A published release is never modified, so a rerun cannot swap verified bytes.
           # A draft left by an interrupted run is refilled from this run, then published.
