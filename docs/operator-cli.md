@@ -291,9 +291,9 @@ even while its status still shows nothing.
 - Verification uses complete=true and two agreeing count responses, then confirms
   destination and ingest observations still agree. Missing or unstable evidence
   returns incomplete, never success. Any running or unknown API task also prevents
-  a successful verification. A destination copy of a selected group that is incomplete
-  or missing its index entry turns a success into a discrepancy, and the result and
-  report list those groups.
+  a successful verification. A destination copy of a selected group that is incomplete,
+  missing its index entry, or listed with conflicting message counts turns a success
+  into a discrepancy, and the result and report list those groups.
 - `verify RUN_UUID` is cumulative for that run's destination: all buckets the API
   has reported as received across every run, as one result. For every UTC day the
   expected destination count is source count of the received buckets (recorded per
