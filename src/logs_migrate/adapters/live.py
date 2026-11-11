@@ -855,8 +855,9 @@ class LiveEnvironment:
         if listing is None:
             started = time.monotonic()
             listing = read(ReadOperation.INVENTORY, "bucket listing")
-            self._listing_seconds[host] = time.monotonic() - started
-            self._new_listings[cache_key] = listing
+            if credential == "source_ssh":
+                self._listing_seconds[host] = time.monotonic() - started
+                self._new_listings[cache_key] = listing
         buckets = parse_listing(listing)
         unrecognized = (bool(listing.strip()) and not buckets) or any(
             UUID.search(line.lower()) and not parse_listing(line) for line in listing.splitlines()

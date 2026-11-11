@@ -491,6 +491,16 @@ def test_selected_sizing_only_reads_overlapping_sealed_buckets(rigged):
     assert not any(op == ReadOperation.USAGE for _, op in ssh.reads)
 
 
+def test_only_source_listings_are_timed_and_held_for_saving(rigged):
+    env, _, _, ssh = trusted(rigged)
+    env.node_inventory("src-1.lab")
+    assert set(env._listing_seconds) == {"src-1.lab"}
+    assert set(env._new_listings) == {("src-1.lab", "source_ssh", None)}
+    env.node_inventory("src-2.lab", "destination_ssh", "root")
+    assert set(env._listing_seconds) == {"src-1.lab"}
+    assert set(env._new_listings) == {("src-1.lab", "source_ssh", None)}
+
+
 def test_failed_selected_sizing_clears_the_saved_listing_so_a_retry_refreshes(rigged, tmp_path):
     from logs_migrate.journal import Journal
 
