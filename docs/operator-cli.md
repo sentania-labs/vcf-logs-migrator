@@ -218,9 +218,10 @@ The preview reports already received buckets and those still to transfer in plai
 language. Add `--json` to `resume RUN_ID --preview` for the machine-readable form.
 Resume
 checks available space again. It also checks the destination node count when the
-destination's nodes were observed (destination SSH on 9.0). On 9.0 without destination
-SSH and on 9.1.1 the node count cannot be checked, so the preview shows a caution and
-the time estimate says it assumes the node count listed by the earlier task. A missing source bucket,
+destination's nodes were observed both in the first plan and now (destination SSH on
+9.0). On 9.0 without destination SSH and on 9.1.1 the node count cannot be checked,
+so the preview shows a caution and the time estimate says it assumes the node count
+listed by the earlier task. A missing source bucket,
 unregistered destination directory, changed bucket size, or unresolved receipt
 record stops the preview for investigation. With destination SSH on 9.0, the
 destination's bucket inventory decides what arrived. Without it, a 9.0 task that
