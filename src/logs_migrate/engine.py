@@ -409,33 +409,12 @@ class Engine:
         self._record(task, destination)
         return task
 
-    def _hold_unarrived(self, plan, task, ids, message):
-        if task.status not in TERMINAL:
-            raise _affected_error(
-                Code.OVERLAP,
-                "A transfer that includes these buckets is still running or its status cannot "
-                "be read. Wait and refresh: " + message,
-                ids,
-            )
-        if not plan["destination"].get("inventory_available"):
-            raise _affected_error(
-                Code.OVERLAP,
-                message + " Destination inventory is unavailable; inspect it before retrying.",
-                ids,
-            )
-        shown = ids & {
-            b.id for b in self.env.destination_cluster(fresh=True).buckets if b.registered
-        }
-        if shown:
-            raise _affected_error(
-                Code.INVENTORY_CHANGED,
-                "The destination inventory changed while planning. Refresh the preview: "
-                + ", ".join(sorted(shown))
-                + ".",
-                shown,
-            )
-        plan["warnings"].append(
-            message + " They are not on the destination, so they may be copied."
+    def _unarrived(self, message, ids):
+        return _affected_error(
+            Code.OVERLAP,
+            message
+            + " Refresh after that transfer finishes, or resume that run, to bring them over.",
+            ids,
         )
 
     def _overlap(self, plan, task):
@@ -531,12 +510,10 @@ class Engine:
                     f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
                     for b in groups
                 )
-                self._hold_unarrived(
-                    plan,
-                    task,
-                    historical,
+                raise self._unarrived(
                     "An earlier transfer listed these buckets, but they are not on the "
-                    "destination: " + details + ".",
+                    "destination yet: " + details + ".",
+                    historical,
                 )
             if not prior.bucket_ids and (prior.complete or prior.partial):
                 # A finished transfer with no received list (one started from the product UI,
@@ -559,7 +536,7 @@ class Engine:
                         f"{_day(prior.window.end - 1)} UTC. Selected groups crossing "
                         f"that window: {groups}."
                     )
-                    self._hold_unarrived(plan, task, {b["id"] for b in crossing}, detail)
+                    raise self._unarrived(detail, {b["id"] for b in crossing})
 
     def _source_ingest(self) -> dict:
         try:
@@ -1560,25 +1537,18 @@ class Engine:
                     destination.id == planned["id"] and destination.identity == planned["identity"],
                     Code.TOPOLOGY,
                 )
-                if not destination.preview and (
-                    destination.inventory_available or self.attribution
-                ):
-                    selected_for_inspection = {
-                        b["id"]: b
-                        for b in (
-                            *run["plan"].get("original_selected", run["plan"]["selected"]),
-                            *run["plan"].get("already_received", []),
-                        )
-                    }
-                    inspect = getattr(self.env, "inspect_destination_buckets", None)
-                    if inspect is not None:
-                        destination = _inspect_destination(
-                            inspect, destination, selected_for_inspection
-                        )
-                    _check_destination_copies(
-                        [b for b in destination.buckets if b.id in selected_for_inspection],
-                        selected_for_inspection,
+                checked = {
+                    b["id"]
+                    for b in (
+                        *run["plan"].get("original_selected", run["plan"]["selected"]),
+                        *run["plan"].get("already_received", []),
                     )
+                }
+                unsafe_copies = sorted(
+                    f"{b.node}/{b.id}"
+                    for b in destination.buckets
+                    if b.id in checked and not (b.complete and b.registered)
+                )
                 bucket_check = None
                 if not self.attribution and destination.inventory_available:
                     selected = run["plan"].get("original_selected", run["plan"]["selected"])
@@ -1615,6 +1585,8 @@ class Engine:
                         "reason": error.code.value,
                         **({"detail": error.message} if hasattr(error, "message") else {}),
                     }
+                if unsafe_copies:
+                    result["incomplete_destination_copies"] = unsafe_copies
                 if bucket_check is not None:
                     result["bucket_check"] = bucket_check
                     result["daily_outcome"] = result["outcome"]
@@ -1658,6 +1630,10 @@ class Engine:
                     "One or more selected groups did not report an event count. "
                     "Check the source inventory."
                 )
+            if result.get("incomplete_destination_copies") and (
+                result["outcome"] == Verification.SUCCESS.value
+            ):
+                result["outcome"] = Verification.DISCREPANCY.value
             result["count_basis"] = COUNT_BASIS
             result["at"] = self.clock.now()
             run["verification"] = result

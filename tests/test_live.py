@@ -77,25 +77,6 @@ def test_listing_parser_reads_real_8187_lines_and_keeps_key_names_only():
     assert all("1893963" not in k for k in first.keys)
 
 
-def test_member_aliases_are_inventoried_once_but_ambiguous_names_are_retained(monkeypatch):
-    replies = {
-        "node.example": ["192.0.2.1"],
-        "192.0.2.1": ["192.0.2.1"],
-        "other.example": ["192.0.2.2"],
-        "ambiguous.example": ["192.0.2.1", "192.0.2.3"],
-    }
-    monkeypatch.setattr(
-        live.socket,
-        "getaddrinfo",
-        lambda host, port, type: [(None, None, None, None, (ip, port)) for ip in replies[host]],
-    )
-    assert live.unique_member_endpoints(list(replies)) == [
-        "node.example",
-        "other.example",
-        "ambiguous.example",
-    ]
-
-
 def test_listing_parser_still_reads_comma_separated_dates_in_both_shapes():
     from datetime import UTC, datetime
 
@@ -352,11 +333,6 @@ class FakeSSH:
 @pytest.fixture
 def rigged(tmp_path, monkeypatch):
     """A live environment with recorded TLS, SSH and REST; returns env plus the transports."""
-
-    def no_dns(*args, **kwargs):
-        raise OSError("no recorded DNS")
-
-    monkeypatch.setattr(live.socket, "getaddrinfo", no_dns)
     store = TrustStore(tmp_path / "cfg")
     pins = {"src.lab": "a" * 64, "dst.lab": "c" * 64}
     monkeypatch.setattr(
@@ -2467,7 +2443,7 @@ def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
     assert "unavailable" in markdown(engine.journal.load(run["id"]), []).lower()
 
 
-def test_external_window_overlap_warns_only_with_destination_inventory(tmp_path):
+def test_external_window_overlap_is_refused_even_with_destination_inventory(tmp_path):
     from dataclasses import replace
 
     from logs_migrate.models import Policy, parse_time
@@ -2478,16 +2454,12 @@ def test_external_window_overlap_warns_only_with_destination_inventory(tmp_path)
     source, destination = env.discover()
     env.transfer = lambda: Transfer("", "idle", destination=destination.id)
     env.history = lambda: (History("src", destination.id, window, (), (), True, "old-task"),)
-    with pytest.raises(MigrationError) as error:
-        engine.plan(window, Policy(poll_seconds=0))
-    assert error.value.code == Code.OVERLAP
-    assert "old-task" in error.value.message and "Selected groups" in error.value.message
-    env.discover = lambda: (source, replace(destination, inventory_available=True))
-    run = engine.plan(window, Policy(poll_seconds=0))
-    assert any(
-        "old-task" in warning and "Selected groups" in warning
-        for warning in run["plan"]["warnings"]
-    )
+    for inspected in (destination, replace(destination, inventory_available=True)):
+        env.discover = lambda inspected=inspected: (source, inspected)
+        with pytest.raises(MigrationError) as error:
+            engine.plan(window, Policy(poll_seconds=0))
+        assert error.value.code == Code.OVERLAP
+        assert "old-task" in error.value.message and "Selected groups" in error.value.message
 
 
 def test_overlap_detail_never_carries_raw_remote_task_text(tmp_path):
@@ -2534,6 +2506,39 @@ def test_live_bucket_verification_checks_destination_counts(tmp_path):
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_discrepancy"
     assert len(result["bucket_check"]["unmatched"]) == 1
+
+
+def test_live_verification_reports_count_loss_and_incomplete_copy_separately(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    source, destination = env.discover()
+    ids = {b["id"] for b in run["plan"]["selected"]}
+    matching = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids
+    )
+
+    def verify(buckets):
+        env.destination_cluster = lambda fresh=False: replace(
+            destination, buckets=buckets, inventory_available=True
+        )
+        return engine.verify(run["id"])
+
+    lost = verify((replace(matching[0], messages=matching[0].messages - 1), *matching[1:]))
+    assert lost["outcome"] == "verified_discrepancy"
+    assert lost["bucket_check"]["unmatched"] == [
+        next(f"{b.node}/{b.id}" for b in source.buckets if b.id == matching[0].id)
+    ]
+    assert "incomplete_destination_copies" not in lost
+    partial = verify((replace(matching[0], complete=False), *matching[1:]))
+    assert partial["incomplete_destination_copies"] == [f"{matching[0].node}/{matching[0].id}"]
+    assert partial["outcome"] == "verified_discrepancy"
 
 
 def test_live_bucket_verification_does_not_claim_difference_for_unknown_count(tmp_path):

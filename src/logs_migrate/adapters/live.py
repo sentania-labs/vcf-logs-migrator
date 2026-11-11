@@ -13,7 +13,6 @@ start, cancel and config writes. Nothing stops a service or deletes a bucket.
 from __future__ import annotations
 
 import re
-import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -262,30 +261,6 @@ def parse_members(text: str, fallback: str) -> list[str]:
             if host and host not in hosts and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", host):
                 hosts.append(host)
     return hosts or [fallback]
-
-
-def unique_member_endpoints(hosts: list[str]) -> list[str]:
-    """Collapse names that resolve to the same single SSH endpoint.
-
-    Ambiguous or failed lookups are retained; they do not prove node identity.
-    Paramiko uses the same local resolver when it connects.
-    """
-    result = []
-    seen = set()
-    for host in hosts:
-        try:
-            addresses = {
-                item[4][0] for item in socket.getaddrinfo(host, 22, type=socket.SOCK_STREAM)
-            }
-        except OSError:
-            addresses = set()
-        if len(addresses) == 1:
-            address = next(iter(addresses))
-            if address in seen:
-                continue
-            seen.add(address)
-        result.append(host)
-    return result
 
 
 def parse_partitions(response) -> list[dict]:
@@ -849,7 +824,7 @@ class LiveEnvironment:
         # An unreadable member list fails closed: the API copies from every member, so a
         # plan and ledger built from one node would be short.
         text = self._ssh(host, credential, username).read(ReadOperation.MEMBERS)
-        return unique_member_endpoints(parse_members(text, host.lower()))
+        return parse_members(text, host.lower())
 
     def source_members(self) -> list[str]:
         return self._members(
