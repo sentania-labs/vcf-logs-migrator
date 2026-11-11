@@ -55,6 +55,22 @@ def _affected_error(code, message, ids):
     return error
 
 
+def _field(original, name):
+    return getattr(original, name) if hasattr(original, name) else original.get(name)
+
+
+def _dates(original):
+    start, end = _field(original, "start"), _field(original, "end")
+    return f"{_day(start)} to {_day(end)} UTC" if start is not None and end is not None else None
+
+
+def _group_details(groups):
+    return "; ".join(
+        f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
+        for b in groups
+    )
+
+
 def _inspect_destination(inspect, destination, originals):
     try:
         return inspect(destination, set(originals))
@@ -62,12 +78,8 @@ def _inspect_destination(inspect, destination, originals):
         dates = []
         for bucket_id in sorted(getattr(error, "affected_ids", set())):
             original = originals.get(bucket_id)
-            if original is None:
-                continue
-            start = original.start if hasattr(original, "start") else original.get("start")
-            end = original.end if hasattr(original, "end") else original.get("end")
-            if start is not None and end is not None:
-                dates.append(f"{bucket_id}: {_day(start)} to {_day(end)} UTC")
+            if original is not None and (span := _dates(original)):
+                dates.append(f"{bucket_id}: {span}")
         if dates:
             error.message += " Affected dates: " + "; ".join(dates) + "."
         raise
@@ -78,10 +90,8 @@ def _check_destination_copies(existing, originals):
     incomplete = False
     for bucket in existing:
         original = originals[bucket.id]
-        size = original.size if hasattr(original, "size") else original["size"]
-        messages = original.messages if hasattr(original, "messages") else original.get("messages")
-        start = original.start if hasattr(original, "start") else original.get("start")
-        end = original.end if hasattr(original, "end") else original.get("end")
+        size = _field(original, "size")
+        messages = _field(original, "messages")
         problems = []
         if not bucket.complete or not bucket.registered:
             incomplete = True
@@ -91,17 +101,11 @@ def _check_destination_copies(existing, originals):
         if messages is not None and bucket.messages is not None and messages != bucket.messages:
             problems.append(f"source {messages} messages, destination {bucket.messages} messages")
         if problems:
-            dates = (
-                f"{_day(start)} to {_day(end)} UTC"
-                if start is not None and end is not None
-                else "dates unknown"
-            )
             bad.append(
                 (
                     bucket.id,
-                    f"{bucket.id} ({dates}; destination: {bucket.node}; "
-                    + "; ".join(problems)
-                    + ")",
+                    f"{bucket.id} ({_dates(original) or 'dates unknown'}; "
+                    f"destination: {bucket.node}; " + "; ".join(problems) + ")",
                 )
             )
     if bad:
@@ -116,23 +120,19 @@ def _check_destination_copies(existing, originals):
         )
 
 
-def _check_duplicate_destination(existing, originals, selected_ids, placements):
+def _check_duplicate_destination(existing, originals):
     counts = Counter(bucket.id for bucket in existing)
     duplicate_ids = sorted(bucket_id for bucket_id, count in counts.items() if count > 1)
     details = []
     unsafe = []
     for bucket_id in duplicate_ids:
         original = originals[bucket_id]
-        start = original.start if hasattr(original, "start") else original.get("start")
-        end = original.end if hasattr(original, "end") else original.get("end")
-        dates = (
-            f"{_day(start)} to {_day(end)} UTC"
-            if start is not None and end is not None
-            else "dates unknown"
-        )
         copies = [b for b in existing if b.id == bucket_id]
         nodes = {b.node for b in copies}
-        description = f"{bucket_id} ({dates}; destination: {', '.join(sorted(nodes))})"
+        description = (
+            f"{bucket_id} ({_dates(original) or 'dates unknown'}; "
+            f"destination: {', '.join(sorted(nodes))})"
+        )
         details.append(description)
         if len(nodes) != len(copies):
             raise MigrationError(
@@ -142,7 +142,7 @@ def _check_duplicate_destination(existing, originals, selected_ids, placements):
                 + description
                 + ". Inspect the listing before retrying.",
             )
-        manifest = original.manifest if hasattr(original, "manifest") else original.get("manifest")
+        manifest = _field(original, "manifest")
         if manifest is not None and any(
             b.manifest is not None and b.manifest != manifest for b in copies
         ):
@@ -158,33 +158,6 @@ def _check_duplicate_destination(existing, originals, selected_ids, placements):
             "Inspect the listed destination copies before retrying.",
             [detail.split(" ", 1)[0] for detail in unsafe],
         )
-    if selected_ids - {b.id for b in existing}:
-        misplaced = []
-        for bucket_id in sorted({b.id for b in existing}):
-            nodes = {b.node for b in existing if b.id == bucket_id}
-            assigned = placements.get(bucket_id)
-            if assigned is not None and assigned not in nodes:
-                original = originals[bucket_id]
-                start = original.start if hasattr(original, "start") else original.get("start")
-                end = original.end if hasattr(original, "end") else original.get("end")
-                dates = (
-                    f"{_day(start)} to {_day(end)} UTC"
-                    if start is not None and end is not None
-                    else "dates unknown"
-                )
-                misplaced.append(
-                    f"{bucket_id} ({dates}; destination: {', '.join(sorted(nodes))}; "
-                    f"new copy: {assigned})"
-                )
-        if misplaced:
-            raise _affected_error(
-                Code.TOPOLOGY,
-                "These destination buckets are on a different node than a new copy would use. "
-                "Submitting this window would add another copy: "
-                + "; ".join(misplaced)
-                + ". Inspect the copies before continuing.",
-                [detail.split(" ", 1)[0] for detail in misplaced],
-            )
     return details
 
 
@@ -429,10 +402,7 @@ class Engine:
                 # no task for it.
                 uncertain = not prior["closed"] and not prior.get("acknowledged")
                 groups = [b for b in plan["selected"] if b["id"] in affected]
-                details = "; ".join(
-                    f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
-                    for b in groups
-                )
+                details = _group_details(groups)
                 running = (
                     task is not None
                     and task.status == "running"
@@ -486,11 +456,7 @@ class Engine:
             else:
                 affected = set()
             if affected:
-                details = "; ".join(
-                    f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
-                    for b in plan["selected"]
-                    if b["id"] in affected
-                )
+                details = _group_details(b for b in plan["selected"] if b["id"] in affected)
                 nodes = ", ".join(node.node for node in task.nodes) or "not reported"
                 raise _affected_error(
                     Code.OVERLAP,
@@ -506,10 +472,7 @@ class Engine:
             historical = selected.intersection(prior.bucket_ids)
             if historical:
                 groups = [b for b in plan["selected"] if b["id"] in historical]
-                details = "; ".join(
-                    f"{b['id']} ({_day(b['start'])} to {_day(b['end'])} UTC; source: {b['node']})"
-                    for b in groups
-                )
+                details = _group_details(groups)
                 raise self._unarrived(
                     "An earlier transfer listed these buckets, but they are not on the "
                     "destination yet: " + details + ".",
@@ -554,26 +517,6 @@ class Engine:
             "partition_diff": partition_diff(source, destination),
         }
 
-    def _known_placements(self, destination, ids):
-        placement = getattr(self.env, "bucket_placement", None)
-        if placement is not None:
-            return {bucket_id: placement(bucket_id, destination) for bucket_id in ids}
-        nodes = [node.id for node in destination.nodes]
-        if len(nodes) == 1:
-            return dict.fromkeys(ids, nodes[0])
-        known = {}
-        for row in self.journal.transfers(destination.id):
-            previous = self.journal.load(row["run"])
-            if [node["id"] for node in previous["plan"]["destination"]["nodes"]] != nodes:
-                continue
-            for node, assigned in previous.get("assignment", {}).items():
-                for bucket_id in ids.intersection(assigned):
-                    if bucket_id not in known:
-                        known[bucket_id] = node
-                    elif known[bucket_id] != node:
-                        known[bucket_id] = None
-        return known
-
     def _plan_with_existing(self, source, destination, window):
         selected = [b for b in source.buckets if b.selected(window)]
         ids = {b.id for b in selected}
@@ -616,13 +559,7 @@ class Engine:
                 destination = _inspect_destination(inspect, destination, by_id)
             existing = [b for b in destination.buckets if b.id in ids]
             _check_destination_copies(existing, by_id)
-            placements = self._known_placements(destination, ids)
-            duplicates = _check_duplicate_destination(
-                existing,
-                by_id,
-                ids,
-                placements,
-            )
+            duplicates = _check_duplicate_destination(existing, by_id)
             received = {b.id for b in existing}
         elif destination.preview:
             received = (
@@ -661,7 +598,7 @@ class Engine:
             unknown_placement = (
                 not destination.preview
                 and (destination.inventory_available or self.attribution)
-                and any(placements.get(b.id) is None for b in existing)
+                and len(destination.nodes) > 1
                 and bool(plan["selected"])
             )
             suffix = (
@@ -676,11 +613,10 @@ class Engine:
         if not destination.preview and (destination.inventory_available or self.attribution):
             if duplicates:
                 plan["warnings"].append("Multiple destination copies: " + "; ".join(duplicates))
-            unknown = sorted({b.id for b in existing if placements.get(b.id) is None})
-            if unknown and plan["selected"]:
+            if existing and len(destination.nodes) > 1 and plan["selected"]:
                 plan["warnings"].append(
                     "The destination node for a new copy could not be checked for "
-                    + ", ".join(unknown)
+                    + ", ".join(sorted({b.id for b in existing}))
                     + ". A copy may be created on another node; inspect placement before starting."
                 )
         return plan
@@ -929,12 +865,7 @@ class Engine:
                 )
             existing = [b for b in destination.buckets if b.id in intended]
             _check_destination_copies(existing, intended)
-            duplicates = _check_duplicate_destination(
-                existing,
-                intended,
-                set(intended),
-                self._known_placements(destination, set(intended)),
-            )
+            duplicates = _check_duplicate_destination(existing, intended)
             received = {b.id for b in existing}
         require(
             previously_present <= received,

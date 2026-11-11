@@ -31,44 +31,17 @@ def test_complete_duplicate_destination_copies_are_counted_once(rig):
     assert engine.verify(run["id"])["outcome"] == "verified_success"
 
 
-def test_duplicate_copies_cannot_be_resent_to_an_uncovered_node(rig):
+@pytest.mark.parametrize("nodes", [("dst-1",), ("dst-1", "dst-2")])
+def test_buckets_already_on_the_destination_never_block_whichever_node_holds_them(rig, nodes):
     engine, env, _ = rig
     source = env.data["source"]["buckets"][0]
-    for node in ("dst-1", "dst-2"):
+    for node in nodes:
         env.data["destination"]["buckets"].append({**source, "node": node})
-    with pytest.raises(MigrationError) as error:
-        planned(engine)
-    assert error.value.code == Code.TOPOLOGY
-    assert source["id"] in error.value.message and "dst-1" in error.value.message
-
-
-def test_duplicate_copies_on_the_assigned_node_can_be_left_in_place(rig):
-    engine, env, _ = rig
-    source, destination = env.discover()
-    bucket = source.buckets[0]
-    assigned = env.bucket_placement(bucket.id, destination)
-    other = next(node.id for node in destination.nodes if node.id != assigned)
-    for node in (assigned, other):
-        env.data["destination"]["buckets"].append({**vars(bucket), "node": node})
-    run = planned(engine)
-    execute(engine, run)
-    assert engine.status()["status"] == "completed"
-    copies = [b for b in env.data["destination"]["buckets"] if b["id"] == bucket.id]
-    assert {copy["node"] for copy in copies} == {assigned, other}
-
-
-def test_single_copy_on_wrong_node_holds_the_window(rig):
-    engine, env, _ = rig
-    source, destination = env.discover()
-    bucket = source.buckets[0]
-    assigned = env.bucket_placement(bucket.id, destination)
-    other = next(node.id for node in destination.nodes if node.id != assigned)
-    env.data["destination"]["buckets"].append({**vars(bucket), "node": other})
-    with pytest.raises(MigrationError) as error:
-        planned(engine)
-    assert error.value.code == Code.TOPOLOGY
-    assert bucket.id in error.value.message and assigned in error.value.message
-    assert other in error.value.message and "another copy" in error.value.message
+    plan = planned(engine)["plan"]
+    assert [b["id"] for b in plan["already_received"]] == [source["id"]]
+    assert source["id"] not in {b["id"] for b in plan["selected"]}
+    assert len(plan["selected"]) == 2
+    assert any("another node" in w and source["id"] in w for w in plan["warnings"])
 
 
 def test_running_external_transfer_names_overlapping_buckets(rig):

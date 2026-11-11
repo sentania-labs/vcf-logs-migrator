@@ -282,7 +282,7 @@ class SimulatedEnvironment:
         self._trace("test_source_credentials", node=node)
         self._fault("source_credentials." + node)
 
-    def bucket_placement(self, bucket_id, destination):
+    def _assigned_node(self, bucket_id, destination):
         """The fixture's deterministic assignment, not the appliance's hash."""
         return destination.nodes[int(digest(bucket_id)[:8], 16) % len(destination.nodes)].id
 
@@ -391,7 +391,7 @@ class SimulatedEnvironment:
                     if key in skip:
                         task["skipped"].append(key)
                         continue
-                    node = self.bucket_placement(b.id, dest)
+                    node = self._assigned_node(b.id, dest)
                     if not dest.preview:
                         existing = [
                             item for item in dest.buckets if item.id == b.id and item.node == node

@@ -884,6 +884,35 @@ def test_destination_inspection_retains_copies_from_each_node(tmp_path):
     assert {b.node for b in inspected.buckets} == {node.id for node in nodes}
 
 
+def test_destination_inspection_names_an_indexed_bucket_without_a_directory(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    env, _ = _live_rig(tmp_path)
+    source, destination = env.discover()
+    bucket = source.buckets[0]
+    node = destination.nodes[0]
+    destination = replace(
+        destination,
+        buckets=(replace(bucket, node=node.id),),
+        inventory_available=True,
+    )
+
+    class SSH:
+        def existing_bucket_usage(self, ids):
+            return ""
+
+    adapter = SimpleNamespace(
+        connection=SimpleNamespace(destination_ssh_user="root"),
+        _ssh=lambda host, credential, user: SSH(),
+    )
+    with pytest.raises(MigrationError) as error:
+        LiveEnvironment.inspect_destination_buckets(adapter, destination, {bucket.id})
+    assert error.value.code == Code.INCOMPLETE
+    assert error.value.affected_ids == {bucket.id}
+    assert f"{node.id}: {bucket.id}" in error.value.message
+
+
 def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path):
     from dataclasses import replace
 

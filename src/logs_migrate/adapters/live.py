@@ -1051,6 +1051,7 @@ class LiveEnvironment:
         )
         updated = []
         missing_by_node = {}
+        unread_by_node = {}
         for node in cluster.nodes:
             ssh = self._ssh(node.id, "destination_ssh", self.connection.destination_ssh_user)
             usage = {}
@@ -1059,32 +1060,31 @@ class LiveEnvironment:
                 usage.update(parse_usage(ssh.existing_bucket_usage(ordered[start : start + 256])))
             indexed = [b for b in cluster.buckets if b.node == node.id and b.id in ids]
             indexed_ids = {b.id for b in indexed}
-            missing = set(usage) - indexed_ids
-            if missing:
+            if missing := set(usage) - indexed_ids:
                 missing_by_node[node.id] = missing
-            require(
-                indexed_ids <= usage.keys(),
-                Code.INCOMPLETE,
-                f"{node.id}: could not inspect every indexed bucket directory.",
-            )
-            updated.extend(replace(b, size=usage[b.id]) for b in indexed)
-        if missing_by_node:
-            missing_ids = set().union(*missing_by_node.values())
-            locations = "; ".join(
-                f"{node}: {', '.join(sorted(bucket_ids))}"
-                for node, bucket_ids in sorted(missing_by_node.items())
-            )
-            error = MigrationError(
-                Code.INCOMPLETE,
-                f"{len(missing_ids)} destination "
-                f"bucket{'s have' if len(missing_ids) != 1 else ' has'} "
-                "a directory without an index entry: "
-                + locations
-                + ". The listed destination copies must be removed before this window "
-                "can be copied. Inspect them and refresh; this tool does not remove them.",
-            )
-            error.affected_ids = missing_ids
-            raise error
+            if unread := indexed_ids - usage.keys():
+                unread_by_node[node.id] = unread
+            updated.extend(replace(b, size=usage[b.id]) for b in indexed if b.id in usage)
+        for by_node, problem in (
+            (missing_by_node, "a directory without an index entry"),
+            (unread_by_node, "an index entry without a readable directory"),
+        ):
+            if by_node:
+                affected = set().union(*by_node.values())
+                locations = "; ".join(
+                    f"{node}: {', '.join(sorted(bucket_ids))}"
+                    for node, bucket_ids in sorted(by_node.items())
+                )
+                error = MigrationError(
+                    Code.INCOMPLETE,
+                    f"{len(affected)} destination "
+                    f"bucket{'s have' if len(affected) != 1 else ' has'} {problem}: "
+                    + locations
+                    + ". The listed destination copies must be removed before this window "
+                    "can be copied. Inspect them and refresh; this tool does not remove them.",
+                )
+                error.affected_ids = affected
+                raise error
         return replace(cluster, buckets=tuple(updated))
 
     def destination_topology(self) -> tuple[str, str]:
