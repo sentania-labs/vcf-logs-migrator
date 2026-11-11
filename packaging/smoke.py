@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "packaging"))
 
 from build import APP, NAME, version  # noqa: E402
+
+# isort: split
 from smoke_installed import config_smoke, smoke  # noqa: E402
 
 TIMEOUT = 180
