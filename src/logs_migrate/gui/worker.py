@@ -57,6 +57,7 @@ class EngineWorker(QObject):
 
     @Slot(str, str, dict)
     def _run(self, job: str, method: str, kwargs: dict) -> None:
+        self.affected.pop(job, None)
         try:
             result = getattr(self.session, method)(**kwargs)
         except TrustRequired as pending:

@@ -1190,3 +1190,23 @@ def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, mon
     driver.idle()
     assert asked and store.enrolled
     assert not driver.window.probe_activity.isVisible()
+
+
+def test_failed_job_does_not_keep_groups_from_an_earlier_failure(driver, monkeypatch):
+    from logs_migrate.errors import Code, MigrationError
+    from logs_migrate.gui.session import Session
+
+    first = MigrationError(Code.COLLISION, "copy differs")
+    first.affected_ids = {"stale-bucket"}
+    outcomes = [first, RuntimeError("boom")]
+
+    def failing_plan(self, **kwargs):
+        raise outcomes.pop(0)
+
+    monkeypatch.setattr(Session, "plan", failing_plan)
+    worker = driver.window.worker
+    worker.blockSignals(True)
+    worker._run("plan", "plan", {})
+    assert worker.affected["plan"] == ["stale-bucket"]
+    worker._run("plan", "plan", {})
+    assert worker.affected.get("plan") is None
