@@ -35,6 +35,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install versioning tool
+        run: python3 -m pip install setuptools-scm
+
       - name: Refuse a malformed tag, a tag off main, or a version mismatch
         run: |
           [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
@@ -141,24 +144,15 @@ jobs:
 
       - name: Publish the GitHub Release
         run: |
-          cat > notes.md <<EOF
-          Standalone downloads: the desktop window and the \`logs-migrate\` CLI over one
-          engine. No Python install is needed. License notices are embedded and also provided as THIRD-PARTY-NOTICES.txt.
+          gh api --method POST "repos/$GH_REPO/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body > notes.md
+          cat >> notes.md <<'EOF'
 
-          This release improves appliance planning and configuration, renews expired sessions
-          and ties status to the correct migration, speeds up large-source inventory and
-          verification, and makes migration evidence, errors, self-tests and trust clearer.
-          Standalone downloads also include the SSH runtime.
-
-          | Platform | Download | Signature |
-          |---|---|---|
-          | Windows x64 | vcf-logs-migrator-$TAG-windows-x64.exe | Authenticode (Azure Artifact Signing) |
-          | macOS Apple silicon | vcf-logs-migrator-$TAG-macos-arm64.dmg | Developer ID, notarized and stapled |
-          | Linux x86_64 (glibc 2.35+) | vcf-logs-migrator-$TAG-linux-x86_64 | SHA256SUMS |
-
-          Verify a download with \`sha256sum -c SHA256SUMS --ignore-missing\`. SmartScreen
-          can still warn while the publisher builds reputation. This build runs against real appliances and a
+          Standalone downloads include the desktop window and CLI. Verify downloads with
+          `sha256sum -c SHA256SUMS --ignore-missing`. This build runs against real appliances and a
           built-in simulator; docs/testing-against-a-lab.md is the procedure for real hosts.
+          Resume, per-node capacity, and estimates were validated against the simulator only;
+          live checks remain outstanding: https://github.com/sentania-labs/vcf-logs-migrator/pull/45
           EOF
           # A published release is never modified, so a rerun cannot swap verified bytes.
           # A draft left by an interrupted run is refilled from this run, then published.

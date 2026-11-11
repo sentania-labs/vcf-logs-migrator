@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "packaging"))
 
 from build import APP, NAME, version  # noqa: E402
+
+# isort: split
 from smoke_installed import config_smoke, smoke  # noqa: E402
 
 TIMEOUT = 180
@@ -142,6 +144,7 @@ def main() -> None:
     parser.add_argument("--signed", action="store_true", help="Verify signatures first")
     parser.add_argument("--evidence", type=Path, default=ROOT / "dist" / "smoke-evidence")
     args = parser.parse_args()
+    expected_version = version()
     archive = args.archive.resolve()
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
@@ -170,8 +173,8 @@ def main() -> None:
         work = scratch / "work"
 
         printed = run(program, "--version", cwd=work).strip()
-        if printed != version():
-            raise SystemExit(f"--version printed {printed!r}, expected {version()!r}")
+        if printed != expected_version:
+            raise SystemExit(f"--version printed {printed!r}, expected {expected_version!r}")
         if "plan" not in run(program, "--help", cwd=work):
             raise SystemExit("--help does not list the commands")
         if "GNU LESSER GENERAL PUBLIC LICENSE" not in run(program, "--licenses", cwd=work):
@@ -215,7 +218,7 @@ def main() -> None:
             link = scratch / "bin" / NAME
             link.parent.mkdir()
             link.symlink_to(program)
-            if run(link, "--version", cwd=work).strip() != version():
+            if run(link, "--version", cwd=work).strip() != expected_version:
                 raise SystemExit("CLI through a PATH symlink printed the wrong version")
             print("PASS CLI through a PATH symlink", flush=True)
             report = work / "gui-finder.png"

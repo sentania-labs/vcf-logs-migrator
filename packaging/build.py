@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import os
 import plistlib
-import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +28,9 @@ BUNDLE_ID = "net.sentania.vcf-logs-migrator"
 
 
 def version() -> str:
-    text = (ROOT / "src" / "logs_migrate" / "__init__.py").read_text(encoding="utf-8")
-    return re.search(r'__version__ = "([^"]+)"', text).group(1)
+    from setuptools_scm import get_version
+
+    return get_version(root=ROOT)
 
 
 def executable(platform: str) -> Path:
@@ -59,6 +59,8 @@ def freeze(name: str, script: str, *layout: str) -> None:
             str(BUILD),
             "--paths",
             str(ROOT / "src"),
+            "--copy-metadata",
+            "vcf-logs-migrator",
             "--collect-submodules",
             "logs_migrate",
             "--collect-data",
