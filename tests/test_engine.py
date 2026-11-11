@@ -10,7 +10,7 @@ from logs_migrate.adapters.simulated import SimulatedEnvironment
 from logs_migrate.engine import Engine
 from logs_migrate.errors import Code, MigrationError
 from logs_migrate.models import DAY, Counts, Policy, Window
-from logs_migrate.ports import Transfer
+from logs_migrate.ports import NodeTransfer, Transfer
 from logs_migrate.reporting import markdown
 from logs_migrate.verification import reconcile, stable_counts
 
@@ -470,7 +470,7 @@ def test_plan_shows_space_and_copy_refuses_when_a_node_cannot_hold_the_selection
     assert any("root password" in w for w in fits["warnings"])
     assert any("retention" in w for w in fits["warnings"])
     node = env.data["destination"]["nodes"][0]
-    node["repository_available"] = required - 1
+    node["repository_available"] = fits["capacity"]["estimated_bytes_per_node"] - 1
     short = planned(engine)
     capacity = short["plan"]["capacity"]
     assert capacity["fits"] is False
@@ -479,6 +479,45 @@ def test_plan_shows_space_and_copy_refuses_when_a_node_cannot_hold_the_selection
         execute(engine, short)
     assert error.value.code == Code.CAPACITY
     assert not env.data["trace"]
+
+
+def test_capacity_warns_when_api_assignment_exceeds_node_budget(rig):
+    engine, _, _ = rig
+    plan = planned(engine)["plan"]
+    bucket = plan["selected"][0]
+    node = plan["capacity"]["nodes"][0]
+    node["available_bytes"] = bucket["size"] - 1
+    task = Transfer(
+        "task",
+        "running",
+        nodes=(NodeTransfer(node["id"], "running", scheduled_ids={"source": (bucket["id"],)}),),
+    )
+    assert engine._capacity_assignment(task, plan) == [
+        {"node": node["id"], "scheduled_bytes": bucket["size"]}
+    ]
+    unknown = replace(task, nodes=(replace(task.nodes[0], scheduled_ids=None),))
+    assert engine._capacity_assignment(unknown, plan) == []
+
+
+def test_capacity_estimates_each_node_and_checks_95_percent_disk_limit(rig):
+    from logs_migrate.models import Node
+    from logs_migrate.planning import capacity
+
+    _, env, _ = rig
+    source, destination = env.discover()
+    buckets = tuple(b for b in source.buckets if b.status != "active")
+    total = sum(b.size for b in buckets)
+    share = (total * 5 + 11) // 12
+    destination = replace(
+        destination,
+        nodes=tuple(Node(f"dst-{i}", total * 10, 0, share) for i in range(3)),
+    )
+    result = capacity(destination, buckets)
+    assert result["fits"] and result["estimated_bytes_per_node"] == share < total
+    assert all(n["estimated_bytes"] == share for n in result["nodes"])
+    full = replace(destination.nodes[0], used=total * 10 * 95 // 100 - share)
+    result = capacity(replace(destination, nodes=(full, *destination.nodes[1:])), buckets)
+    assert result["fits"] is False and result["nodes"][0]["fits"] is False
 
 
 @pytest.mark.parametrize("field,value", [("id", "other-cluster"), ("identity", "re-enrolled")])

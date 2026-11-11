@@ -39,14 +39,14 @@ still receive older-dated data (backfill or late agents); the preview warns abou
 that and lists `open_bucket_days`, the requested days shared with an open bucket whose
 dates are known. Such days show as differences at verify.
 
-The preview also shows storage: the selected buckets' total bytes beside each
-destination node's own available repository budget. The API assigns buckets to
-nodes, so every node must be able to hold the whole selection. `copy` re-reads the
-destination and refuses (`insufficient_capacity`, exit 3) when any node falls short;
-an over-budget 9.0 destination retires and deletes its own existing history. A node
-whose budget was not observed (no destination SSH, or 9.1.1) is listed as unknown
-and warned about rather than refused; the API's own 95% disk stop then applies and
-verification shows what landed. The
+The preview estimates each destination node's share as the selected bytes divided by
+the node count, with a 25% margin for uneven bucket sizes, capped at the total
+selection. `copy` refreshes storage and refuses (`insufficient_capacity`, exit 3)
+if the estimate exceeds a node's repository budget or would reach its 95% disk
+limit. This is an estimate, not a guarantee: individual bucket sizes and the API's
+assignment can make a node's actual share larger. An over-budget 9.0 destination
+can retire its own existing history. Missing budget or disk figures are shown as
+unknown and warned about rather than refused. The
 preview warns that the source root password is sent to the destination for the
 transfer and that source retention can remove planned buckets before the run.
 

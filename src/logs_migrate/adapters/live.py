@@ -505,7 +505,14 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
         progress = entry.get("progress")
         if type(progress) not in (int, float) or not 0 <= progress <= 100:
             progress = None
-        scheduled = entry.get("scheduledBuckets")
+        raw_scheduled = entry.get("scheduledBuckets")
+        scheduled_ids = None
+        if isinstance(raw_scheduled, dict) and all(
+            isinstance(items, list) and len(_uuids(items)) == len(items)
+            for items in raw_scheduled.values()
+        ):
+            scheduled_ids = {str(key): _uuids(items) for key, items in raw_scheduled.items()}
+        scheduled = raw_scheduled
         scheduled = (
             {str(k): len(v) for k, v in scheduled.items() if isinstance(v, list)}
             if isinstance(scheduled, dict)
@@ -532,6 +539,7 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
                 scheduled,
                 totals,
                 node_elapsed,
+                scheduled_ids,
             )
         )
     completed = tuple(dict.fromkeys(completed + tuple(k for n in nodes for k in n.completed)))

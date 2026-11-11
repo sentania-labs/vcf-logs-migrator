@@ -34,20 +34,36 @@ def partition_diff(source: Cluster, destination: Cluster) -> dict:
 
 
 def capacity(destination: Cluster, buckets: tuple[Bucket, ...]) -> dict:
-    # The API, not the operator, assigns each bucket to a destination node, so every node's own
-    # available repository budget must be able to hold the whole selection. A node whose budget
-    # was not observed cannot refuse the plan; it is listed as unknown and warned about.
+    # Before the API assigns buckets, a 25% margin allows for an uneven split.
     required = sum(b.size for b in buckets)
-    nodes = [
-        {
-            "id": n.id,
-            "available_bytes": n.repository_available,
-            "fits": None if not n.storage_known else n.repository_available >= required,
-        }
-        for n in destination.nodes
-    ]
+    count = len(destination.nodes)
+    estimate = min(required, (required * 5 + 4 * count - 1) // (4 * count)) if count else 0
+    nodes = []
+    for node in destination.nodes:
+        budget = node.repository_available
+        disk = (
+            max(0, (node.capacity * 95 - 1) // 100 - node.used)
+            if node.capacity is not None and node.used is not None
+            else None
+        )
+        known = [value for value in (budget, disk) if value is not None]
+        fits = (
+            False
+            if any(value < estimate for value in known)
+            else (True if len(known) == 2 else None)
+        )
+        nodes.append(
+            {
+                "id": node.id,
+                "available_bytes": budget,
+                "estimated_bytes": estimate,
+                "disk_headroom_bytes": disk,
+                "fits": fits,
+            }
+        )
     return {
         "required_bytes": required,
+        "estimated_bytes_per_node": estimate,
         "nodes": nodes,
         "fits": all(n["fits"] is not False for n in nodes),
         "unknown": [n["id"] for n in nodes if n["fits"] is None],
@@ -161,7 +177,7 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
         + (
             []
             if space["fits"]
-            else ["Selected buckets exceed a destination node's available repository budget."]
+            else ["Estimated share exceeds a destination node's budget or 95% disk limit."]
         )
         + (
             [

@@ -434,8 +434,27 @@ class Engine:
             return {
                 "run_id": run_id,
                 "task": self._progress(task),
+                "capacity_warning": self._capacity_assignment(task, fresh),
                 "verification": run["verification"],
             }
+
+    def _capacity_assignment(self, task, plan):
+        """Check the remaining assigned buckets when the API reports their identities."""
+        sizes = {bucket["id"]: bucket["size"] for bucket in plan["selected"]}
+        budgets = {node["id"]: node for node in plan["capacity"]["nodes"]}
+        result = []
+        for node in task.nodes:
+            if node.scheduled_ids is None or node.node not in budgets:
+                continue
+            ids = [bucket for group in node.scheduled_ids.values() for bucket in group]
+            if len(set(ids)) != len(ids) or any(bucket not in sizes for bucket in ids):
+                continue
+            needed = sum(sizes[bucket] for bucket in ids)
+            budget = budgets[node.node]
+            limits = [budget.get("available_bytes"), budget.get("disk_headroom_bytes")]
+            if any(limit is not None and needed > limit for limit in limits):
+                result.append({"node": node.node, "scheduled_bytes": needed})
+        return result
 
     def _progress(self, task):
         result = asdict(task)
@@ -564,7 +583,9 @@ class Engine:
             if not task_id:
                 self.journal.note_transfer_task(run_id, task.id)
             self._record(task, destination)
-            return self._progress(task)
+            result = self._progress(task)
+            result["capacity_warning"] = self._capacity_assignment(task, run["plan"])
+            return result
 
     @safe_boundary
     def stop(self, task_id):
