@@ -1041,7 +1041,7 @@ class Engine:
         }
         return result
 
-    def _remainder_summary(self, run, destination):
+    def _remainder_summary(self, run, destination, task):
         root_id = run.get("resume_root", run["id"])
         root = self.journal.load(root_id)
         linked = {
@@ -1060,7 +1060,9 @@ class Engine:
         observed = self.attribution or bool(root["plan"]["destination"].get("inventory_available"))
         try:
             estimate = self._estimate(
-                plan, observed, len(root.get("assignment") or run.get("assignment") or {})
+                plan,
+                observed,
+                len(task.nodes) or len(root.get("assignment") or run.get("assignment") or {}),
             )
         except Exception:
             estimate = None  # A time estimate must never block status or a transfer.
@@ -1160,7 +1162,7 @@ class Engine:
                             "the destination could not be inspected."
                         )
                 if settled["closed"]:
-                    result["remainder"] = self._remainder_summary(run, destination)
+                    result["remainder"] = self._remainder_summary(run, destination, task)
             elapsed = task.elapsed_seconds
             copied = result.get("bytes_transferred")
             sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}

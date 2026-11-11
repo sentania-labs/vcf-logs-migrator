@@ -1037,9 +1037,49 @@ def test_no_ssh_resume_does_not_refuse_on_a_placeholder_node_count(tmp_path):
     assert any("node count could not be checked" in w for w in plan["warnings"])
     assert plan["estimate"]["destination_nodes"] == len(env.data["destination"]["nodes"]) == 3
     assert plan["estimate"]["destination_nodes_assumed"]
+    assert status["remainder"]["estimate"] == plan["estimate"]
     engine.run(resumed["id"], active_ack=ACTIVE_ACK)
     engine.status(resumed["id"])
     assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+@pytest.mark.parametrize("ingest", [False, True])
+def test_no_ssh_resume_verification_accounts_for_unattributed_ingest(tmp_path, ingest):
+    from conftest import FIXTURES
+
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.journal import Journal
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    if not ingest:
+        data["ingest_during_run"] = []
+    data.update({"cancel_after": 1, "placeholder_nodes": True})
+    data["destination"]["inventory_available"] = False
+    env = SimulatedEnvironment(data)
+    env.attribution = False
+    env.mode = "live"
+    clock = SimulatedClock()
+    engine = Engine(env, Journal(tmp_path / "j.sqlite", clock), clock)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    assert engine.status(first["id"])["status"] == "cancelled"
+    stopped = engine.verify(first["id"])
+    assert stopped["outcome"] != "verified_success"
+    del env.data["cancel_after"]
+    resumed = engine.resume(first["id"])
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    assert engine.status(resumed["id"])["status"] == "completed"
+    result = engine.verify(resumed["id"])
+    migrated = [e["id"] for e in env.data["destination_events"] if e.get("cohort") == "migration"]
+    assert len(migrated) == len(set(migrated)) == 6
+    if ingest:
+        assert result["outcome"] == "verified_discrepancy"
+        assert (result["daily"][0]["expected"], result["daily"][0]["actual"]) == (3, 5)
+        assert sum(e.get("cohort") == "ingest" for e in env.data["destination_events"]) == 2
+    else:
+        assert result["outcome"] == "verified_success"
 
 
 def _placeholder_then_observed(tmp_path):

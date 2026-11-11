@@ -196,7 +196,12 @@ class MigrationPage(Page):
                 f"Estimated time: {vm.format_eta(estimate.get('low_seconds'))} to "
                 f"{vm.format_eta(estimate.get('high_seconds'))}. "
                 + (
-                    "Estimated space fits on each destination. "
+                    (
+                        "Estimated space fits on each destination, assuming the node count "
+                        "is unchanged. "
+                        if plan.get("node_count_unchecked")
+                        else "Estimated space fits on each destination. "
+                    )
                     if capacity and capacity["fits"] and not capacity["unknown"]
                     else "Check the destination space warning before continuing. "
                     if capacity

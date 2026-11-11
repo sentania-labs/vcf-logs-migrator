@@ -84,6 +84,12 @@ def test_resume_preview_and_finish_in_the_window():
         driver.idle()
         assert page.remainder_card.isVisible()
         assert "Already received: 1 bucket" in page.remainder.text()
+        assert "Estimated space fits on each destination." in page.remainder.text()
+        driver.state.plan_run["plan"]["node_count_unchecked"] = True
+        page.refresh()
+        assert "assuming the node count is unchanged" in page.remainder.text()
+        driver.state.plan_run["plan"].pop("node_count_unchecked")
+        page.refresh()
         assert driver.state.run_id != old_run
         assert driver.state.verification is None and driver.state.verify_error is None
         assert not driver.state.exported and driver.state.export_error is None
