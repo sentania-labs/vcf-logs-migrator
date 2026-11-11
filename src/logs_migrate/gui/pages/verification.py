@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QPlainTextEdit
+from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
 from .. import viewmodel as vm
 from ..widgets import KeyValues, Page, Table, banner, button, card, columns, metric, set_banner
@@ -17,11 +17,14 @@ class VerificationPage(Page):
         self.body.addWidget(self.banner)
         self.group_ids_toggle = button("Show group ids", "", self._toggle_group_ids)
         self.group_ids_toggle.hide()
+        self.group_ids_copy = button("Copy group ids", "", self._copy_group_ids)
+        self.group_ids_copy.hide()
         self.group_ids = QPlainTextEdit()
         self.group_ids.setReadOnly(True)
         self.group_ids.setMaximumHeight(120)
         self.group_ids.hide()
         self.body.addWidget(self.group_ids_toggle)
+        self.body.addWidget(self.group_ids_copy)
         self.body.addWidget(self.group_ids)
         self.tiles = []
         frames = []
@@ -52,7 +55,11 @@ class VerificationPage(Page):
     def _toggle_group_ids(self) -> None:
         shown = not self.group_ids.isVisible()
         self.group_ids.setVisible(shown)
+        self.group_ids_copy.setVisible(shown)
         self.group_ids_toggle.setText("Hide group ids" if shown else "Show group ids")
+
+    def _copy_group_ids(self) -> None:
+        QApplication.clipboard().setText(self.group_ids.toPlainText())
 
     def verify(self) -> None:
         run_id = self.app.state.run_id
@@ -69,7 +76,9 @@ class VerificationPage(Page):
             state.verification, state.status, state.active_count, preview, run
         )
         title = "Verification" + (" · 9.1.1 Preview" if preview else "")
-        if view["outcome"] == "verified_discrepancy":
+        if (state.verification or {}).get("incomplete_destination_copies"):
+            title += " · incomplete destination groups"
+        elif view["outcome"] == "verified_discrepancy":
             title += " · daily mismatch"
         elif view["outcome"] == "incomplete_verification":
             title += " · incomplete"
@@ -96,11 +105,22 @@ class VerificationPage(Page):
         elif state.verify_run_id and state.verify_run_id == state.run_id:
             status, heading, text = ("info", "Verifying…", "Counting on both appliances.")
         set_banner(self.banner, heading, text, status)
-        unknown = (state.verification or {}).get("bucket_check", {}).get("unknown", [])
-        self.group_ids.setPlainText("\n".join(unknown))
-        self.group_ids_toggle.setVisible(bool(unknown))
-        if not unknown:
+        result = state.verification or {}
+        exact = result.get("bucket_check") or {}
+        group_ids = list(
+            dict.fromkeys(
+                [
+                    *exact.get("unknown", []),
+                    *exact.get("unmatched", []),
+                    *result.get("incomplete_destination_copies", []),
+                ]
+            )
+        )
+        self.group_ids.setPlainText("\n".join(group_ids))
+        self.group_ids_toggle.setVisible(bool(group_ids))
+        if not group_ids:
             self.group_ids.hide()
+            self.group_ids_copy.hide()
         for index, frame in enumerate(self.frames):
             frame.setVisible(index < len(view["tiles"]))
         for (title_label, value, caption), (title, text_value, text_caption) in zip(

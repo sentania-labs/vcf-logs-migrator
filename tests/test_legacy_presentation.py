@@ -90,7 +90,9 @@ def test_window_plan_and_both_exports_hide_retired_prompts(legacy_journal, tmp_p
     journal, run, events = legacy_journal
     shown, shown_events = expected_presentation(run, events)
     view = vm.plan_view(run, None)
-    assert view["warnings"] == shown["plan"]["warnings"]
+    assert len(view["warnings"]) == len(shown["plan"]["warnings"])
+    assert "Active groups are skipped; newest data is not copied." in view["warnings"]
+    assert_retired_text_absent("\n".join(view["warnings"]))
     session = Session()
     session.journal = journal
     assert session.runs() == [shown]

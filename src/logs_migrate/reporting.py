@@ -166,6 +166,13 @@ def markdown(run, events):
             f"Covered days: {_day_ranges(verification['covered_days'])}.",
             "",
         ]
+    if verification.get("incomplete_destination_copies"):
+        lines += [
+            "Incomplete or unregistered destination groups: "
+            + ", ".join(verification["incomplete_destination_copies"])
+            + ".",
+            "",
+        ]
     if verification.get("reason"):
         lines += [f"Reason: {verification['reason']}.", ""]
         if verification.get("detail"):

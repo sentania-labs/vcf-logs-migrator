@@ -137,12 +137,12 @@ def test_all_bad_copies_are_listed_together(rig):
     with pytest.raises(MigrationError) as error:
         planned(engine)
     assert first["id"] in error.value.message and second["id"] in error.value.message
-    assert "source size 1000 bytes, destination size 1 bytes" in error.value.message
-    assert "source 2 messages, destination 1 messages" in error.value.message
+    assert "source size 1000 bytes, destination size 1 byte" in error.value.message
+    assert "source 2 messages, destination 1 message" in error.value.message
 
 
 def test_verification_reports_a_copy_that_became_incomplete(rig):
-    engine, env, _ = rig
+    engine, env, journal = rig
     run = planned(engine)
     execute(engine, run)
     assert engine.status()["status"] == "completed"
@@ -150,6 +150,9 @@ def test_verification_reports_a_copy_that_became_incomplete(rig):
     copy["complete"] = False
     result = engine.verify(run["id"])
     assert result["incomplete_destination_copies"] == [f"{copy['node']}/{copy['id']}"]
+    report = markdown(journal.load(run["id"]), journal.events(run["id"]))
+    assert "Incomplete or unregistered destination groups" in report
+    assert f"{copy['node']}/{copy['id']}" in report
 
 
 @pytest.mark.parametrize("fixture_name", ["sealed-populated.fixture", "sealed-911.fixture"])

@@ -97,9 +97,15 @@ def _check_destination_copies(existing, originals):
             incomplete = True
             problems.append("incomplete or not indexed")
         if bucket.size != size:
-            problems.append(f"source size {size} bytes, destination size {bucket.size} bytes")
+            problems.append(
+                f"source size {size} byte{'s' if size != 1 else ''}, "
+                f"destination size {bucket.size} byte{'s' if bucket.size != 1 else ''}"
+            )
         if messages is not None and bucket.messages is not None and messages != bucket.messages:
-            problems.append(f"source {messages} messages, destination {bucket.messages} messages")
+            problems.append(
+                f"source {messages} message{'s' if messages != 1 else ''}, "
+                f"destination {bucket.messages} message{'s' if bucket.messages != 1 else ''}"
+            )
         if problems:
             bad.append(
                 (
@@ -470,7 +476,8 @@ class Engine:
                 nodes = ", ".join(node.node for node in task.nodes) or "not reported"
                 raise _affected_error(
                     Code.OVERLAP,
-                    f"A transfer is running for {len(affected)} selected buckets: {details}. "
+                    f"A transfer is running for {len(affected)} selected "
+                    f"bucket{'s' if len(affected) != 1 else ''}: {details}. "
                     f"Destination task nodes: {nodes}. Wait for it to finish and refresh.",
                     affected,
                 )
@@ -612,14 +619,17 @@ class Engine:
                 and len(destination.nodes) > 1
                 and bool(plan["selected"])
             )
+            remaining = len(plan["selected"])
             suffix = (
-                f"; {len(plan['selected'])} buckets remain to be copied."
+                f"; {remaining} bucket{'s' if remaining != 1 else ''} "
+                f"{'remain' if remaining != 1 else 'remains'} to be copied."
                 if unknown_placement
-                else f" and will be left as they are; {len(plan['selected'])} will be copied."
+                else f" and will be left as they are; {remaining} will be copied."
             )
             plan["warnings"].append(
-                f"{len(received)} buckets ({'; '.join(dates)}) are already on the destination"
-                + suffix
+                f"{len(received)} bucket{'s' if len(received) != 1 else ''} "
+                f"({'; '.join(dates)}) {'are' if len(received) != 1 else 'is'} "
+                "already on the destination" + suffix
             )
         if not destination.preview and (destination.inventory_available or self.attribution):
             if duplicates:

@@ -6,6 +6,7 @@ missing the view says Unavailable instead of estimating.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -341,7 +342,35 @@ def group_label(bucket: dict, number: int) -> str:
 def describe_group_ids(text: str, selected: list[dict]) -> str:
     for number, bucket in enumerate(selected, 1):
         text = text.replace(bucket["node"] + "/" + bucket["id"], group_label(bucket, number))
+    for number, bucket in enumerate(selected, 1):
+        text = text.replace(bucket["id"], f"Group {number}")
+    # An unfamiliar ID can still appear in a safe diagnostic. Keep it in the
+    # expandable evidence list, not in prose.
+    uuid = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    text = re.sub(
+        rf"\b([A-Za-z0-9._:-]+)/{uuid}\b",
+        lambda match: f"a group on {match.group(1)}",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(rf"\b{uuid}\b", "a group", text, flags=re.I)
+    text = re.sub(r"\bbuckets\b", "groups", text, flags=re.I)
+    text = re.sub(r"\bbucket\b", "group", text, flags=re.I)
+    text = re.sub(r"\b1 groups\b", "1 group", text)
+    text = re.sub(r"\b1 messages\b", "1 message", text)
+    text = re.sub(r"\b1 events\b", "1 event", text)
+    text = re.sub(r"\b1 bytes\b", "1 byte", text)
     return text
+
+
+def warning_group_lines(warnings: list[str], groups: list[dict]) -> list[str]:
+    text = "\n".join(warnings)
+    ids = re.findall(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", text, re.I)
+    lines = []
+    for bucket_id in dict.fromkeys(ids):
+        match = next((b for b in groups if b["id"] == bucket_id), None)
+        lines.append(f"{match['node']}/{bucket_id}" if match else bucket_id)
+    return lines
 
 
 def selected_for_window(discovered: dict | None, window: Window | None) -> list[dict]:
@@ -387,6 +416,13 @@ def is_duplicate_identity(code: str) -> bool:
 
 
 def plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
+    groups = selected_for_window(discovered, window)
+    if discovered:
+        groups += [b for b in discovered["source"]["buckets"] if b not in groups]
+    return describe_group_ids(_plan_error_text(code, discovered, window), groups)
+
+
+def _plan_error_text(code: str, discovered: dict | None, window: Window | None) -> str:
     """Say what is actually wrong with a refused preview."""
     if conflicts := conflicting_groups(code, discovered):
         groups = [
@@ -401,6 +437,10 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
             + ". Choose dates that exclude these groups."
         )
     if code.partition(": ")[0] == Code.INCOMPLETE.value and discovered and window:
+        if ": " in code and not code.startswith(
+            Code.INCOMPLETE.value + ": No dated sealed groups overlap"
+        ):
+            return describe_error(code)
         sealed = [
             b
             for b in discovered["source"]["buckets"]
@@ -426,6 +466,13 @@ def plan_error_text(code: str, discovered: dict | None, window: Window | None) -
 def plan_view(run: dict, discovered: dict | None) -> dict:
     plan = display_run(run)["plan"]
     selected = plan["selected"]
+    evidence_groups = list(selected)
+    for bucket in (*plan.get("already_received", []), *plan.get("original_selected", [])):
+        if not any(
+            item["node"] == bucket["node"] and item["id"] == bucket["id"]
+            for item in evidence_groups
+        ):
+            evidence_groups.append(bucket)
     coverage = plan["coverage"]
     capacity = plan["capacity"]
     diff = plan["partition_diff"]
@@ -441,11 +488,11 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         )
         for index, b in enumerate(selected, start=1)
     ]
-    tips = [f"Bucket {b['id']} on {b['node']}" for b in selected]
+    tips = [group_label(b, number) for number, b in enumerate(selected, 1)]
     for index, key in enumerate(active, start=len(selected) + 1):
-        node, _, ident = key.rpartition("/")
+        node, _, _ = key.rpartition("/")
         groups.append((f"Group {index} · {node}", "Open; may advance", "Unknown", "Open · exclude"))
-        tips.append(f"Open bucket {ident} on {node}")
+        tips.append(f"Open group on {node}")
     for b in plan.get("undated_excluded", []):
         groups.append(
             (
@@ -455,22 +502,23 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
                 "Unknown · exclude",
             )
         )
-        tips.append(f"Sealed bucket {b['id']} on {b['node']} reports no time range")
+        tips.append(f"Sealed group on {b['node']} reports no time range")
     if plan["last_fully_sealed_day"]:
         sealed_text = (
-            "Last day covered only by sealed buckets right now: "
+            "Last day covered only by sealed groups right now: "
             f"{format_day_label(plan['last_fully_sealed_day'])}."
         )
     else:
         sealed_text = (
-            "Last day covered only by sealed buckets: not proven (open group bounds unknown); "
+            "Last day covered only by sealed groups: not proven (open group bounds unknown); "
             f"sealed groups end {format_day(day_of(coverage['end'] - 1))}."
         )
     earlier_overlap = any(
         "Earlier task " in w and "Selected groups crossing" in w for w in plan.get("warnings", [])
     )
+    received_count = len(plan.get("already_received", []))
     overlap_text = (
-        f"{len(plan['already_received'])} groups already received"
+        f"{received_count} group{'s' if received_count != 1 else ''} already received"
         if plan.get("already_received")
         else "Group ids checked; none on destination. Earlier migration dates overlap."
         if earlier_overlap
@@ -521,11 +569,11 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
             detail = UNAVAILABLE
         elif growth_bytes:
             detail = (
-                f"Active buckets on {', '.join(ingest['nodes'])} grew by "
+                f"Open groups on {', '.join(ingest['nodes'])} grew by "
                 f"{format_bytes(growth_bytes)} in {seconds} s"
             )
         else:
-            detail = f"No active bucket growth in {seconds} s"
+            detail = f"No open group growth in {seconds} s"
         checks.append(("Source ingest", detail))
     storage = []
     for node in capacity["nodes"]:
@@ -576,13 +624,9 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
         "group_tips": tips,
         "checks": checks,
         "storage": storage,
-        "warnings": [describe_group_ids(w, selected) for w in plan["warnings"]],
+        "warnings": [describe_group_ids(w, evidence_groups) for w in plan["warnings"]],
         "overlap_text": overlap_text,
-        "overlap_ids": [
-            f"Group {n} · {b['node']}/{b['id']}"
-            for n, b in enumerate(selected, 1)
-            if any(b["node"] + "/" + b["id"] in w for w in plan["warnings"])
-        ],
+        "overlap_ids": warning_group_lines(plan["warnings"], evidence_groups),
         "blockers": blockers,
         "needs_ack": bool(active),
     }
@@ -898,6 +942,10 @@ def outcome_label(verification: dict | None) -> str:
     if not verification:
         return "verification pending"
     outcome = verification.get("outcome")
+    if verification.get("incomplete_destination_copies"):
+        daily_differs = any(row.get("difference") for row in verification.get("daily", []))
+        prefix = "counts differ · " if daily_differs else ""
+        return prefix + "incomplete destination groups"
     missing = verification.get("buckets", {}).get("not_received", [])
     if missing:
         state = "counts differ" if outcome == "verified_discrepancy" else "incomplete"
@@ -1094,6 +1142,7 @@ def verification_view(
     missing_labels = [format_day_label(day) for day, _ in missing_days(result, run)]
     exact = result.get("bucket_check")
     daily_outcome = result.get("daily_outcome", outcome)
+    differing = []
     if missing:
         outcome = "partial"
         banner = (
@@ -1141,14 +1190,18 @@ def verification_view(
     elif daily_outcome == "verified_discrepancy":
         differing = [d for d in result["daily"] if d["difference"] != 0 and not d.get("partial")]
         differing = differing or [d for d in result["daily"] if d["difference"] != 0]
-        first = differing[0]
-        banner = (
-            "bad",
-            "Daily counts differ",
-            f"{abs(first['difference']):,} {'fewer' if first['difference'] < 0 else 'more'} "
-            f"events on {format_day_label(first['day'])}. Imported data is unchanged; "
-            "inspect the daily comparison before any new plan.",
-        )
+        if differing:
+            first = differing[0]
+            amount = abs(first["difference"])
+            banner = (
+                "bad",
+                "Daily counts differ",
+                f"{amount:,} {'fewer' if first['difference'] < 0 else 'more'} "
+                f"event{'s' if amount != 1 else ''} on {format_day_label(first['day'])}. "
+                "Imported data is unchanged; inspect the daily comparison before any new plan.",
+            )
+        else:
+            banner = ("bad", "Verification found a discrepancy", "Inspect the evidence below.")
     else:
         reason = result.get("reason")
         task = status["status"] if status else None
@@ -1196,10 +1249,12 @@ def verification_view(
         if exact["unmatched"] and missing:
             banner = (banner[0], banner[1], f"{groups} {banner[2]}")
         elif exact["unmatched"]:
+            selected = run["plan"].get("selected", []) if run else []
+            unmatched = [describe_group_ids(key, selected) for key in exact["unmatched"]]
             banner = (
                 "bad",
                 "Selected groups do not match",
-                f"{', '.join(exact['unmatched'])}. {groups} {daily}",
+                f"{', '.join(unmatched)}. {groups} {daily}",
             )
         elif exact.get("unknown"):
             labels = (
@@ -1218,7 +1273,7 @@ def verification_view(
                 "Group counts unavailable",
                 f"{unknown_groups} "
                 "could not have their event counts checked, so verification is incomplete. "
-                "Run verify again. If this persists, check the destination bucket listing "
+                "Run verify again. If this persists, check the destination group listing "
                 f"with the appliance administrator. {daily}",
             )
         else:
@@ -1231,6 +1286,36 @@ def verification_view(
                 "Selected groups checked",
                 f"{groups} {daily}",
             )
+    incomplete_copies = result.get("incomplete_destination_copies", [])
+    if incomplete_copies:
+        originals = []
+        if run:
+            originals = [
+                *run["plan"].get("selected", []),
+                *run["plan"].get("already_received", []),
+                *run["plan"].get("original_selected", []),
+            ]
+        descriptions = []
+        for key in incomplete_copies:
+            node, _, bucket_id = key.rpartition("/")
+            bucket = next((b for b in originals if b["id"] == bucket_id), None)
+            dates = (
+                format_day_range(bucket.get("start"), bucket.get("end"), inclusive_end=True)
+                if bucket
+                else "dates unavailable"
+            )
+            descriptions.append(f"{dates} on {node or 'an unknown node'}")
+        banner = (
+            "bad",
+            "Destination groups are incomplete",
+            "; ".join(descriptions)
+            + ". Inspect these destination copies before continuing. "
+            + (
+                f"{banner[1]}: {banner[2]}"
+                if daily_outcome == "verified_discrepancy" and differing
+                else ""
+            ),
+        )
     complete = result.get("complete", False)
     has_counts = "expected_count" in result
     unmeasured = result.get("unmeasured_day_count", 0)

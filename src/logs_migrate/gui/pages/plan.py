@@ -83,6 +83,16 @@ class PlanPage(Page):
         self.error = banner("", "", "bad")
         self.error.hide()
         layout.addWidget(self.error)
+        self.error_ids = QPlainTextEdit()
+        self.error_ids.setReadOnly(True)
+        self.error_ids.setMaximumHeight(120)
+        self.error_ids.hide()
+        self.error_ids_toggle = button("Show group ids", "", self._toggle_error_ids)
+        self.error_ids_copy = button("Copy group ids", "", self._copy_error_ids)
+        self.error_ids_toggle.hide()
+        self.error_ids_copy.hide()
+        layout.addWidget(row(self.error_ids_toggle, self.error_ids_copy))
+        layout.addWidget(self.error_ids)
 
         window_card, window_layout = card("Choose a window")
         self.start_date = QDateEdit()
@@ -168,7 +178,7 @@ class PlanPage(Page):
         storage_layout.addWidget(self.storage)
         storage_layout.addWidget(
             label(
-                "Estimated share includes a margin for uneven bucket sizes and the 95% disk limit.",
+                "Estimated share includes a margin for uneven group sizes and the 95% disk limit.",
                 "hint",
                 wrap=True,
             )
@@ -182,7 +192,9 @@ class PlanPage(Page):
         self.warning_ids.hide()
         self.warning_ids_toggle = button("Show group ids", "", self._toggle_warning_ids)
         self.warning_ids_toggle.hide()
-        retention_layout.addWidget(self.warning_ids_toggle)
+        self.warning_ids_copy = button("Copy group ids", "", self._copy_warning_ids)
+        self.warning_ids_copy.hide()
+        retention_layout.addWidget(row(self.warning_ids_toggle, self.warning_ids_copy))
         retention_layout.addWidget(self.warning_ids)
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -253,7 +265,20 @@ class PlanPage(Page):
     def _toggle_warning_ids(self) -> None:
         shown = not self.warning_ids.isVisible()
         self.warning_ids.setVisible(shown)
+        self.warning_ids_copy.setVisible(shown)
         self.warning_ids_toggle.setText("Hide group ids" if shown else "Show group ids")
+
+    def _copy_warning_ids(self) -> None:
+        QApplication.clipboard().setText(self.warning_ids.toPlainText())
+
+    def _toggle_error_ids(self) -> None:
+        shown = not self.error_ids.isVisible()
+        self.error_ids.setVisible(shown)
+        self.error_ids_copy.setVisible(shown)
+        self.error_ids_toggle.setText("Hide group ids" if shown else "Show group ids")
+
+    def _copy_error_ids(self) -> None:
+        QApplication.clipboard().setText(self.error_ids.toPlainText())
 
     def _toggle_group_ids(self) -> None:
         shown = not self.group_ids.isVisible()
@@ -434,7 +459,12 @@ class PlanPage(Page):
             detail = vm.plan_error_text(
                 state.plan_error, discovered, vm.window_from_days(*self.current_dates())
             )
-            set_banner(self.blocked_banner, "Preview unavailable", detail, "bad")
+            set_banner(
+                self.blocked_banner,
+                "Preview unavailable",
+                "Review the affected groups below.",
+                "bad",
+            )
             self.blocked_next.setText(
                 "Resolve the problem described above, then refresh the preview."
             )
@@ -446,11 +476,7 @@ class PlanPage(Page):
                 [
                     (
                         "Refused",
-                        vm.plan_error_text(
-                            state.plan_error,
-                            discovered,
-                            vm.window_from_days(*self.current_dates()),
-                        ),
+                        detail,
                     ),
                     (
                         "Request",
@@ -459,7 +485,13 @@ class PlanPage(Page):
                     ),
                 ]
             )
-            lines = state.plan_affected or vm.conflict_group_lines(state.plan_error, discovered)
+            lines = (
+                state.plan_affected
+                or vm.conflict_group_lines(state.plan_error, discovered)
+                or vm.warning_group_lines(
+                    [state.plan_error], (discovered or {}).get("source", {}).get("buckets", [])
+                )
+            )
             self.group_ids.setPlainText("\n".join(lines))
             self.group_ids_row.setVisible(bool(lines))
             if not lines:
@@ -472,13 +504,24 @@ class PlanPage(Page):
             )
             return
         self.stack.setCurrentIndex(0)
+        error_ids = state.plan_affected or vm.warning_group_lines(
+            [state.plan_error or ""], (discovered or {}).get("source", {}).get("buckets", [])
+        )
+        self.error_ids.setPlainText("\n".join(error_ids))
+        self.error_ids_toggle.setVisible(bool(state.plan_error and error_ids))
+        if not (state.plan_error and error_ids):
+            self.error_ids.hide()
+            self.error_ids_copy.hide()
         self.date_hint.setText(self.date_message)
         self.date_hint.setVisible(bool(self.date_message))
         if blocked:
             set_banner(
                 self.error,
                 "Migration needs attention",
-                "Resolve the issue shown in the previous preview, then refresh.",
+                vm.plan_error_text(
+                    state.plan_error, discovered, vm.window_from_days(*self.current_dates())
+                )
+                + " Adjust the dates or refresh the preview.",
                 "bad",
             )
             self.error.show()
@@ -596,9 +639,11 @@ class PlanPage(Page):
         estimate = plan.get("estimate")
         if estimate:
             received = plan.get("already_received", [])
+            group_count = estimate["bucket_count"]
             self.estimate.setText(
                 f"{vm.format_eta(estimate['low_seconds'])} to "
-                f"{vm.format_eta(estimate['high_seconds'])} for {estimate['bucket_count']} buckets "
+                f"{vm.format_eta(estimate['high_seconds'])} for {group_count} "
+                f"group{'s' if group_count != 1 else ''} "
                 f"({vm.format_bytes(estimate['selected_bytes'])}) "
                 f"on {estimate['destination_nodes']} destination nodes"
                 + (" (assumed; not inspected)" if estimate.get("destination_nodes_assumed") else "")
@@ -612,7 +657,7 @@ class PlanPage(Page):
                     else ""
                 )
                 + "Actual time varies. "
-                + f"Already received: {len(received)} buckets "
+                + f"Already received: {len(received)} group{'s' if len(received) != 1 else ''} "
                 f"({vm.format_bytes(sum(b['size'] for b in received))})."
             )
         else:
@@ -622,6 +667,7 @@ class PlanPage(Page):
         self.warning_ids_toggle.setVisible(bool(view["overlap_ids"]))
         if not view["overlap_ids"]:
             self.warning_ids.hide()
+            self.warning_ids_copy.hide()
         self.warning_timer.start(0)
         self.ack.setVisible(view["needs_ack"] and self._preview_is_current())
         self._update_actions()
