@@ -172,3 +172,66 @@ def test_copy_help_hides_legacy_backup_flag(capsys):
     help_text = capsys.readouterr().out
     assert "--ack-backup" not in help_text
     assert "--ack-active" in help_text
+
+
+def _stopped_no_ssh_run(tmp_path, capsys, monkeypatch, placeholder):
+    from logs_migrate.adapters.simulated import SimulatedEnvironment
+
+    monkeypatch.setattr(SimulatedEnvironment, "attribution", False)
+    fixture = tmp_path / "fixture.json"
+    data = json.loads((FIXTURES / "sealed-populated.fixture").read_text())
+    data["cancel_after"] = 1
+    data["placeholder_nodes"] = placeholder
+    fixture.write_text(json.dumps(data))
+    base = ["--journal", str(tmp_path / "j.sqlite"), "--fixture", str(fixture)]
+    assert (
+        main([*base, "plan", "--since", "2026-03-01T00:00:00Z", "--until", "2026-04-01T00:00:00Z"])
+        == 0
+    )
+    first = json.loads(capsys.readouterr().out)
+    assert main([*base, "copy", first["id"], "--ack-active", ACTIVE_ACK]) == 0
+    assert main([*base, "status", first["id"]]) == 0
+    capsys.readouterr()
+    state_file = tmp_path / "j.simulated-state"
+    remote = json.loads(state_file.read_text())
+    del remote["cancel_after"]
+    state_file.write_text(json.dumps(remote))
+    return base, first
+
+
+def test_cli_resume_needs_acknowledgment_when_node_count_cannot_be_checked(
+    tmp_path, capsys, monkeypatch
+):
+    base, first = _stopped_no_ssh_run(tmp_path, capsys, monkeypatch, True)
+    assert main([*base, "resume", first["id"], "--preview"]) == 0
+    assert "node count could not be checked" in capsys.readouterr().out
+    state_file = tmp_path / "j.simulated-state"
+    assert main([*base, "resume", first["id"], "--ack-active", ACTIVE_ACK]) == 2
+    captured = capsys.readouterr()
+    assert "--ack-node-count-unchanged" in captured.err
+    assert "history may be copied a second time" in captured.err
+    assert json.loads(state_file.read_text())["task"]["status"] == "cancelled"
+    assert (
+        main(
+            [
+                *base,
+                "resume",
+                first["id"],
+                "--ack-active",
+                ACTIVE_ACK,
+                "--ack-node-count-unchanged",
+            ]
+        )
+        == 0
+    )
+    started = json.loads(capsys.readouterr().out)
+    assert started["start"]["task"]["status"] == "running"
+
+
+def test_cli_resume_starts_without_acknowledgment_when_node_count_was_checked(
+    tmp_path, capsys, monkeypatch
+):
+    base, first = _stopped_no_ssh_run(tmp_path, capsys, monkeypatch, False)
+    monkeypatch.undo()
+    assert main([*base, "resume", first["id"], "--ack-active", ACTIVE_ACK]) == 0
+    assert json.loads(capsys.readouterr().out)["start"]["task"]["status"] == "running"

@@ -217,7 +217,10 @@ logs-migrate --journal /private/migration/run.sqlite --fixture tests/fixtures/se
 The preview reports already received buckets and those still to transfer in plain
 language. Add `--json` to `resume RUN_ID --preview` for the machine-readable form.
 Resume
-checks destination node count and available space again. A missing source bucket,
+checks available space again. It also checks the destination node count when the
+destination's nodes were observed (destination SSH on 9.0). On 9.0 without destination
+SSH and on 9.1.1 the node count cannot be checked, so the preview shows a caution and
+the time estimate says it assumes the node count listed by the earlier task. A missing source bucket,
 unregistered destination directory, changed bucket size, or unresolved receipt
 record stops the preview for investigation. With destination SSH on 9.0, the
 destination's bucket inventory decides what arrived. Without it, a 9.0 task that
@@ -237,7 +240,10 @@ finished task without it, or one whose received list leaves selected buckets
 unaccounted for, stays held (status names how many buckets are unaccounted for)
 rather than guessing. After the remaining transfer finishes, run `verify NEW_RUN_ID`.
 `resume RUN_ID --ack-active ...` previews and starts in one command; use `--preview`
-when you need to review the remainder first.
+when you need to review the remainder first. When the node count could not be
+checked, the one-command form does not start: it prints the caution and exits with
+code 2 unless you also pass `--ack-node-count-unchanged`, confirming that no nodes
+were added or removed since the first run.
 
 A start the appliance refused (any 4xx except 408, or 500 or 501) was never accepted,
 so nothing is held and you can plan and copy again. A start with no answer (timeout,

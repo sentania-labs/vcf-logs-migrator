@@ -182,6 +182,11 @@ def parser():
     resume.add_argument(
         "--ack-active", default="", help="Acknowledgment that latest data is skipped"
     )
+    resume.add_argument(
+        "--ack-node-count-unchanged",
+        action="store_true",
+        help="Confirm the destination node count is unchanged when it cannot be checked",
+    )
     stop = sub.add_parser("stop", help="Cancel the currently observed API task by its API task ID")
     stop.add_argument("task_id")
     verify = sub.add_parser("verify", help="Compare complete, stable per-day counts")
@@ -191,6 +196,12 @@ def parser():
     report.add_argument("--format", choices=("json", "markdown"), default="markdown")
     return p
 
+
+NODE_COUNT_UNCHECKED = (
+    "The destination's node count could not be checked. If nodes were added or removed "
+    "since the first run, history may be copied a second time. Confirm the node count is "
+    "unchanged before continuing."
+)
 
 EXIT_CODES = {
     Code.INVALID_INPUT: 2,
@@ -423,6 +434,16 @@ def main(argv=None):
             result = engine.run(args.run_id, active_ack=args.ack_active)
         elif args.command == "resume":
             preview = engine.resume(args.run_id)
+            if (
+                not args.preview
+                and preview["plan"].get("node_count_unchecked")
+                and not args.ack_node_count_unchanged
+            ):
+                raise MigrationError(
+                    Code.INVALID_INPUT,
+                    NODE_COUNT_UNCHECKED + " Run the command again with --ack-node-count-unchanged "
+                    "to start, or add --preview to review the remainder first.",
+                )
             result = (
                 preview
                 if args.preview
@@ -461,11 +482,7 @@ def main(argv=None):
                     "requested again; some may already be there."
                 )
             if plan.get("node_count_unchecked"):
-                print(
-                    "The destination's node count could not be checked. If nodes were added "
-                    "or removed since the first run, history may be copied a second time. "
-                    "Confirm it is unchanged before continuing."
-                )
+                print(NODE_COUNT_UNCHECKED)
             print(f"Preview run ID: {result['id']} (use with copy to start)")
         else:
             print(json.dumps(result, sort_keys=True))
