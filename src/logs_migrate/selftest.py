@@ -137,7 +137,6 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             sealed = [b for b in inventory.buckets if b.status != "active"]
             active = [b for b in inventory.buckets if b.status == "active"]
             bounded = [b for b in sealed if b.start is not None and b.end is not None]
-            sized = sum(1 for b in inventory.buckets if b.id in inventory.usage)
             space = (
                 f"{inventory.available / 1e9:.1f} GB free"
                 if inventory.available is not None
@@ -145,7 +144,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
             )
             detail = (
                 f"service {inventory.service} · {len(sealed)} sealed ({len(bounded)} with dates), "
-                f"{len(active)} active · {sized} sized by du · {space}"
+                f"{len(active)} active · {space}"
             )
             if inventory.unrecognized:
                 detail += (
@@ -160,7 +159,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 detail += f" · {len(sealed) - len(bounded)} sealed without dates (excluded)"
             return inventory, detail
 
-        step(f"Node {host} (SSH listing, du, df, service)", node)
+        step(f"Node {host} (SSH listing, df, service)", node)
     pool.shutdown()
 
     def source_cluster():
@@ -337,7 +336,7 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
                 Code.INCOMPLETE,
                 "No sealed groups have usable dates. Check source inventory before planning.",
             )
-        preview = build_plan(source, destination, requested)
+        preview = build_plan(env.size_source(source, requested), destination, requested)
         detail = (
             f"{len(preview['selected'])} buckets, "
             f"{preview['capacity']['required_bytes'] / 1e9:.2f} GB, "

@@ -353,7 +353,10 @@ def rigged(tmp_path, monkeypatch):
             ("src-1.lab", ReadOperation.SERVICE): "active\n",
             ("src-1.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
             ("src-1.lab", ReadOperation.INVENTORY): LISTING,
-            ("src-1.lab", ReadOperation.USAGE): f"5000 /storage/core/loginsight/cidata/store/{A}\n",
+            ("src-1.lab", ReadOperation.USAGE): (
+                f"5000 /storage/core/loginsight/cidata/store/{A}\n"
+                f"20000 /storage/core/loginsight/cidata/store/{B}\n"
+            ),
             ("src-2.lab", ReadOperation.SERVICE): "active\n",
             ("src-2.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
             ("src-2.lab", ReadOperation.INVENTORY): "",
@@ -453,11 +456,63 @@ def test_discover_builds_clusters_from_rest_and_ssh_reads(rigged):
     assert src.version == "8.18.7" and [n.id for n in src.nodes] == ["src-1.lab", "src-2.lab"]
     assert src.nodes[0].repository_available == 900 and src.identity == "a" * 64
     by_id = {b.id: b for b in src.buckets}
-    assert by_id[A].size == 5000 and by_id[A].messages == 1893963 and by_id[A].bounds_proven
+    assert by_id[A].size == 479923834 and by_id[A].messages == 1893963 and by_id[A].bounds_proven
     assert by_id[B].size == 20971520 and by_id[C].status == "active" and not by_id[C].complete
     assert dst.version == "9.0.2.0200" and [n.id for n in dst.nodes] == ["dst.lab"]
     assert dst.nodes[0].repository_available is None and dst.buckets == ()
     assert env.notes["source_listing_keys"]
+
+
+def test_selected_sizing_only_reads_overlapping_sealed_buckets(rigged):
+    env, source, _, ssh = trusted(rigged)
+    source.records += [
+        session(),
+        record("GET", "/api/v1/version", {"version": "8.18.7"}),
+        record("GET", "/api/v1/partitioning", {"partitions": []}),
+    ]
+    calls = []
+    old_client = ssh.client
+
+    def client(host):
+        result = old_client(host)
+        original = result.active_usage
+
+        def selected(ids):
+            calls.append((host, ids))
+            return original(ids)
+
+        result.active_usage = selected
+        return result
+
+    ssh.client = client
+    cluster = env.source_cluster(Window(1790000000000, 1790000000001))
+    assert calls == [("src-1.lab", [A])]
+    assert next(b for b in cluster.buckets if b.id == A).size == 5000
+    assert not any(op == ReadOperation.USAGE for _, op in ssh.reads)
+
+
+def test_source_listing_journal_cache_survives_a_new_session(rigged, tmp_path):
+    from logs_migrate.journal import Journal
+
+    env, source, _, ssh = trusted(rigged)
+    journal = Journal(tmp_path / "inventory.db")
+    env.inventory_journal = journal
+    source.records += [session()] + [
+        entry
+        for _ in range(3)
+        for entry in (
+            record("GET", "/api/v1/version", {"version": "8.18.7"}),
+            record("GET", "/api/v1/partitioning", {"partitions": []}),
+        )
+    ]
+    env.source_cluster()
+    env._inventory_cache.clear()
+    env.source_cluster()
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2
+    env.invalidate_inventory()
+    env.source_cluster()
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 4
+    journal.close()
 
 
 def test_counts_recent_ingest_and_history_use_the_documented_routes(rigged):
@@ -1744,11 +1799,9 @@ def test_node_inventories_run_in_parallel_and_are_reused(rigged):
     env.on_progress = messages.append
     env.source_cluster()
     env.source_cluster()
-    assert sorted(host for host, op in ssh.reads if op == ReadOperation.USAGE) == [
-        "src-1.lab",
-        "src-2.lab",
-    ]
-    assert len(messages) == 2 and all("sizing" in message for message in messages)
+    assert not [op for _, op in ssh.reads if op == ReadOperation.USAGE]
+    assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2
+    assert not messages
 
 
 def test_plan_warns_that_undated_open_buckets_may_hold_backfill_without_dropping_the_frontier(

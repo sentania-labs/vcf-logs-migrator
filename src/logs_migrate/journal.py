@@ -64,6 +64,8 @@ class Journal:
           CREATE TABLE IF NOT EXISTS metadata (version INTEGER NOT NULL);
           INSERT INTO metadata SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM metadata);
           CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS inventory_cache (
+            cache_key TEXT PRIMARY KEY, at REAL NOT NULL, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS events (
             sequence INTEGER PRIMARY KEY AUTOINCREMENT, run TEXT NOT NULL,
             at TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL);
@@ -78,6 +80,22 @@ class Journal:
 
     def close(self):
         self.db.close()
+
+    def inventory_get(self, key: str, now: float, max_age: float):
+        row = self.db.execute(
+            "SELECT at, body FROM inventory_cache WHERE cache_key=?", (key,)
+        ).fetchone()
+        if row is None or not 0 <= now - row[0] < max_age:
+            return None
+        return json.loads(row[1])
+
+    def inventory_put(self, key: str, now: float, body):
+        self.db.execute(
+            "INSERT OR REPLACE INTO inventory_cache VALUES (?,?,?)", (key, now, canonical(body))
+        )
+
+    def inventory_clear(self):
+        self.db.execute("DELETE FROM inventory_cache")
 
     def load(self, run_id: str) -> dict:
         row = self.db.execute("SELECT body FROM runs WHERE id=?", (run_id,)).fetchone()

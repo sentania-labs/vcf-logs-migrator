@@ -89,6 +89,8 @@ class Engine:
     def __init__(self, environment, journal, clock=None, on_event=None):
         self.env = environment
         self.journal = journal
+        if hasattr(environment, "inventory_journal"):
+            environment.inventory_journal = journal
         self.clock = clock or SystemClock()
         self.on_event = on_event
 
@@ -269,7 +271,8 @@ class Engine:
     @safe_boundary
     def plan(self, window, policy=None):
         with self._exclusive():
-            source, destination = self.env.discover()
+            discover = getattr(self.env, "discover_window", None)
+            source, destination = discover(window) if discover else self.env.discover()
             plan = build_plan(source, destination, window)
             plan["source_ingest"] = self._source_ingest()
             growth = plan["source_ingest"]
@@ -361,8 +364,13 @@ class Engine:
             cache = getattr(self.env, "_inventory_cache", None)
             if cache is not None:
                 cache.clear()
-            source, destination = self.env.discover()
-            fresh = build_plan(source, destination, Window(**run["plan"]["window"]))
+            invalidate = getattr(self.env, "invalidate_inventory", None)
+            if invalidate is not None:
+                invalidate()
+            window = Window(**run["plan"]["window"])
+            discover = getattr(self.env, "discover_window", None)
+            source, destination = discover(window) if discover else self.env.discover()
+            fresh = build_plan(source, destination, window)
             require(
                 fresh["source"] == run["plan"]["source"]
                 and fresh["destination"] == run["plan"]["destination"]

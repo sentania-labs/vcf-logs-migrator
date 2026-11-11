@@ -16,7 +16,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -649,6 +649,9 @@ class LiveEnvironment:
         self.config_env: RestConfigEnvironment | None = None
         self._pending: dict[str, str] = {}
         self._inventory_cache = {}
+        self.inventory_journal = None
+        self._cached_listings = {}
+        self._new_listings = {}
         self.on_progress = None
 
     # Identity trust ----------------------------------------------------------------------
@@ -839,7 +842,10 @@ class LiveEnvironment:
 
         service = read(ReadOperation.SERVICE, "service check").strip().lower()
         capacity, used, available = parse_space(read(ReadOperation.SPACE, "disk space check"))
-        listing = read(ReadOperation.INVENTORY, "bucket listing")
+        listing = self._cached_listings.get(cache_key)
+        if listing is None:
+            listing = read(ReadOperation.INVENTORY, "bucket listing")
+            self._new_listings[cache_key] = listing
         buckets = parse_listing(listing)
         unrecognized = (bool(listing.strip()) and not buckets) or any(
             UUID.search(line.lower()) and not parse_listing(line) for line in listing.splitlines()
@@ -848,13 +854,7 @@ class LiveEnvironment:
             self.listing_warnings.add(host)
         else:
             self.listing_warnings.discard(host)
-        if self.on_progress:
-            members = self.members if credential == "source_ssh" else self.destination_members
-            position = members.index(host) + 1 if host in members else 1
-            self.on_progress(
-                f"node {position}/{len(members) or 1} ({host}): sizing {len(buckets):,} buckets"
-            )
-        usage = parse_usage(read(ReadOperation.USAGE, "bucket size check"))
+        usage = {}
         keys = tuple(sorted({k for b in buckets for k in b.keys}))
         result = NodeInventory(
             host,
@@ -925,13 +925,75 @@ class LiveEnvironment:
             not any(i.unrecognized for i in inventories),
         )
 
-    def source_cluster(self) -> Cluster:
+    def _size_inventories(self, inventories, window):
+        def size_selected(inventory):
+            ids = [
+                b.id
+                for b in inventory.buckets
+                if b.status != "active"
+                and b.start is not None
+                and b.end is not None
+                and b.start <= b.end
+                and b.start < window.end
+                and b.end >= window.start
+            ]
+            if self.on_progress:
+                self.on_progress(f"{inventory.host}: sizing {len(ids):,} selected buckets")
+            ssh = self._ssh(inventory.host, "source_ssh", self.connection.source_ssh_user)
+            usage = {}
+            for start in range(0, len(ids), 256):
+                usage.update(parse_usage(ssh.active_usage(ids[start : start + 256])))
+            require(
+                set(ids) <= usage.keys(),
+                Code.INCOMPLETE,
+                f"{inventory.host}: could not size every selected bucket; refresh and retry.",
+            )
+            return replace(inventory, usage=usage)
+
+        with ThreadPoolExecutor(max_workers=max(1, len(inventories))) as pool:
+            return list(pool.map(size_selected, inventories))
+
+    def size_source(self, source: Cluster, window: Window) -> Cluster:
+        inventories = [self.node_inventory(node.id) for node in source.nodes]
+        sized = self._size_inventories(inventories, window)
+        sizes = {(i.host, bucket_id): size for i in sized for bucket_id, size in i.usage.items()}
+        return replace(
+            source,
+            buckets=tuple(
+                replace(bucket, size=sizes.get((bucket.node, bucket.id), bucket.size))
+                for bucket in source.buckets
+            ),
+        )
+
+    def source_cluster(self, window: Window | None = None) -> Cluster:
         require(self.source_client is not None, Code.STATE)
         version = self.source_version()
         partitions = partition_models(parse_partitions(self.source_client.partitions()))
         members = self.members or self.source_members()
+        identity = self.source_client.identity
+        now = time.time()
+        if self.inventory_journal is not None:
+            self._cached_listings.clear()
+            for host in members:
+                key = (host, "source_ssh", None)
+                saved = self.inventory_journal.inventory_get(
+                    f"source:{identity}:{host}:{self.connection.source_ssh_user}", now, 300
+                )
+                if isinstance(saved, str):
+                    self._cached_listings[key] = saved
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
             inventories = list(pool.map(self.node_inventory, members))
+        if self.inventory_journal is not None:
+            for host in members:
+                key = (host, "source_ssh", None)
+                if key in self._new_listings:
+                    self.inventory_journal.inventory_put(
+                        f"source:{identity}:{host}:{self.connection.source_ssh_user}",
+                        now,
+                        self._new_listings.pop(key),
+                    )
+        if window is not None:
+            inventories = self._size_inventories(inventories, window)
         self.notes["source_listing_keys"] = sorted({k for i in inventories for k in i.listing_keys})
         return self._cluster_from_nodes(
             cluster_id(self.source_client.identity),
@@ -940,6 +1002,13 @@ class LiveEnvironment:
             partitions,
             self.source_client.identity,
         )
+
+    def invalidate_inventory(self):
+        self._inventory_cache.clear()
+        self._cached_listings.clear()
+        self._new_listings.clear()
+        if self.inventory_journal is not None:
+            self.inventory_journal.inventory_clear()
 
     def destination_topology(self) -> tuple[str, str]:
         require(self.destination_client is not None, Code.STATE)
@@ -1008,6 +1077,9 @@ class LiveEnvironment:
 
     def discover(self) -> tuple[Cluster, Cluster]:
         return self.source_cluster(), self.destination_cluster()
+
+    def discover_window(self, window: Window) -> tuple[Cluster, Cluster]:
+        return self.source_cluster(window), self.destination_cluster()
 
     def history(self) -> tuple[History, ...]:
         task = self.transfer()
