@@ -340,13 +340,10 @@ class Engine:
         )
         existing = []
         for row in self.journal.transfers(destination.id):
-            if (
-                self._nodes_observed(destination)
-                and row["source"] == source.id
-                and row["closed"]
-                and ids & _ids(row["received"])
-            ):
+            if row["source"] == source.id and row["closed"] and ids & _ids(row["received"]):
                 earlier = self.journal.load(row["run"])
+                if not self._nodes_comparable(destination, earlier["plan"]["destination"]):
+                    continue
                 require(
                     len(earlier["plan"]["destination"]["nodes"]) == len(destination.nodes),
                     Code.TOPOLOGY,
@@ -450,6 +447,11 @@ class Engine:
 
     def _nodes_observed(self, destination):
         return self.attribution or destination.inventory_available
+
+    def _nodes_comparable(self, destination, earlier):
+        return self._nodes_observed(destination) and bool(
+            self.attribution or earlier.get("inventory_available")
+        )
 
     def _estimate(self, plan, observed=True, listed_nodes=0):
         sizes = sum(b["size"] for b in plan["selected"])
@@ -567,7 +569,8 @@ class Engine:
             and destination.identity == original["destination"]["identity"],
             Code.TOPOLOGY,
         )
-        if self._nodes_observed(destination):
+        comparable = self._nodes_comparable(destination, original["destination"])
+        if comparable:
             require(
                 len(destination.nodes) == len(original["destination"]["nodes"]),
                 Code.TOPOLOGY,
@@ -581,7 +584,10 @@ class Engine:
             require(
                 destination.id == original["destination"]["id"]
                 and destination.identity == original["destination"]["identity"]
-                and len(destination.nodes) == len(original["destination"]["nodes"]),
+                and (
+                    not comparable
+                    or len(destination.nodes) == len(original["destination"]["nodes"])
+                ),
                 Code.TOPOLOGY,
                 "The destination topology changed while checking the remainder.",
             )
@@ -686,7 +692,7 @@ class Engine:
                 "The destination could not be inspected. Remaining buckets will be requested "
                 "again; some may already be present."
             )
-        if not self._nodes_observed(destination):
+        if not comparable:
             plan["node_count_unchecked"] = True
             plan["warnings"].append(
                 "The destination's node count could not be checked. If nodes were added or "

@@ -986,6 +986,46 @@ def test_no_ssh_resume_does_not_refuse_on_a_placeholder_node_count(tmp_path):
     assert engine.verify(resumed["id"])["outcome"] == "verified_success"
 
 
+def _placeholder_then_observed(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path, {"cancel_after": 1, "placeholder_nodes": True})
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    first = engine.plan(window, Policy(poll_seconds=0))
+    assert len(first["plan"]["destination"]["nodes"]) == 1
+    engine.run(first["id"], active_ack=ACTIVE_ACK)
+    assert engine.status(first["id"])["status"] == "cancelled"
+    del env.data["cancel_after"]
+    env.data["placeholder_nodes"] = False
+    env.data["destination"]["inventory_available"] = True
+    return env, engine, window, first
+
+
+def test_resume_after_destination_ssh_is_connected_does_not_compare_a_placeholder_count(tmp_path):
+    from logs_migrate.models import ACTIVE_ACK
+
+    env, engine, _, first = _placeholder_then_observed(tmp_path)
+    resumed = engine.resume(first["id"])
+    plan = resumed["plan"]
+    assert len(plan["destination"]["nodes"]) == len(env.data["destination"]["nodes"]) == 3
+    assert plan["node_count_unchecked"]
+    assert any("node count could not be checked" in w for w in plan["warnings"])
+    engine.run(resumed["id"], active_ack=ACTIVE_ACK)
+    engine.status(resumed["id"])
+    assert engine.verify(resumed["id"])["outcome"] == "verified_success"
+
+
+def test_replanning_after_destination_ssh_is_connected_does_not_compare_a_placeholder_count(
+    tmp_path,
+):
+    from logs_migrate.models import Policy
+
+    _, engine, window, _ = _placeholder_then_observed(tmp_path)
+    replanned = engine.plan(window, Policy(poll_seconds=0))
+    assert len(replanned["plan"]["already_received"]) == 1
+    assert len(replanned["plan"]["selected"]) == 2
+
+
 def test_no_ssh_unrelated_receipt_does_not_release_the_selection(tmp_path):
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
     from logs_migrate.ports import Transfer
