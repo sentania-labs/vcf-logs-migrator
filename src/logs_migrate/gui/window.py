@@ -67,8 +67,10 @@ class MainWindow(QMainWindow):
         self.worker.trust_required.connect(self._trust_required)
         self.progress_lines = {}
         self.progress_label = QLabel()
-        self.progress_label.setAccessibleName("Operation progress")
-        self.statusBar().addWidget(self.progress_label, 1)
+        self.activity_current = ""
+        self.activity_completed = []
+        self.activity_job = ""
+        self.activity_pending = []
         self.worker.progress.connect(self._show_progress)
         self.worker.start()
         self.pending_credentials: dict[str, str] = {}
@@ -98,10 +100,13 @@ class MainWindow(QMainWindow):
         middle.addWidget(self._sidebar())
         self.stack = QStackedWidget()
         content = QVBoxLayout()
-        self.page_progress = label("", "hint", wrap=True)
+        self.page_progress = label("", "body", wrap=True)
         self.page_progress.setAccessibleName("Current operation progress")
         self.page_progress.hide()
         content.addWidget(self.page_progress)
+        self.upcoming = label("", "hint", wrap=True)
+        self.upcoming.hide()
+        content.addWidget(self.upcoming)
         self.probe_activity = QProgressBar()
         self.probe_activity.setRange(0, 0)
         self.probe_activity.setTextVisible(False)
@@ -111,6 +116,20 @@ class MainWindow(QMainWindow):
         self.probe_elapsed = label("", "hint")
         self.probe_elapsed.hide()
         content.addWidget(self.probe_elapsed)
+        self.progress_details = QPlainTextEdit()
+        self.progress_details.setReadOnly(True)
+        self.progress_details.setMaximumHeight(100)
+        self.progress_details.hide()
+        self.details_button = button("Show details", "", self._toggle_progress_details)
+        self.cancel_activity = button("Cancel", "", self.worker.cancel)
+        self.details_button.hide()
+        self.cancel_activity.hide()
+        activity_actions = QHBoxLayout()
+        activity_actions.addWidget(self.details_button)
+        activity_actions.addWidget(self.cancel_activity)
+        activity_actions.addStretch(1)
+        content.addLayout(activity_actions)
+        content.addWidget(self.progress_details)
         content.addWidget(self.stack, 1)
         middle.addLayout(content, 1)
         outer.addLayout(middle, 1)
@@ -280,43 +299,91 @@ class MainWindow(QMainWindow):
 
     # Engine jobs -------------------------------------------------------------------------
 
+    def _toggle_progress_details(self) -> None:
+        show = not self.progress_details.isVisible()
+        self.progress_details.setVisible(show)
+        self.details_button.setText("Hide details" if show else "Show details")
+
     def _update_probe_elapsed(self) -> None:
         seconds = self.probe_clock.elapsed() // 1000
-        self.probe_elapsed.setText(
-            f"Checking appliance identities · {seconds // 60}:{seconds % 60:02d} elapsed"
-        )
+        self.probe_elapsed.setText(f"Elapsed {seconds // 60}:{seconds % 60:02d}")
 
     def _show_progress(self, message: str) -> None:
-        if message.startswith("Contacting "):
-            endpoint = message.removeprefix("Contacting ").partition(" ")[2]
-            message = f"Checking this appliance's identity at {endpoint}"
-        key = message.split(": sizing", 1)[0] if ": sizing" in message else "query"
-        self.progress_lines[key] = message
-        text = "\n".join(self.progress_lines.values())
-        self.progress_label.setText(text)
-        self.page_progress.setText(text)
+        self.progress_details.appendPlainText(message)
+        if ": sizing " in message:
+            host = message.split(":", 1)[0]
+            names = self.progress_lines.setdefault("nodes", [])
+            if host not in names:
+                names.append(host)
+            message = f"Sizing buckets… node {len(names)} · {host}"
+        elif message.startswith("Contacting "):
+            message = "Testing connections…"
+        elif message.startswith("Self-test:"):
+            message = "Checking " + message.partition(":")[2].strip().lower() + "…"
+        elif message.startswith("Reading cluster members"):
+            message = "Checking cluster members…"
+        if self.activity_current and self.activity_current != message:
+            if self.activity_current not in self.activity_completed:
+                self.activity_completed.append(self.activity_current)
+        self.activity_current = message
+        for pending in tuple(self.activity_pending):
+            if message.lower().startswith(pending.lower()):
+                self.activity_pending.remove(pending)
+        self.upcoming.setText(
+            "Next: " + " · ".join(self.activity_pending) if self.activity_pending else ""
+        )
+        self.upcoming.setVisible(bool(self.activity_pending))
+        completed = "\n".join("✓ " + item for item in self.activity_completed[-4:])
+        self.page_progress.setText((completed + "\n" if completed else "") + "◌ " + message)
         self.page_progress.show()
 
     def submit(self, job: str, method: str, **kwargs) -> bool:
         accepted = self.worker.submit(job, method, **kwargs)
         if accepted:
-            if job == "probe":
+            if job.split(":")[0] in PROGRESS_JOBS:
+                self.activity_job = job
+                self.activity_current = ""
+                self.activity_completed = []
+                self.activity_pending = {
+                    "connect": ["Testing destination", "Checking versions", "Listing buckets"],
+                    "probe": ["Testing source", "Testing destination", "Checking versions"],
+                    "plan": ["Listing buckets", "Sizing buckets", "Checking space", "Planning"],
+                    "verify": ["Verifying counts", "Preparing results"],
+                    "selftest": ["Checking versions", "Listing buckets"],
+                }.get(job.split(":")[0], [])
+                self.progress_lines.clear()
+                self.progress_details.clear()
                 self.probe_clock.start()
                 self._update_probe_elapsed()
                 self.probe_activity.show()
                 self.probe_elapsed.show()
+                self.details_button.show()
+                self.cancel_activity.setVisible(job.split(":")[0] != "start")
                 self.probe_timer.start()
-            if job.split(":")[0] in PROGRESS_JOBS:
-                self.progress_lines.clear()
-                self.progress_label.clear()
-                self.page_progress.hide()
+                names = {
+                    "probe": "Testing connections…",
+                    "connect": "Testing source…",
+                    "selftest": "Testing connections…",
+                    "plan": "Checking versions…",
+                    "start": "Checking migration…",
+                    "resume": "Checking versions…",
+                    "verify": "Verifying counts…",
+                    "discover": "Listing buckets…",
+                }
+                self._show_progress(names.get(job.split(":")[0], "Working…"))
             self.job_generation[job] = self.generation
         return accepted
 
     def connection_values(self) -> dict[str, str]:
         """Addresses and user names for a live connection; never secrets."""
         settings = self.state.settings
+        page = self.pages["connections"]
         return {
+            "sim_source_version": page.sim_source_version.text().strip(),
+            "sim_destination_version": page.sim_destination_version.text().strip(),
+            "sim_source_nodes": page.sim_source_nodes.text().strip(),
+            "sim_destination_nodes": page.sim_destination_nodes.text().strip(),
+            "sim_migration_api": page.sim_api.currentData(),
             "source_host": settings.source_host,
             "destination": settings.destination_host,
             "source_api_user": settings.source_api_user,
@@ -449,14 +516,19 @@ class MainWindow(QMainWindow):
     def _settle(self, job: str) -> bool:
         """Clear the job and say whether its result belongs to the current connection."""
         self.worker.pending.discard(job)
-        if job == "probe":
+        if job == self.activity_job:
             self.probe_timer.stop()
             self.probe_activity.hide()
-            self.probe_elapsed.hide()
-        if job.split(":")[0] in PROGRESS_JOBS:
-            self.progress_lines.clear()
-            self.progress_label.clear()
-            self.page_progress.hide()
+            self.cancel_activity.hide()
+            self.upcoming.hide()
+            label = {
+                "plan": "Preview complete",
+                "resume": "Resume preview complete",
+                "verify": "Verification complete",
+                "connect": "Connection checks complete",
+            }.get(job.split(":")[0], "Work complete")
+            self.page_progress.setText("✓ " + label)
+            self.activity_job = ""
         return self.job_generation.pop(job, self.generation) == self.generation
 
     def _done(self, job: str, result) -> None:
@@ -490,15 +562,25 @@ class MainWindow(QMainWindow):
             return
         if job == "connect":
             self.pending_credentials = {}
-            state.connected = True
+            self.page_progress.setText(
+                "✕ Checking versions failed. See the reason below."
+                if result.get("compatible")
+                else "✓ Connection checks complete"
+            )
+            state.connected = result.get("compatible") is None
             state.discovered = result
-            state.connect_error = None
+            state.connect_error = result.get("compatible")
             state.mode = result.get("mode", "simulation")
             state.checks = [tuple(row) for row in result.get("checks", [])]
-            self.timer.start(state.settings.refresh_seconds * 1000)
-            self.submit("runs", "runs")
-            self.poll_status()
-            if self.seed_pending:
+            state.selftest = result.get("selftest")
+            if state.selftest and not state.selftest["passed"]:
+                state.connected = False
+                self.page_progress.setText("✕ Connection checks failed. See the checks below.")
+            if state.connected:
+                self.timer.start(state.settings.refresh_seconds * 1000)
+                self.submit("runs", "runs")
+                self.poll_status()
+            if self.seed_pending and state.connected:
                 self.seed_pending = False
                 self.pages["plan"].seed_dates()
         elif job == "disconnect":
@@ -609,6 +691,10 @@ class MainWindow(QMainWindow):
         state = self.state
         if not self._settle(job):
             return
+        if job.split(":")[0] in PROGRESS_JOBS:
+            self.page_progress.setText(
+                "✕ " + (self.activity_current or "Work") + " failed. " + vm.describe_error(code)
+            )
         self.last_error = f"{job}: {code}"
         self.details_button.show()
         if job in {"connect", "trust", "probe"}:

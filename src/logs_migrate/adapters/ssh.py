@@ -23,6 +23,7 @@ CONFIG_DIR = "/storage/core/loginsight/config"
 
 
 class ReadOperation(StrEnum):
+    VERSION = "version"
     INVENTORY = "inventory"
     SERVICE = "service"
     SPACE = "space"
@@ -31,6 +32,7 @@ class ReadOperation(StrEnum):
 
 
 _READS = {
+    ReadOperation.VERSION: "/usr/lib/loginsight/application/bin/loginsight version",
     ReadOperation.INVENTORY: "/usr/lib/loginsight/application/sbin/bucket-index show",
     # is-active exits 3 when the unit is inactive; the word on stdout is the observation.
     ReadOperation.SERVICE: "systemctl is-active loginsight || true",

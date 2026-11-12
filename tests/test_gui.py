@@ -236,7 +236,7 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     assert page.source_badge.text() == "8.18.7 · live"
     rows = dict(page.checks.rows())
     assert rows["Source Logs API"].startswith("Passed") and "Destination repository budget" in rows
-    assert page.selftest_button.isVisible()
+    assert page.test_button.isVisible()
     from logs_migrate.gui import session
 
     monkeypatch.setattr(
@@ -511,14 +511,12 @@ def test_leaving_a_run_does_not_leave_verify_stuck(driver, outcome):
 
 
 def test_editing_a_date_retires_the_preview_and_acknowledgment(driver):
-    from PySide6.QtCore import QDate
-
     driver.connect()
     driver.plan()
     driver.acknowledge()
     page = driver.pages["plan"]
     assert page.start_button.isEnabled()
-    page.end_date.setDate(QDate(2026, 3, 2))
+    page.end_date.setDate(page.end_date.date().addDays(-1))
     driver.wait(30)
     assert not page.start_button.isEnabled()
     assert not driver.state.acknowledged and not page.ack.isVisible()
@@ -810,20 +808,22 @@ def test_window_shows_each_node_inventory_progress(driver):
     driver.window.worker.progress.emit("node 1/2 (source-1): sizing 2,100 buckets")
     driver.window.worker.progress.emit("node 2/2 (source-2): sizing 2,088 buckets")
     driver.wait(50)
-    text = driver.window.progress_label.text()
+    text = driver.window.page_progress.text()
     assert "source-1" in text and "source-2" in text
-    assert len(text.splitlines()) == 2
+    assert driver.window.progress_details.toPlainText().count("sizing") == 2
+    assert not driver.window.progress_label.isVisible()
 
 
 @pytest.mark.parametrize("job", ["verify:run-1", "discover", "plan"])
 def test_progress_lines_clear_when_any_progress_job_settles(driver, job):
     driver.window.worker.progress.emit("Counting destination: 2026-03-01 to 2026-03-03")
     driver.wait(50)
-    assert driver.window.progress_label.text()
+    assert driver.window.page_progress.text()
+    driver.window.activity_job = job
     driver.window.worker.pending.add(job)
     driver.window._settle(job)
-    assert driver.window.progress_label.text() == ""
-    assert driver.window.progress_lines == {}
+    assert "complete" in driver.window.page_progress.text()
+    assert not driver.window.probe_activity.isVisible()
 
 
 def test_count_timeout_at_start_names_the_query_and_sends_nothing(driver):
@@ -923,7 +923,7 @@ def test_live_trust_is_requested_before_credentials(driver, monkeypatch):
     page.connect()
     driver.until(lambda: bool(page.validation))
     driver.idle()
-    assert len(asked) == 1 and store.enrolled and len(attempts) == 2
+    assert not asked and not store.enrolled and not attempts
     assert "password" in page.validation.lower()
     assert not driver.state.connected
 
@@ -1180,13 +1180,16 @@ def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, mon
     page = driver.pages["connections"]
     page.source_host.setText("aria-logs.lab.example")
     page.destination_host.setText("vcf-logs.lab.example:9543")
+    page.ssh_password.setText("fixture")
+    page.source_password.setText("fixture")
+    page.destination_password.setText("fixture")
     page.connect()
     driver.until(lambda: driver.window.probe_activity.isVisible())
-    driver.until(lambda: "0:01 elapsed" in driver.window.probe_elapsed.text(), timeout_ms=1500)
+    driver.until(lambda: "Elapsed 0:01" in driver.window.probe_elapsed.text(), timeout_ms=1500)
     assert driver.window.probe_activity.minimum() == driver.window.probe_activity.maximum() == 0
-    assert "Checking this appliance's identity" in driver.window.page_progress.text()
+    assert "Testing connections" in driver.window.page_progress.text()
     assert "tls" not in driver.window.page_progress.text()
-    driver.until(lambda: bool(page.validation))
+    driver.until(lambda: driver.state.connected or driver.state.connect_error)
     driver.idle()
     assert asked and store.enrolled
     assert not driver.window.probe_activity.isVisible()
@@ -1210,3 +1213,14 @@ def test_failed_job_does_not_keep_groups_from_an_earlier_failure(driver, monkeyp
     assert worker.affected["plan"] == ["stale-bucket"]
     worker._run("plan", "plan", {})
     assert worker.affected.get("plan") is None
+
+
+def test_simulator_version_failure_keeps_both_versions_visible(driver):
+    page = driver.pages["connections"]
+    page.sim_source_version.setText("10.0.0")
+    page.sim_destination_version.setText("9.0.2")
+    driver.connect()
+    assert not driver.state.connected
+    assert "10.0.0" in page.source_badge.text()
+    assert "9.0.2" in page.destination_badge.text()
+    assert "newer" in page.error.text()

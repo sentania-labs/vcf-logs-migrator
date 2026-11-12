@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+from threading import Event
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..adapters.ssh_errors import SSHFailure
-from ..errors import MigrationError, QueryTimeout
+from ..errors import Code, MigrationError, QueryTimeout
 from ..trust import TrustRequired, shared_ssh_keys
 from .session import LocalError, Session
 
@@ -29,13 +30,22 @@ class EngineWorker(QObject):
     def __init__(self):
         super().__init__()
         self.session = Session()
-        self.session.on_progress = self.progress.emit
+        self.cancel_requested = Event()
+        self.session.on_progress = self._progress
         self.thread = QThread()
         self.thread.setObjectName("engine")
         self.moveToThread(self.thread)
         self._queued.connect(self._run)
         self.pending: set[str] = set()
         self.affected: dict[str, list[str]] = {}
+
+    def _progress(self, message: str) -> None:
+        if self.cancel_requested.is_set():
+            raise MigrationError(Code.STATE, "Cancelled. You can try again when ready.")
+        self.progress.emit(message)
+
+    def cancel(self) -> None:
+        self.cancel_requested.set()
 
     def start(self) -> None:
         self.thread.start()
@@ -51,6 +61,16 @@ class EngineWorker(QObject):
         """Queue a call unless the same job is already in flight."""
         if job in self.pending:
             return False
+        if job.split(":")[0] in {
+            "probe",
+            "connect",
+            "selftest",
+            "plan",
+            "verify",
+            "discover",
+            "resume",
+        }:
+            self.cancel_requested.clear()
         self.pending.add(job)
         self._queued.emit(job, method, dict(kwargs))
         return True
@@ -60,6 +80,16 @@ class EngineWorker(QObject):
         self.affected.pop(job, None)
         try:
             result = getattr(self.session, method)(**kwargs)
+            if self.cancel_requested.is_set() and job.split(":")[0] in {
+                "probe",
+                "connect",
+                "selftest",
+                "plan",
+                "verify",
+                "discover",
+                "resume",
+            }:
+                raise MigrationError(Code.STATE, "Cancelled. You can try again when ready.")
         except TrustRequired as pending:
             shared = dict(shared_ssh_keys(getattr(pending, "existing", []) + pending.identities))
             self.trust_required.emit(

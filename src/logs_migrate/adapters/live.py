@@ -802,6 +802,58 @@ class LiveEnvironment:
 
     # Reads -------------------------------------------------------------------------------
 
+    def version_check(self):
+        from ..versions import evaluate
+
+        if self.on_progress:
+            self.on_progress("Checking versions…")
+
+        def node_versions(hosts, credential, username):
+            found = {}
+            for host in hosts:
+                text = self._ssh(host, credential, username).read(ReadOperation.VERSION)
+                match = re.search(r"\b\d+\.\d+(?:\.\d+){0,2}\b", text)
+                require(
+                    match is not None,
+                    Code.SCHEMA,
+                    f"Could not read the version on {host}. Check the node and retry.",
+                )
+                found[host] = match.group()
+            return found
+
+        self.members = self.source_members()
+        source = node_versions(self.members, "source_ssh", self.connection.source_ssh_user)
+        if self._destination_ssh_enabled():
+            self.destination_members = self._members(
+                self.connection.destination_endpoint[0],
+                "destination_ssh",
+                self.connection.destination_ssh_user,
+            )
+            destination = node_versions(
+                self.destination_members, "destination_ssh", self.connection.destination_ssh_user
+            )
+            evidence = "Versions read on each node over SSH."
+        else:
+            version = self.destination_version()
+            if self.notes.get("destination_version_assumed"):
+                version = "9.1"
+                evidence = (
+                    "Destination 9.1 is inferred from the selected 9.1 API path; "
+                    "individual node versions could not be read."
+                )
+            else:
+                evidence = (
+                    "Destination version read from the cluster API; "
+                    "individual node versions could not be read."
+                )
+            destination = {"cluster": version}
+        try:
+            self.destination_client.migration_status()
+            api = "present"
+        except MigrationError as error:
+            api = "absent" if getattr(error, "status", None) == 404 else "unchecked"
+        return evaluate(source, destination, api, evidence)
+
     def source_version(self) -> str:
         require(self.source_client is not None, Code.STATE)
         return self.source_client.version()
@@ -938,6 +990,8 @@ class LiveEnvironment:
         )
 
     def _size_inventories(self, inventories, window):
+        node_numbers = {inventory.host: index for index, inventory in enumerate(inventories, 1)}
+
         def size_selected(inventory):
             ids = [
                 b.id
@@ -950,7 +1004,10 @@ class LiveEnvironment:
                 and b.end >= window.start
             ]
             if self.on_progress:
-                self.on_progress(f"{inventory.host}: sizing {len(ids):,} selected buckets")
+                self.on_progress(
+                    f"Sizing buckets… node {node_numbers[inventory.host]} of {len(inventories)} "
+                    f"· {inventory.host} ({len(ids):,} buckets)"
+                )
             ssh = self._ssh(inventory.host, "source_ssh", self.connection.source_ssh_user)
             usage = {}
             try:
@@ -1021,6 +1078,8 @@ class LiveEnvironment:
         partitions = partition_models(parse_partitions(self.source_client.partitions()))
         members = self.members or self.source_members()
         self.load_source_cache(members)
+        if self.on_progress:
+            self.on_progress("Listing buckets…")
         with ThreadPoolExecutor(max_workers=max(1, len(members))) as pool:
             inventories = list(pool.map(self.node_inventory, members))
         self.save_source_cache(members)

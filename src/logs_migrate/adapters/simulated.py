@@ -132,6 +132,61 @@ class SimulatedEnvironment:
                 self._persist()
                 self.locked = False
 
+    def configure_versions(
+        self, source="", destination="", source_nodes="", destination_nodes="", api=""
+    ):
+        from ..versions import parts
+
+        for side, version, nodes in (
+            ("source", source, source_nodes),
+            ("destination", destination, destination_nodes),
+        ):
+            if version:
+                parts(version)
+                self.data[side]["version"] = version
+                self.data[side].pop("node_versions", None)
+            if nodes:
+                mapping = {}
+                for item in nodes.split(","):
+                    name, sep, value = item.strip().partition("=")
+                    require(
+                        bool(sep and name and value),
+                        Code.INVALID_INPUT,
+                        "Enter node versions as node=version, separated by commas.",
+                    )
+                    parts(value)
+                    mapping[name] = value
+                expected = {node["id"] for node in self.data[side]["nodes"]}
+                require(
+                    set(mapping) == expected,
+                    Code.INVALID_INPUT,
+                    "Provide a version for every simulator node.",
+                )
+                self.data[side]["node_versions"] = mapping
+        if api:
+            require(api in {"present", "absent", "unchecked"}, Code.INVALID_INPUT)
+            self.data["destination"]["migration_api"] = api
+        if any((source, destination, source_nodes, destination_nodes, api)):
+            self._persist()
+
+    def version_check(self):
+        from ..versions import evaluate
+
+        source = self.data["source"]
+        destination = self.data["destination"]
+        source_versions = source.get("node_versions") or {
+            n["id"]: source["version"] for n in source["nodes"]
+        }
+        destination_versions = destination.get("node_versions") or {
+            n["id"]: destination["version"].removesuffix("-preview") for n in destination["nodes"]
+        }
+        return evaluate(
+            source_versions,
+            destination_versions,
+            destination.get("migration_api", "present"),
+            "Simulator node versions",
+        )
+
     def destination_topology(self):
         self._fault("discover")
         destination = self.data["destination"]
@@ -145,6 +200,8 @@ class SimulatedEnvironment:
 
         def cluster(scope):
             data = dict(self.data[scope])
+            data.pop("node_versions", None)
+            data.pop("migration_api", None)
             data.pop("config", None)
             data.pop("hosts", None)
             if (

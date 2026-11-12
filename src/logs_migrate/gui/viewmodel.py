@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ..errors import Code
-from ..models import DAY, LEGACY_RESULT_NOTE, Window, is_legacy_result, selected_message_count
+from ..models import LEGACY_RESULT_NOTE, Window, is_legacy_result, selected_message_count
 from ..reporting import display_run
 
 UNAVAILABLE = "Unavailable"
@@ -169,13 +169,13 @@ def format_day(value: date) -> str:
     return f"{value.strftime('%b')} {value.day}"
 
 
-def format_day_range(start_ms, end_ms, *, inclusive_end=False, suffix=" UTC") -> str:
+def format_day_range(start_ms, end_ms, *, inclusive_end=False, suffix=" UTC", zone="UTC") -> str:
     """Half-open millisecond ranges render as inclusive day labels: `Jun 1–Nov 4 UTC`."""
     if start_ms is None or end_ms is None:
         return UNAVAILABLE
-    first = day_of(start_ms)
+    first = datetime.fromtimestamp(start_ms / 1000, ZoneInfo(zone)).date()
     last_ms = end_ms if inclusive_end else end_ms - 1
-    last = day_of(max(start_ms, last_ms))
+    last = datetime.fromtimestamp(max(start_ms, last_ms) / 1000, ZoneInfo(zone)).date()
     if first == last:
         text = format_day(first)
     elif first.year != last.year:
@@ -221,27 +221,26 @@ def history_extent(cluster: dict) -> tuple[int, int] | None:
     return min(starts), max(ends) + 1
 
 
-def window_from_days(start: date, end_inclusive: date) -> Window | None:
+def window_from_days(start: date, end_inclusive: date, zone: str = "UTC") -> Window | None:
     if window_error(start, end_inclusive):
         return None
-    start_ms = int(datetime(start.year, start.month, start.day, tzinfo=UTC).timestamp() * 1000)
-    end_ms = (
-        int(
-            datetime(
-                end_inclusive.year, end_inclusive.month, end_inclusive.day, tzinfo=UTC
-            ).timestamp()
-            * 1000
-        )
-        + DAY
+    tz = ZoneInfo(zone)
+    following = end_inclusive + timedelta(days=1)
+    start_ms = int(datetime(start.year, start.month, start.day, tzinfo=tz).timestamp() * 1000)
+    end_ms = int(
+        datetime(following.year, following.month, following.day, tzinfo=tz).timestamp() * 1000
     )
     return Window(start_ms, end_ms)
 
 
-def preset_days(label: str, extent: tuple[int, int] | None) -> tuple[date, date] | None:
+def preset_days(
+    label: str, extent: tuple[int, int] | None, zone: str = "UTC"
+) -> tuple[date, date] | None:
     """Inclusive UTC day pair for a preset, anchored on the end of the source history."""
     if extent is None:
         return None
-    first, last = day_of(extent[0]), day_of(extent[1] - 1)
+    first = datetime.fromtimestamp(extent[0] / 1000, ZoneInfo(zone)).date()
+    last = datetime.fromtimestamp((extent[1] - 1) / 1000, ZoneInfo(zone)).date()
     days = dict(PRESETS).get(label, "missing")
     if days == "missing":
         return None
@@ -315,13 +314,16 @@ def selftest_rows(result: dict) -> list[tuple[str, str]]:
 # Plan -------------------------------------------------------------------------------------
 
 
-def axis_labels(extent: tuple[int, int] | None) -> tuple[str, str, str]:
+def axis_labels(extent: tuple[int, int] | None, zone: str = "UTC") -> tuple[str, str, str]:
     """Start, middle and end day labels for the timeline axis."""
     if extent is None:
         return ("", "", "")
     start, end = extent
     middle = start + (end - start) // 2
-    return (format_day(day_of(start)), format_day(day_of(middle)), format_day(day_of(end - 1)))
+    return tuple(
+        format_day(datetime.fromtimestamp(value / 1000, ZoneInfo(zone)).date())
+        for value in (start, middle, end - 1)
+    )
 
 
 def window_error(start: date, end_inclusive: date) -> str | None:
@@ -463,7 +465,7 @@ def _plan_error_text(code: str, discovered: dict | None, window: Window | None) 
     return describe_error(code)
 
 
-def plan_view(run: dict, discovered: dict | None) -> dict:
+def plan_view(run: dict, discovered: dict | None, zone: str = "UTC") -> dict:
     plan = display_run(run)["plan"]
     selected = plan["selected"]
     evidence_groups = list(selected)
@@ -482,7 +484,7 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
     groups = [
         (
             f"Group {index} · {b['node']}",
-            format_day_range(b["start"], b["end"], inclusive_end=True, suffix=""),
+            format_day_range(b["start"], b["end"], inclusive_end=True, suffix="", zone=zone),
             f"{format_bytes(b['size'])} / {format_count(b['messages'])}",
             "Import",
         )
@@ -611,8 +613,12 @@ def plan_view(run: dict, discovered: dict | None) -> dict:
             f"{format_version(plan['destination']['version'])} · "
             f"{format_bytes(size)} / {format_count(events)} selected events"
         ),
-        "requested": format_day_range(plan["window"]["start"], plan["window"]["end"]),
-        "included": format_day_range(coverage["start"], coverage["end"], suffix=""),
+        "requested": format_day_range(
+            plan["window"]["start"], plan["window"]["end"], suffix=f" {zone}", zone=zone
+        ),
+        "included": format_day_range(
+            coverage["start"], coverage["end"], suffix=f" {zone}", zone=zone
+        ),
         "coverage": (coverage["start"], coverage["end"]),
         "window": (plan["window"]["start"], plan["window"]["end"]),
         "extent": history_extent(discovered["source"]) if discovered else None,

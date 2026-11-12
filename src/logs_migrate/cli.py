@@ -84,6 +84,17 @@ def parser():
     simulator.add_argument(
         "--remote-state", type=Path, help="Persisted simulated appliance; independent of journal"
     )
+    simulator.add_argument("--sim-source-version", default="")
+    simulator.add_argument("--sim-destination-version", default="")
+    simulator.add_argument(
+        "--sim-source-nodes", default="", help="node=version pairs, comma-separated"
+    )
+    simulator.add_argument(
+        "--sim-destination-nodes", default="", help="node=version pairs, comma-separated"
+    )
+    simulator.add_argument(
+        "--sim-migration-api", choices=("present", "absent", "unchecked"), default=""
+    )
     live = p.add_argument_group(
         "live appliances",
         "Secrets come from the environment ("
@@ -386,6 +397,13 @@ def main(argv=None):
             )
             require(remote is not None, Code.INVALID_INPUT)
             env = SimulatedEnvironment.from_file(args.fixture, remote)
+            env.configure_versions(
+                args.sim_source_version,
+                args.sim_destination_version,
+                args.sim_source_nodes,
+                args.sim_destination_nodes,
+                args.sim_migration_api,
+            )
             engine = Engine(env, journal, SimulatedClock())
         else:
             try:

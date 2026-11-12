@@ -9,8 +9,6 @@ from .models import Bucket, Cluster, Window, last_sealed_day
 
 
 def compatible(source: Cluster, destination: Cluster):
-    require(source.version.startswith("8.18."), Code.UNSUPPORTED)
-    require(destination.version.startswith("9.0.") or destination.preview, Code.UNSUPPORTED)
     require(source.id != destination.id and source.identity != destination.identity, Code.TOPOLOGY)
     require(not ({n.id for n in source.nodes} & {n.id for n in destination.nodes}), Code.TOPOLOGY)
     require(all(n.service == "running" for n in (*source.nodes, *destination.nodes)), Code.SERVICE)

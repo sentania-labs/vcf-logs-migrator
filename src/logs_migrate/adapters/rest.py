@@ -208,6 +208,10 @@ class HTTPS:
                 raise SessionExpired()
             if response.status in {401, 403}:
                 raise Rejection(Code.AUTH)
+            if response.status == 404:
+                error = Rejection(Code.CONNECTION)
+                error.status = 404
+                raise error
             if not 200 <= response.status < 300:  # No credential redirects.
                 if response.status in REFUSALS or (
                     400 <= response.status < 500 and response.status != 408

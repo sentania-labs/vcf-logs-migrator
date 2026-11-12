@@ -432,3 +432,34 @@ operational details; review them before sharing.
 On POSIX systems the log file is restricted to mode 0600, including an existing
 file and files created after rotation. On Windows, log files inherit the folder's
 access control list; choose a folder whose permissions restrict access to your account.
+
+### Version and migration API check
+
+Before listing or sizing buckets, the tool checks the source and destination versions and
+reads the destination migration task status. A source newer than the destination, nodes
+with different versions, a missing migration API, or an API that cannot be checked stops
+the pairing. Upgrade the destination or finish upgrading all nodes, then test again. The
+plan and journal retain the versions, the evidence used and any caution. Resume repeats the
+check and reports a destination upgrade if the pairing still works.
+
+Source node versions are read over SSH. On a 9.0 destination with SSH configured the tool
+reads each destination node; otherwise it reports the cluster API version and says that
+individual nodes were not checked. On the 9.1 token path, if Logs does not report its
+version the selected API path supplies only 9.1; the comparison uses major and minor and
+says so. A successful migration status call establishes that the API is present. A 404
+means it is absent; other failures require fixing access before continuing. The lowest
+known working destination is 9.0.0. Real appliance validation exercised 9.0.x and
+9.1.1; other versions that answer the API are allowed with a caution and are not qualified
+by those runs. The per-node version command and 9.1 version inference need confirmation
+on live appliances before relying on this change.
+
+For simulator scenarios, set `version` on each side in the fixture. Set `node_versions`
+to a mapping of node names to versions to simulate mixed nodes, and set destination
+`migration_api` to `present`, `absent`, or `unchecked`. Use a fresh simulator state file
+when changing a fixture. The same fixture works in the CLI and desktop Settings.
+
+You can also set simulator versions without changing a fixture with `--sim-source-version`,
+`--sim-destination-version`, `--sim-source-nodes`, `--sim-destination-nodes`, and
+`--sim-migration-api`. Node overrides use `node=version` pairs separated by commas and
+must name every node on that side. The Connections page exposes the same controls when a
+simulator fixture is selected.

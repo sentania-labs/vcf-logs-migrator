@@ -69,6 +69,13 @@ class Session:
                 raise
             except Exception:
                 raise MigrationError(Code.SCHEMA) from None
+            env.configure_versions(
+                self.connection.get("sim_source_version", ""),
+                self.connection.get("sim_destination_version", ""),
+                self.connection.get("sim_source_nodes", ""),
+                self.connection.get("sim_destination_nodes", ""),
+                self.connection.get("sim_migration_api", ""),
+            )
             clock = SimulatedClock()
         else:
             env = self._open_live()
@@ -76,9 +83,37 @@ class Session:
         self.journal = Journal(journal_path)
         self.env = env
         self.engine = Engine(env, self.journal, clock)
+        check = env.version_check()
+        if not check["passed"]:
+
+            def side(name):
+                versions = check[name]
+                return {
+                    "version": next(iter(versions.values()), "Unknown"),
+                    "nodes": [{"id": node} for node in versions],
+                    "buckets": [],
+                    "partitions": [],
+                    "fields": [],
+                }
+
+            return {
+                "source": side("source"),
+                "destination": side("destination"),
+                "compatible": "gui:" + check["message"],
+                "version_check": check,
+                "mode": self.mode,
+                "checks": [("Version compatibility", "Failed · " + check["message"])],
+            }
         result = self.discover()
+        result["version_check"] = check
+        if self.mode == "live" and hasattr(env, "connection"):
+            result["selftest"] = self.selftest()
         result["mode"] = self.mode
-        result["checks"] = self._checks(result)
+        result["checks"] = (
+            self._checks(result)
+            + [("Version evidence", check["evidence"])]
+            + [("Version caution", warning) for warning in check["warnings"]]
+        )
         return result
 
     def probe_endpoints(self, *, connection: dict[str, str]) -> None:
@@ -255,6 +290,8 @@ class Session:
         return self._engine().stop(task_id)
 
     def verify(self, *, run_id: str) -> dict:
+        if self.on_progress:
+            self.on_progress("Verifying counts…")
         return self._engine().verify(run_id)
 
     def runs(self) -> list[dict]:

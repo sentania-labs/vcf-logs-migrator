@@ -65,7 +65,7 @@ class PlanPage(Page):
         self.stack.addWidget(self._blocked_view())
         self.finish_body()
         self.change_button = self.add_action("Change dates", "", self.change_dates)
-        self.refresh_button = self.add_action("Refresh preview", "", self.preview)
+        self.refresh_button = self.add_action("Preview dates", "primary", self.preview)
         self.start_button = self.add_action("Start migration", "primary", self.start)
 
     def _plan_view(self) -> QWidget:
@@ -75,8 +75,8 @@ class PlanPage(Page):
         layout.setSpacing(12)
         self.preview_badge = badge("9.1.1 Preview", "warn")
         self.badges = row(
-            badge("No migration service stop", "info"),
-            badge("Active tail excluded", "warn"),
+            badge("Source stays running", "info"),
+            badge("Logs still being written are left for later", "warn"),
             self.preview_badge,
         )
         layout.addWidget(self.badges)
@@ -105,8 +105,8 @@ class PlanPage(Page):
             edit.dateChanged.connect(self._dates_changed)
         window_layout.addWidget(
             columns(
-                field("Start date (UTC)", self.start_date),
-                field("End date, inclusive (UTC)", self.end_date),
+                field(f"Start date ({self.app.state.settings.timezone})", self.start_date),
+                field(f"End date, inclusive ({self.app.state.settings.timezone})", self.end_date),
             )
         )
         window_layout.addWidget(self.date_hint)
@@ -114,6 +114,7 @@ class PlanPage(Page):
             button(name, "", lambda _checked=False, n=name: self.apply_preset(n))
             for name, _ in vm.PRESETS
         ]
+        self.preset_buttons = presets
         for widget in presets:
             widget.setAccessibleName(f"Preset {widget.text()}")
         window_layout.addWidget(row(*presets))
@@ -144,7 +145,12 @@ class PlanPage(Page):
         ):
             bar = TimelineBar(caption)
             self.bars[caption] = bar
-            grid.addWidget(label(caption, "muted"), index, 0)
+            display = {
+                "Included copy": "Logs to copy",
+                "Destination overlap": "Already at destination",
+                "Latest excluded": "Still being written",
+            }.get(caption, caption)
+            grid.addWidget(label(display, "muted"), index, 0)
             grid.addWidget(bar, index, 1)
         grid_holder = QWidget()
         grid_holder.setLayout(grid)
@@ -154,10 +160,10 @@ class PlanPage(Page):
         window_layout.addWidget(self.included)
         window_layout.addWidget(self.sealed)
 
-        groups_card, groups_layout = card("Groups in this window")
+        groups_card, groups_layout = card("Stored log groups in these dates")
         self.groups_title = label("", "subhead")
         groups_layout.addWidget(self.groups_title)
-        self.groups = Table(["Group", "Dates UTC", "Size / events", "Action"])
+        self.groups = Table(["Stored logs", "Local dates", "Size / events", "Action"])
         groups_layout.addWidget(self.groups)
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -216,7 +222,7 @@ class PlanPage(Page):
         self.ack = QCheckBox("I understand you aren't going to copy the latest data.")
         self.ack.setAccessibleName("Latest-data acknowledgment")
         self.ack.stateChanged.connect(self._ack_changed)
-        layout.addWidget(self.ack)
+        self.footer.layout().insertWidget(0, self.ack)
         return holder
 
     def _blocked_view(self) -> QWidget:
@@ -341,11 +347,16 @@ class PlanPage(Page):
             if self.app.state.discovered
             else None
         )
-        days = vm.preset_days(name, extent)
+        days = vm.preset_days(name, extent, self.app.state.settings.timezone)
         if days is None:
             return
         self._set_dates(days)
-        self.preview()
+        for widget in self.preset_buttons:
+            widget.setProperty("class", "primary" if widget.text() == name else "")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self.app.state.plan_run = None
+        self.refresh()
 
     def preview(self) -> None:
         state = self.app.state
@@ -356,7 +367,7 @@ class PlanPage(Page):
         if self.date_message:
             self.refresh()
             return
-        window = vm.window_from_days(start, end)
+        window = vm.window_from_days(start, end, state.settings.timezone)
         self.previewed = (start, end)
         self.blocked_dismissed = False
         state.acknowledged = False
@@ -391,7 +402,7 @@ class PlanPage(Page):
             if self.app.state.discovered
             else None
         )
-        days = vm.preset_days("All history", extent)
+        days = vm.preset_days("All history", extent, self.app.state.settings.timezone)
         if days:
             self._set_dates(days)
 
@@ -403,7 +414,7 @@ class PlanPage(Page):
         if state.plan_run is None or "plan" in self.app.worker.pending:
             return False
         window = state.plan_run["plan"]["window"]
-        current = vm.window_from_days(*self.current_dates())
+        current = vm.window_from_days(*self.current_dates(), zone=state.settings.timezone)
         return current is not None and (current.start, current.end) == (
             window["start"],
             window["end"],
@@ -411,7 +422,11 @@ class PlanPage(Page):
 
     def _update_actions(self) -> None:
         state = self.app.state
-        view = vm.plan_view(state.plan_run, state.discovered) if state.plan_run else None
+        view = (
+            vm.plan_view(state.plan_run, state.discovered, state.settings.timezone)
+            if state.plan_run
+            else None
+        )
         # Started in this session, or recorded by the engine at copy time in the journal.
         started = bool(state.plan_run) and (
             state.started_run_id == state.plan_run["id"] or "source_by_bucket" in state.plan_run
@@ -439,6 +454,14 @@ class PlanPage(Page):
             else "Start migration · unavailable"
         )
         self.refresh_button.setEnabled(state.connected and not pending)
+        ready_to_start = view is not None and self._preview_is_current() and not started
+        for widget, primary in (
+            (self.refresh_button, not ready_to_start),
+            (self.start_button, ready_to_start),
+        ):
+            widget.setProperty("class", "primary" if primary else "")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def refresh(self) -> None:
         state = self.app.state
@@ -457,7 +480,9 @@ class PlanPage(Page):
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
             detail = vm.plan_error_text(
-                state.plan_error, discovered, vm.window_from_days(*self.current_dates())
+                state.plan_error,
+                discovered,
+                vm.window_from_days(*self.current_dates(), zone=state.settings.timezone),
             )
             set_banner(
                 self.blocked_banner,
@@ -519,7 +544,9 @@ class PlanPage(Page):
                 self.error,
                 "Migration needs attention",
                 vm.plan_error_text(
-                    state.plan_error, discovered, vm.window_from_days(*self.current_dates())
+                    state.plan_error,
+                    discovered,
+                    vm.window_from_days(*self.current_dates(), zone=state.settings.timezone),
                 )
                 + " Adjust the dates or refresh the preview.",
                 "bad",
@@ -541,7 +568,7 @@ class PlanPage(Page):
             )
             self.error.show()
         elif state.plan_error:
-            window = vm.window_from_days(*self.current_dates())
+            window = vm.window_from_days(*self.current_dates(), zone=state.settings.timezone)
             kind = vm.plan_error_kind(state.plan_error, discovered, window)
             set_banner(
                 self.error,
@@ -555,17 +582,22 @@ class PlanPage(Page):
         if state.plan_run is None:
             self.set_heading(
                 "Discovery & Plan",
-                "Choose dates; whole sealed groups are selected"
+                "Choose how far back to migrate, then Preview. "
+                "Whole finished log groups are copied."
                 if state.connected
                 else "Connect both environments to preview history",
             )
             extent = vm.history_extent(discovered["source"]) if discovered else None
-            for widget, text in zip(self.axis_labels, vm.axis_labels(extent), strict=True):
+            for widget, text in zip(
+                self.axis_labels, vm.axis_labels(extent, state.settings.timezone), strict=True
+            ):
                 widget.setText(text)
             self.bars["Source history"].set_span(
                 extent,
                 extent,
-                vm.format_day_range(*extent, suffix="") if extent else "Not connected",
+                vm.format_day_range(*extent, suffix="", zone=state.settings.timezone)
+                if extent
+                else "Not connected",
                 "solid",
             )
             for caption in (
@@ -574,19 +606,30 @@ class PlanPage(Page):
                 "Destination overlap",
                 "Latest excluded",
             ):
-                self.bars[caption].set_span(extent, None, "No preview yet", "soft")
+                text = (
+                    "Preparing preview…"
+                    if "plan" in self.app.worker.pending
+                    else "Choose dates, then Preview"
+                )
+                self.bars[caption].set_span(extent, None, text, "soft")
             self.included.setText("")
             self.sealed.setText("")
-            self.groups_title.setText("No preview yet")
+            self.groups_title.setText(
+                "Preparing the preview…"
+                if "plan" in self.app.worker.pending
+                else "Choose dates, then select Preview dates."
+            )
             self.groups.set_rows([])
-            self.checks.set_rows([("Preview", "Not run")])
+            self.checks.set_rows(
+                [("Preview", "Running…" if "plan" in self.app.worker.pending else "Not run")]
+            )
             self.storage.set_rows([])
             self.estimate.setText("Preview the dates to see an estimate.")
             self.warnings.setText("")
             self.ack.setVisible(False)
             self._update_actions()
             return
-        view = vm.plan_view(state.plan_run, discovered)
+        view = vm.plan_view(state.plan_run, discovered, state.settings.timezone)
         self.set_heading(
             "Discovery & Plan",
             view["subtitle"]
@@ -594,10 +637,15 @@ class PlanPage(Page):
             else "Ready · latest-data exclusion acknowledged",
         )
         extent = view["extent"] or view["coverage"]
-        for widget, text in zip(self.axis_labels, vm.axis_labels(extent), strict=True):
+        for widget, text in zip(
+            self.axis_labels, vm.axis_labels(extent, state.settings.timezone), strict=True
+        ):
             widget.setText(text)
         self.bars["Source history"].set_span(
-            extent, extent, vm.format_day_range(*extent, suffix=""), "solid"
+            extent,
+            extent,
+            vm.format_day_range(*extent, suffix="", zone=state.settings.timezone),
+            "solid",
         )
         self.bars["Requested dates"].set_span(
             extent, view["window"], view["requested"].replace(" UTC", ""), "soft"
@@ -619,8 +667,10 @@ class PlanPage(Page):
             f"<b>Included: {escape(view['included'])}.</b> "
             "Whole groups can extend beyond the requested dates."
         )
+        utc_dates = vm.format_day_range(*view["window"])
         self.sealed.setText(
-            view["sealed_text"]
+            f"Requested dates in UTC: {utc_dates}. "
+            + view["sealed_text"]
             + (
                 " Open groups stay behind, even when cutover stops new events."
                 if view["active_count"]

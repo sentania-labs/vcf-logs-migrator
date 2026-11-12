@@ -101,6 +101,20 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         results[name] = value
         return value
 
+    check = getattr(env, "version_check", None)
+    if check:
+        result = check()
+        report.steps.append(
+            Step(
+                "Version compatibility",
+                "pass" if result["passed"] else "fail",
+                result["message"] + " " + result["evidence"],
+            )
+        )
+        report.notes["version_check"] = result
+        if not result["passed"]:
+            return report
+
     connection = env.connection
 
     def source_version():
@@ -372,5 +386,5 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         if isinstance(source, Cluster) and isinstance(destination, Cluster)
         else "inventory missing",
     )
-    report.notes = {k: v for k, v in env.notes.items() if k != "identity_changed"}
+    report.notes.update({k: v for k, v in env.notes.items() if k != "identity_changed"})
     return report

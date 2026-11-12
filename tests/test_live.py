@@ -350,6 +350,8 @@ def rigged(tmp_path, monkeypatch):
     ssh = FakeSSH(
         {
             ("src.lab", ReadOperation.MEMBERS): xml,
+            ("src-1.lab", ReadOperation.VERSION): "8.18.7-1\n",
+            ("src-2.lab", ReadOperation.VERSION): "8.18.7-1\n",
             ("src-1.lab", ReadOperation.SERVICE): "active\n",
             ("src-1.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
             ("src-1.lab", ReadOperation.INVENTORY): LISTING,
@@ -653,6 +655,8 @@ def _run_selftest(rigged, window, growth=None):
     ]
     destination.records += [
         session(),
+        record("GET", "/api/v1/version", {"version": "9.0.2.0200"}),
+        record("GET", "/api/v2/data-migrations", {}),
         record("GET", "/api/v1/version", {"version": "9.0.2.0200"}),
         record("GET", "/api/v1/partitioning", {"partitions": []}),
         record("GET", "/api/v2/data-migrations", {}),
@@ -2269,7 +2273,7 @@ def test_node_inventories_run_in_parallel_and_are_reused(rigged):
     env.source_cluster()
     assert not [op for _, op in ssh.reads if op == ReadOperation.USAGE]
     assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2
-    assert not messages
+    assert messages == ["Listing buckets…", "Listing buckets…"]
 
 
 def test_plan_warns_that_undated_open_buckets_may_hold_backfill_without_dropping_the_frontier(

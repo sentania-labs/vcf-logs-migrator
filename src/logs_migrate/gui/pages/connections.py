@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLineEdit
+from PySide6.QtWidgets import QComboBox, QLineEdit
 
 from .. import viewmodel as vm
 from ..widgets import (
@@ -8,12 +8,10 @@ from ..widgets import (
     Table,
     badge,
     banner,
-    button,
     card,
     columns,
     field,
     label,
-    row,
     set_banner,
     set_status,
 )
@@ -62,7 +60,7 @@ class ConnectionsPage(Page):
             )
         )
         self.source_badge = badge("Not tested")
-        source_layout.addWidget(row(button("Test source", "", self.connect), self.source_badge))
+        source_layout.addWidget(self.source_badge)
         source_layout.addWidget(
             label(
                 "Root SSH lets destination nodes read history. Tests cover every source node; "
@@ -110,8 +108,7 @@ class ConnectionsPage(Page):
             )
         )
         self.destination_badge = badge("Not tested")
-        self.destination_button = button("Test destination", "", self.connect)
-        destination_layout.addWidget(row(self.destination_button, self.destination_badge))
+        destination_layout.addWidget(self.destination_badge)
         self.switch_hint = label(
             "To sign in to 9.1.1 with an Ops token, enter its VCF Operations URL above.",
             "hint",
@@ -124,6 +121,36 @@ class ConnectionsPage(Page):
         self.ops_url.textChanged.connect(lambda _text: self.refresh())
         for edit in self.inputs():
             edit.returnPressed.connect(self.connect)
+            edit.textChanged.connect(lambda _text: self.refresh())
+
+        simulator, simulator_layout = card("Simulator versions")
+        self.sim_source_version = QLineEdit()
+        self.sim_destination_version = QLineEdit()
+        self.sim_source_nodes = QLineEdit()
+        self.sim_destination_nodes = QLineEdit()
+        self.sim_source_nodes.setPlaceholderText("Optional: node=version, node=version")
+        self.sim_destination_nodes.setPlaceholderText("Optional: node=version, node=version")
+        self.sim_api = QComboBox()
+        self.sim_api.addItem("Use fixture setting", "")
+        self.sim_api.addItem("Migration API available", "present")
+        self.sim_api.addItem("Migration API missing", "absent")
+        self.sim_api.addItem("Migration API cannot be checked", "unchecked")
+        simulator_layout.addWidget(
+            columns(
+                field("Source version", self.sim_source_version),
+                field("Destination version", self.sim_destination_version),
+            )
+        )
+        simulator_layout.addWidget(
+            columns(
+                field("Source node versions", self.sim_source_nodes),
+                field("Destination node versions", self.sim_destination_nodes),
+            )
+        )
+        simulator_layout.addWidget(field("Migration API", self.sim_api))
+        self.simulator_card = simulator
+        simulator.setVisible(bool(settings.fixture_path))
+        self.body.addWidget(simulator)
 
         checks, checks_layout = card("Connection checks")
         self.checks = Table(["Check", "Result"], wrap=True)
@@ -143,7 +170,7 @@ class ConnectionsPage(Page):
 
         self.note.setText("Connection tests are read only.")
         self.disconnect_button = self.add_action("Disconnect", "", self.disconnect)
-        self.selftest_button = self.add_action("Run self-test", "", self.app.run_selftest)
+        self.test_button = self.add_action("Test connections", "primary", self.connect)
         self.compare_button = self.add_action(
             "Compare configuration", "primary", lambda: self.app.show_page("configuration")
         )
@@ -204,18 +231,7 @@ class ConnectionsPage(Page):
     def connect(self) -> None:
         self.remember_addresses()
         values = self.values()
-        missing = (
-            vm.missing_fields(values, bool(self.ops_url.text().strip()))
-            if self.app.state.settings.fixture_path
-            else [
-                label
-                for key, label in (
-                    ("source_host", "Cluster member"),
-                    ("destination_host", "Logs host and port"),
-                )
-                if not values[key].strip()
-            ]
-        )
+        missing = vm.missing_fields(values, bool(self.ops_url.text().strip()))
         if missing:
             self.validation = "Enter " + ", ".join(missing) + " before testing."
             self.refresh()
@@ -243,6 +259,7 @@ class ConnectionsPage(Page):
     def refresh(self) -> None:
         state = self.app.state
         discovered = state.discovered
+        self.simulator_card.setVisible(bool(state.settings.fixture_path))
         if self.validation:
             set_banner(self.error, "Required fields are empty", self.validation, "bad")
             self.error.show()
@@ -284,7 +301,24 @@ class ConnectionsPage(Page):
         self.password_fields.setVisible(not token)
         self.ssh_fields.setVisible(not token)
         self.switch_hint.setVisible(not token)
-        self.destination_button.setText("Exchange token and test" if token else "Test destination")
+        missing = vm.missing_fields(self.values(), token)
+        self.test_button.setEnabled(
+            not missing
+            and "connect" not in self.app.worker.pending
+            and "probe" not in self.app.worker.pending
+        )
+        self.test_button.setText(
+            "Test again" if discovered or state.connect_error else "Test connections"
+        )
+        self.test_button.setProperty("class", "" if state.connected else "primary")
+        self.test_button.style().unpolish(self.test_button)
+        self.test_button.style().polish(self.test_button)
+        if missing:
+            self.note.setText("Enter " + ", ".join(missing) + " to test both connections.")
+        elif state.connected:
+            self.note.setText("Connections are ready. Continue to configuration.")
+        else:
+            self.note.setText("Test both connections to continue.")
         rows = vm.connection_checks(
             discovered, discovered.get("compatible") if discovered else None, state.mode
         )
@@ -296,8 +330,4 @@ class ConnectionsPage(Page):
             rows = [("Self-test", "Failed · " + vm.describe_error(state.selftest_error))] + rows
         self.checks.set_rows(rows)
         self.disconnect_button.setEnabled(state.connected)
-        self.selftest_button.setVisible(state.live)
-        self.selftest_button.setEnabled(
-            state.connected and state.live and "selftest" not in self.app.worker.pending
-        )
         self.compare_button.setEnabled(state.connected)
