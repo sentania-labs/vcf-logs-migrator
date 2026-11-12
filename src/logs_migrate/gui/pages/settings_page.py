@@ -31,6 +31,7 @@ class SettingsPage(Page):
         )
         self.saved: dict[str, object] = {}
         self.notes: dict[str, object] = {}
+        self.problems: dict[str, str] = {}
         self.detected = local_timezone()
 
         everyday, layout = card("Everyday")
@@ -180,8 +181,6 @@ class SettingsPage(Page):
         except OSError:
             pass
         self.app.open_file(str(folder))
-
-    problems: dict[str, str] = {}
 
     def _number_typed(self, name: str, text: str) -> None:
         settings = self.app.state.settings

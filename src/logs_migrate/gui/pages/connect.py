@@ -232,12 +232,6 @@ class ConnectPage(Page):
             marked = self._marked(failure)
             if edit in marked:
                 failure["edited"] = True
-        if (
-            state.server_needed
-            and self.destination_ssh_user.text().strip()
-            and (self.destination_ssh_password.text())
-        ):
-            pass  # Both boxes are filled; the marks clear on the next test.
         self.refresh()
 
     def _marked(self, failure: dict) -> list[QLineEdit]:
