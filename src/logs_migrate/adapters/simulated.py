@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import time
 import uuid
 from collections import Counter
 from contextlib import contextmanager, nullcontext
@@ -131,6 +133,43 @@ class SimulatedEnvironment:
             finally:
                 self._persist()
                 self.locked = False
+
+    # Stand-in sign-in. A fixture that declares none of these accepts anything, as before.
+
+    def check_address(self, side, typed):
+        """A fixture may name the address each system answers on; any other is unreachable."""
+        expected = self.data.get("addresses", {}).get(side)
+        host = typed.strip().lower().removeprefix("https://").split(":")[0].rstrip("/")
+        if expected and host != expected.lower():
+            raise MigrationError(Code.CONNECTION)
+
+    def check_sign_in(self, kind, secret):
+        """A fixture may declare the secret a sign-in expects; any other is refused."""
+        expected = self.data.get("sign_in", {}).get(kind)
+        if expected is not None and secret != expected:
+            raise MigrationError(Code.AUTH)
+
+    def tls_identity(self, side):
+        """A stable stand-in for the certificate digest of one address."""
+        return hashlib.sha256(self.data[side]["identity"].encode()).hexdigest()
+
+    def server_keys(self, side):
+        """Stand-in host keys, in the form an administrator sees them (`SHA256:...`)."""
+        return [
+            (
+                node["id"],
+                "SHA256:"
+                + base64.b64encode(hashlib.sha256(node["id"].encode()).digest())
+                .decode()
+                .rstrip("="),
+            )
+            for node in self.data[side]["nodes"]
+        ]
+
+    @property
+    def stage_delay(self):
+        """Seconds a client may pause per stage so a person can watch a stand-in run."""
+        return float(self.data.get("stage_delay", 0))
 
     def version_check(self):
         from ..versions import evaluate
@@ -366,6 +405,8 @@ class SimulatedEnvironment:
                 if b["node"] + "/" + b["id"] in completed
             )
             failed = set(self.data.get("failed_nodes", []))
+            if task.get("failed_node"):
+                failed = {task["failed_node"]}
             default_status = (
                 "failed"
                 if node["id"] in failed and task["status"] != "running"
@@ -374,6 +415,36 @@ class SimulatedEnvironment:
                 else task["status"]
             )
             status = self.data.get("node_statuses", {}).get(node["id"], default_status)
+            if "paced_done" in task:
+                # A paced task reports what each server still has to fetch, as 9.0 does.
+                mine = [
+                    k
+                    for k in task["keys"]
+                    if nodes[int(digest(k.split("/")[-1])[:8], 16) % len(nodes)]["id"] == node["id"]
+                ]
+                waiting = [k for k in task["keys"][task["paced_done"] :] if k in mine]
+                scheduled: dict[str, list[str]] = {}
+                totals: dict[str, int] = {}
+                for k in mine:
+                    totals[k.split("/")[0]] = totals.get(k.split("/")[0], 0) + 1
+                    scheduled.setdefault(k.split("/")[0], [])
+                for k in waiting:
+                    scheduled[k.split("/")[0]].append(k.split("/")[-1])
+                outcomes.append(
+                    NodeTransfer(
+                        node["id"],
+                        status,
+                        completed,
+                        skipped,
+                        size,
+                        None,
+                        {name: len(ids) for name, ids in scheduled.items()},
+                        totals,
+                        task.get("paced_elapsed"),
+                        {name: tuple(ids) for name, ids in scheduled.items()},
+                    )
+                )
+                continue
             outcomes.append(NodeTransfer(node["id"], status, completed, skipped, size))
         return Transfer(
             task["id"],
@@ -386,7 +457,9 @@ class SimulatedEnvironment:
             task.get("destination", ""),
             Window(**task["window"]) if task.get("window") else None,
             tuple(task.get("keys", ())),
-            self.data.get("poll", 0) * self.data.get("api_poll_seconds", 1),
+            task["paced_elapsed"]
+            if "paced_elapsed" in task
+            else self.data.get("poll", 0) * self.data.get("api_poll_seconds", 1),
             sum(
                 b["size"]
                 for b in self.data["source"]["buckets"]
@@ -397,72 +470,164 @@ class SimulatedEnvironment:
     def transfer(self):
         self._fault("poll.before")
         task = self.data["task"]
+        if task and task.get("offline_until"):
+            if time.time() < task["offline_until"]:
+                raise MigrationError(Code.CONNECTION)
+            task["offline_until"] = None
         if task and task["status"] == "running":
             self.data["poll"] += 1
-            if self.data["poll"] >= self.data.get("complete_after_polls", 1):
+            if self.data.get("pace"):
+                self._advance_paced(task, self.data["pace"])
+            elif self.data["poll"] >= self.data.get("complete_after_polls", 1):
                 source, dest = self.discover()
-                skip = set(self.data.get("skip_buckets", []))
                 limit = self.data.get("cancel_after")
                 copied = 0
                 for key in task["keys"]:
                     if limit is not None and copied >= limit:
                         break
-                    b = next(b for b in source.buckets if b.key == key)
-                    if key in skip:
-                        task["skipped"].append(key)
-                        continue
-                    node = self._assigned_node(b.id, dest)
-                    if not dest.preview:
-                        existing = [
-                            item for item in dest.buckets if item.id == b.id and item.node == node
-                        ]
-                        if existing:
-                            if all(item.registered and item.complete for item in existing):
-                                task["completed"].append(key)
-                            else:
-                                task["skipped"].append(key)
-                            continue
-                    if node in self.data.get("failed_nodes", []):
-                        task["skipped"].append(key)
-                        continue
-                    copy = replace(b, node=node, partition="" if not dest.preview else b.partition)
-                    if self.data.get("partial_at_bucket") == key:
-                        partial = replace(
-                            copy, complete=False, registered=False, size=b.size // 2, manifest=None
-                        )
-                        if not dest.preview:
-                            self.data["destination"]["buckets"].append(asdict(partial))
-                        task["skipped"].append(key)
-                        task["bytes_transferred"] += partial.size
-                        task["status"] = "failed"
+                    outcome = self._deliver(task, key, source, dest)
+                    if outcome == "failed":
                         self._close_history()
                         self._persist()
                         return self._transfer()
-                    if not dest.preview:
-                        self.data["destination"]["buckets"].append(asdict(copy))
-                    for e in self.data["source_events"]:
-                        if e["bucket"] == key:
-                            self.data["destination_events"].append({**e, "cohort": "migration"})
-                    task["completed"].append(key)
-                    copied += 1
-                    task["bytes_transferred"] += b.size
-                    for n in self.data["destination"]["nodes"]:
-                        if n["id"] == node:
-                            n["used"] += b.size
-                            n["repository_available"] -= b.size
-                cancelled = limit is not None and copied >= limit
-                task["status"] = (
-                    "cancelled"
-                    if cancelled
-                    else "failed"
-                    if self.data.get("failed_nodes")
-                    else self.data.get("terminal_status", "completed")
-                )
-                self._close_history()
-                self.data["destination_events"].extend(self.data.get("ingest_during_run", []))
-                self._persist()
-                self._fault("poll.after_complete")
+                    if outcome == "copied":
+                        copied += 1
+                self._finish(task, limit is not None and copied >= limit)
         return self._transfer()
+
+    def _finish(self, task, cancelled=False):
+        task["status"] = (
+            "cancelled"
+            if cancelled
+            else "failed"
+            if self.data.get("failed_nodes")
+            else self.data.get("terminal_status", "completed")
+        )
+        self._close_history()
+        self.data["destination_events"].extend(self.data.get("ingest_during_run", []))
+        self._persist()
+        self._fault("poll.after_complete")
+
+    def _deliver(self, task, key, source, dest):
+        """Settle one bucket of a running task: `copied`, `present`, `skipped` or `failed`."""
+        b = next(b for b in source.buckets if b.key == key)
+        once = self.data.get("skip_buckets_once", [])
+        if key in once:
+            once.remove(key)  # Skipped this time only, so a later copy of it arrives.
+            task["skipped"].append(key)
+            return "skipped"
+        if key in self.data.get("skip_buckets", []):
+            task["skipped"].append(key)
+            return "skipped"
+        node = self._assigned_node(b.id, dest)
+        if not dest.preview:
+            existing = [item for item in dest.buckets if item.id == b.id and item.node == node]
+            if existing:
+                if all(item.registered and item.complete for item in existing):
+                    task["completed"].append(key)
+                    return "present"
+                task["skipped"].append(key)
+                return "skipped"
+        if node in self.data.get("failed_nodes", []):
+            task["skipped"].append(key)
+            return "skipped"
+        copy = replace(b, node=node, partition="" if not dest.preview else b.partition)
+        if self.data.get("partial_at_bucket") == key:
+            partial = replace(
+                copy, complete=False, registered=False, size=b.size // 2, manifest=None
+            )
+            if not dest.preview:
+                self.data["destination"]["buckets"].append(asdict(partial))
+            task["skipped"].append(key)
+            task["bytes_transferred"] += partial.size
+            task["status"] = "failed"
+            return "failed"
+        if not dest.preview:
+            self.data["destination"]["buckets"].append(asdict(copy))
+        short = self.data.get("short_events", {}).get(key, 0)
+        for e in self.data["source_events"]:
+            if e["bucket"] == key:
+                arrived = {**e, "cohort": "migration"}
+                if short:
+                    # A day that arrives short: some entries of this bucket never land.
+                    lost = min(short, arrived.get("multiplicity", 1) - 1)
+                    arrived["multiplicity"] = arrived.get("multiplicity", 1) - lost
+                    short -= lost
+                self.data["destination_events"].append(arrived)
+        task["completed"].append(key)
+        task["bytes_transferred"] += b.size
+        for n in self.data["destination"]["nodes"]:
+            if n["id"] == node:
+                n["used"] += b.size
+                n["repository_available"] -= b.size
+        return "copied"
+
+    def _advance_paced(self, task, pace):
+        """Progress by the wall clock instead of by poll count, so a person can watch it.
+
+        `pace` is `{"bytes_per_second": n, "time_scale": n}`: the task's own clock runs
+        `time_scale` times faster than real time. Optional fixture knobs: `fail_at`
+        (`{"fraction", "node", "once"}`: the task fails by itself), `stall`
+        (`{"at_fraction", "seconds"}`: nothing arrives for that long on the task's clock)
+        and `offline` (`{"at_fraction", "seconds"}`: status reads fail for real seconds).
+        """
+        now = time.time()
+        started = task.setdefault("paced_started", now)
+        elapsed = (now - started) * float(pace.get("time_scale", 1))
+        task["paced_elapsed"] = elapsed
+        source, dest = self.discover()
+        sizes = {b.key: b.size for b in source.buckets}
+        total = sum(sizes[key] for key in task["keys"]) or 1
+        rate = float(pace["bytes_per_second"])
+        work = elapsed
+        stall = self.data.get("stall")
+        if stall:
+            begins = stall["at_fraction"] * total / rate
+            if elapsed > begins:
+                work = max(begins, elapsed - stall["seconds"])
+        budget = work * rate
+        done = task.setdefault("paced_done", 0)
+        spent = task.setdefault("paced_spent", 0)
+        fail = self.data.get("fail_at")
+        offline = self.data.get("offline")
+        while done < len(task["keys"]):
+            if fail and spent >= fail["fraction"] * total:
+                task["status"] = "failed"
+                task["failed_node"] = fail.get("node")
+                if fail.get("once", True):
+                    del self.data["fail_at"]
+                break
+            if offline and spent >= offline["at_fraction"] * total:
+                task["offline_until"] = now + offline["seconds"]
+                del self.data["offline"]
+                offline = None
+            key = task["keys"][done]
+            if spent + sizes[key] > budget:
+                break
+            before = task["bytes_transferred"]
+            outcome = self._deliver(task, key, source, dest)
+            task["bytes_transferred"] = before  # Recomputed below from what was fetched.
+            done += 1
+            task["paced_done"] = done
+            if outcome == "failed":
+                break
+            if outcome == "copied":
+                spent += sizes[key]
+        task["paced_spent"] = spent
+        if task["status"] != "running":
+            task["bytes_transferred"] = spent
+            self._close_history()
+            self._persist()
+            return
+        if done >= len(task["keys"]):
+            task["bytes_transferred"] = spent
+            self._finish(task)
+            return
+        current = sizes[task["keys"][done]]
+        task["bytes_transferred"] = int(spent + max(0, min(current, budget - spent)))
+        self._persist()
+        if task.get("offline_until"):
+            raise MigrationError(Code.CONNECTION)
 
     def _close_history(self):
         """Once finished, history names only the buckets the task actually transferred."""

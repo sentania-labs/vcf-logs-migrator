@@ -662,6 +662,10 @@ class LiveEnvironment:
         self._new_listings = {}
         self._listing_seconds = {}
         self.on_progress = None
+        # The window confirms the two typed addresses with the operator, then records each
+        # server's SSH key on first contact without a second question. A changed key is
+        # still refused. The CLI leaves this off and asks about every identity.
+        self.auto_enroll_ssh = False
 
     # Identity trust ----------------------------------------------------------------------
 
@@ -676,12 +680,52 @@ class LiveEnvironment:
 
                 raise SSHFailure("host")
             raise MigrationError(Code.AUTH)
+        if identity.kind == "ssh" and self.auto_enroll_ssh:
+            self.trust.trust(identity, key_line)
+            self.notes.setdefault("ssh_enrolled", []).append(identity.name)
+            return
         unknown.append(identity)
         if key_line:
             self._pending[identity.name] = key_line
 
     def key_line(self, identity: Identity) -> str | None:
         return self._pending.get(identity.name)
+
+    def address_identities(self) -> list[tuple[str, Identity, str]]:
+        """The certificate each typed address presents, with its trust state. Sends nothing
+        but a TLS handshake, and never raises for an unknown or changed identity."""
+        connection = self.connection
+        endpoints = [
+            ("source", (connection.source_host, connection.source_api_port)),
+            ("destination", connection.destination_endpoint),
+        ]
+        if connection.preview:
+            endpoints.append(("ops", connection.ops_endpoint))
+        found = []
+        for role, (host, port) in endpoints:
+            self.notes["stage"] = f"tls {host}:{port}"
+            self.notes["stage_role"] = role
+            if self.on_progress:
+                self.on_progress(f"Contacting {self.notes['stage']}")
+            identity = probe_tls(host, port)
+            found.append((role, identity, self.trust.check(identity)))
+        self.notes.pop("stage", None)
+        self.notes.pop("stage_role", None)
+        return found
+
+    def destination_version_hint(self) -> str | None:
+        """The destination's version read without signing in, when it answers that way.
+        None when it does not; the caller then cannot tell 9.0 from 9.1 before sign-in."""
+        from .rest import parse_version
+
+        try:
+            return parse_version(
+                self._https(self.connection.destination_endpoint).request(
+                    "GET", "/api/v1/version"
+                )
+            )
+        except MigrationError:
+            return None
 
     def probe_endpoints(self) -> None:
         """Check the entered endpoints without sending credentials."""
