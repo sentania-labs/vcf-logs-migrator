@@ -76,38 +76,42 @@ class Session:
         self.journal = Journal(journal_path)
         self.env = env
         self.engine = Engine(env, self.journal, clock)
+        # A connection test checks access and versions only. Bucket inventory begins on Plan.
+        if self.mode == "live" and hasattr(env, "source_version"):
+            env.source_version()
         check = env.version_check()
-        if not check["passed"]:
 
-            def side(name):
-                versions = check[name]
-                return {
-                    "version": next(iter(versions.values()), "Unknown"),
-                    "nodes": [{"id": node} for node in versions],
-                    "buckets": [],
-                    "partitions": [],
-                    "fields": [],
-                }
-
+        def side(name):
+            versions = check[name]
             return {
-                "source": side("source"),
-                "destination": side("destination"),
-                "compatible": "gui:" + check["message"],
-                "version_check": check,
-                "mode": self.mode,
-                "checks": [("Version compatibility", "Failed · " + check["message"])],
+                "id": self.connection.get("source_host" if name == "source" else "destination")
+                or name,
+                "version": next(iter(versions.values()), "Unknown"),
+                "nodes": [{"id": node} for node in versions],
+                "buckets": [],
+                "partitions": [],
+                "fields": [],
             }
-        result = self.discover()
-        result["version_check"] = check
-        if self.mode == "live" and hasattr(env, "connection"):
-            result["selftest"] = self.selftest(check)
-        result["mode"] = self.mode
-        result["checks"] = (
-            self._checks(result)
-            + [("Version evidence", check["evidence"])]
-            + [("Version caution", warning) for warning in check["warnings"]]
-        )
-        return result
+
+        rows = [
+            ("Source connection", "Passed"),
+            ("Destination migration API", "Passed" if check["api"] == "present" else "Failed"),
+            (
+                "Version compatibility",
+                ("Passed · " if check["passed"] else "Failed · ") + check["message"],
+            ),
+            ("Version evidence", check["evidence"]),
+        ]
+        rows.extend(("Version caution", warning) for warning in check["warnings"])
+        return {
+            "source": side("source"),
+            "destination": side("destination"),
+            "compatible": None if check["passed"] else "gui:" + check["message"],
+            "version_check": check,
+            "inventory_pending": True,
+            "mode": self.mode,
+            "checks": rows,
+        }
 
     def probe_endpoints(self, *, connection: dict[str, str]) -> None:
         self.disconnect()

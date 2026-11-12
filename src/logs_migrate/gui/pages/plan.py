@@ -174,7 +174,7 @@ class PlanPage(Page):
         left_layout.addStretch(1)
 
         checks_card, checks_layout = card("Checks")
-        self.checks = KeyValues()
+        self.checks = KeyValues(compact=True)
         checks_layout.addWidget(self.checks)
         estimate_card, estimate_layout = card("Estimated time")
         self.estimate = label("Preview the dates to see an estimate.", "body", wrap=True)
@@ -214,8 +214,8 @@ class PlanPage(Page):
         self.split = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.split.setContentsMargins(0, 0, 0, 0)
         self.split.setSpacing(16)
-        self.split.addWidget(left, 7)
-        self.split.addWidget(right, 3)
+        self.split.addWidget(left, 5)
+        self.split.addWidget(right, 4)
         self.split_holder = QWidget()
         self.split_holder.setLayout(self.split)
         layout.addWidget(self.split_holder)
@@ -321,8 +321,8 @@ class PlanPage(Page):
     def resizeEvent(self, event):  # noqa: N802 (Qt override)
         super().resizeEvent(event)
         self.warning_timer.start(0)
-        # Below 1200px the side cards stack under the window card, as the 1024x700 study shows.
-        narrow = self.width() < 1200
+        # Keep the plan and its checks together at common desktop widths.
+        narrow = self.width() < 800
         direction = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
         if self.split.direction() != direction:
             self.split.setDirection(direction)
@@ -352,7 +352,7 @@ class PlanPage(Page):
             return
         self._set_dates(days)
         for widget in self.preset_buttons:
-            widget.setProperty("class", "primary" if widget.text() == name else "")
+            widget.setProperty("variant", "primary" if widget.text() == name else "")
             widget.style().unpolish(widget)
             widget.style().polish(widget)
         self.app.state.plan_run = None
@@ -360,7 +360,12 @@ class PlanPage(Page):
 
     def preview(self) -> None:
         state = self.app.state
-        if not state.connected:
+        if not state.connected or "discover" in self.app.worker.pending:
+            return
+        if (state.discovered or {}).get("inventory_pending"):
+            state.plan_error = None
+            self.app.submit("discover", "discover")
+            self.refresh()
             return
         start, end = self.current_dates()
         self.date_message = vm.window_error(start, end) or ""
@@ -449,13 +454,26 @@ class PlanPage(Page):
             if started
             else "Start migration · unavailable"
         )
-        self.refresh_button.setEnabled(state.connected and not pending)
+        self.refresh_button.setEnabled(
+            state.connected
+            and not pending
+            and "discover" not in self.app.worker.pending
+            and (
+                not (state.discovered or {}).get("inventory_pending", False)
+                or bool(state.plan_error)
+            )
+        )
+        self.refresh_button.setText(
+            "Retry inventory"
+            if (state.discovered or {}).get("inventory_pending") and state.plan_error
+            else "Preview dates"
+        )
         ready_to_start = view is not None and self._preview_is_current() and not started
         for widget, primary in (
             (self.refresh_button, not ready_to_start),
             (self.start_button, ready_to_start),
         ):
-            widget.setProperty("class", "primary" if primary else "")
+            widget.setProperty("variant", "primary" if primary else "")
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
@@ -607,7 +625,9 @@ class PlanPage(Page):
             self.included.setText("")
             self.sealed.setText("")
             self.groups_title.setText(
-                "Preparing the preview…"
+                "Listing buckets…"
+                if "discover" in self.app.worker.pending
+                else "Preparing the preview…"
                 if "plan" in self.app.worker.pending
                 else "Choose dates, then select Preview dates."
             )

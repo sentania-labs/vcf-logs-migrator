@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import logging
-from threading import Event
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..adapters.ssh_errors import SSHFailure
-from ..errors import Code, MigrationError, QueryTimeout
+from ..errors import MigrationError, QueryTimeout
 from ..trust import TrustRequired, shared_ssh_keys
 from .session import LocalError, Session
 
@@ -30,22 +29,13 @@ class EngineWorker(QObject):
     def __init__(self):
         super().__init__()
         self.session = Session()
-        self.cancel_requested = Event()
-        self.session.on_progress = self._progress
+        self.session.on_progress = self.progress.emit
         self.thread = QThread()
         self.thread.setObjectName("engine")
         self.moveToThread(self.thread)
         self._queued.connect(self._run)
         self.pending: set[str] = set()
         self.affected: dict[str, list[str]] = {}
-
-    def _progress(self, message: str) -> None:
-        if self.cancel_requested.is_set():
-            raise MigrationError(Code.STATE, "Cancelled. You can try again when ready.")
-        self.progress.emit(message)
-
-    def cancel(self) -> None:
-        self.cancel_requested.set()
 
     def start(self) -> None:
         self.thread.start()
@@ -68,7 +58,6 @@ class EngineWorker(QObject):
     @Slot(str, str, dict)
     def _run(self, job: str, method: str, kwargs: dict) -> None:
         self.affected.pop(job, None)
-        self.cancel_requested.clear()
         try:
             result = getattr(self.session, method)(**kwargs)
         except TrustRequired as pending:

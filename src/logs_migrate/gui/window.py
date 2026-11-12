@@ -120,12 +120,9 @@ class MainWindow(QMainWindow):
         self.progress_details.setMaximumHeight(100)
         self.progress_details.hide()
         self.progress_details_button = button("Show details", "", self._toggle_progress_details)
-        self.cancel_activity = button("Cancel", "", self.worker.cancel)
         self.progress_details_button.hide()
-        self.cancel_activity.hide()
         activity_actions = QHBoxLayout()
         activity_actions.addWidget(self.progress_details_button)
-        activity_actions.addWidget(self.cancel_activity)
         activity_actions.addStretch(1)
         content.addLayout(activity_actions)
         content.addWidget(self.progress_details)
@@ -228,6 +225,14 @@ class MainWindow(QMainWindow):
         self.nav.blockSignals(True)
         self.nav.setCurrentRow(keys.index(name) if name in keys else -1)
         self.nav.blockSignals(False)
+        if (
+            name == "plan"
+            and self.state.connected
+            and self.state.discovered
+            and self.state.discovered.get("inventory_pending")
+            and "discover" not in self.worker.pending
+        ):
+            self.submit("discover", "discover")
         page.refresh()
         self.stack.setCurrentWidget(page)
         if self.isVisible() and not self.nav.hasFocus():
@@ -358,7 +363,6 @@ class MainWindow(QMainWindow):
                 self.probe_activity.show()
                 self.probe_elapsed.show()
                 self.progress_details_button.show()
-                self.cancel_activity.setVisible(job.split(":")[0] != "start")
                 self.probe_timer.start()
                 names = {
                     "probe": "Testing source…",
@@ -513,7 +517,6 @@ class MainWindow(QMainWindow):
         if job == self.activity_job:
             self.probe_timer.stop()
             self.probe_activity.hide()
-            self.cancel_activity.hide()
             self.upcoming.hide()
             label = {
                 "plan": "Preview complete",
@@ -566,17 +569,10 @@ class MainWindow(QMainWindow):
             state.connect_error = result.get("compatible")
             state.mode = result.get("mode", "simulation")
             state.checks = [tuple(row) for row in result.get("checks", [])]
-            state.selftest = result.get("selftest")
-            if state.selftest and not state.selftest["passed"]:
-                state.connected = False
-                self.page_progress.setText("✕ Connection checks failed. See the checks below.")
             if state.connected:
                 self.timer.start(state.settings.refresh_seconds * 1000)
                 self.submit("runs", "runs")
                 self.poll_status()
-            if self.seed_pending and state.connected:
-                self.seed_pending = False
-                self.pages["plan"].seed_dates()
         elif job == "disconnect":
             return
         elif job == "config_compare":
@@ -645,6 +641,10 @@ class MainWindow(QMainWindow):
                 self.poll_status()
         elif job == "discover":
             state.discovered = result
+            state.plan_error = None
+            if self.seed_pending:
+                self.seed_pending = False
+                self.pages["plan"].seed_dates()
         elif job.startswith("verify:"):
             run_id = job[len("verify:") :]
             if state.verify_run_id == run_id:
@@ -721,7 +721,7 @@ class MainWindow(QMainWindow):
         elif job in {"status", "stop"}:
             state.status_error = code
         elif job == "discover":
-            return
+            state.plan_error = code
         elif job.startswith("verify:"):
             run_id = job[len("verify:") :]
             if state.verify_run_id == run_id:

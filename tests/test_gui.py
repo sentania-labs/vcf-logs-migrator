@@ -237,7 +237,8 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.show("connections")
     assert page.source_badge.text() == "8.18.7 · live"
     rows = dict(page.checks.rows())
-    assert rows["Source Logs API"].startswith("Passed") and "Destination repository budget" in rows
+    assert rows["Source connection"].startswith("Passed")
+    assert rows["Destination migration API"].startswith("Passed")
     assert page.test_button.isVisible()
     from logs_migrate.gui import session
 
@@ -1257,3 +1258,16 @@ def test_simulator_version_failure_keeps_both_versions_visible(driver):
     assert "10.0.0" in page.source_badge.text()
     assert "9.0.2" in page.destination_badge.text()
     assert "newer" in page.error.text()
+
+
+def test_connection_skips_selftest_and_bucket_inventory(driver, monkeypatch):
+    from logs_migrate.gui.session import Session
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("connection must not run inventory or self-test")
+
+    monkeypatch.setattr(Session, "discover", unexpected)
+    monkeypatch.setattr(Session, "selftest", unexpected)
+    driver.connect()
+    assert driver.state.connected
+    assert driver.state.discovered["inventory_pending"]

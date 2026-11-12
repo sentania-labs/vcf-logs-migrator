@@ -94,6 +94,7 @@ class Driver:
 
     def plan(self, preset: str = "All history") -> None:
         self.show("plan")
+        self.until(lambda: "discover" not in self.window.worker.pending)
         self.pages["plan"].apply_preset(preset)
         self.pages["plan"].preview()
         self.until(lambda: self.state.plan_run is not None or self.state.plan_error)

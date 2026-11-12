@@ -280,7 +280,7 @@ class ConnectionsPage(Page):
         self.test_button.setText(
             "Test again" if discovered or state.connect_error else "Test connections"
         )
-        self.test_button.setProperty("class", "" if state.connected else "primary")
+        self.test_button.setProperty("variant", "" if state.connected else "primary")
         self.test_button.style().unpolish(self.test_button)
         self.test_button.style().polish(self.test_button)
         if missing:
