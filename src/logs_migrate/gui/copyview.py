@@ -770,7 +770,9 @@ def progress_view(
             (
                 "Started",
                 ("again " if continued else "")
-                + vm.format_clock(status.get("started_at"), zone, now),
+                + vm.format_clock(
+                    (status or {}).get("started_at") or copy["started_at"], zone, now
+                ),
             ),
             ("Time left", "not known right now"),
             ("Should finish around", "not known right now"),

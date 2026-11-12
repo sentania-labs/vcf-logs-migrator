@@ -1363,11 +1363,16 @@ class MainWindow(QMainWindow):
             else:
                 state.continue_failure = failure
         elif job == "status":
-            if state.status is not None and state.status["status"] == "running":
-                state.status_error = code
+            state.status_error = code
+            copy = state.copy()
+            running = (
+                state.status["status"] == "running"
+                if state.status is not None
+                else bool(copy) and copy["state"] in {"running", "unsure"}
+            )
+            if running:
+                # Out of touch with a copy that was running when last seen.
                 state.lost_at = state.lost_at or state.status_at or vm.now_iso()
-            elif state.status is None:
-                state.status_error = code
         elif job == "stop":
             state.status_error = code
             self.toast("The destination did not confirm the stop. Checking how the copy stands.")
