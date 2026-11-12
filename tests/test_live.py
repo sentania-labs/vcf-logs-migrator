@@ -350,6 +350,8 @@ def rigged(tmp_path, monkeypatch):
     ssh = FakeSSH(
         {
             ("src.lab", ReadOperation.MEMBERS): xml,
+            ("src-1.lab", ReadOperation.VERSION): "8.18.7-1\n",
+            ("src-2.lab", ReadOperation.VERSION): "8.18.7-1\n",
             ("src-1.lab", ReadOperation.SERVICE): "active\n",
             ("src-1.lab", ReadOperation.SPACE): "Size Used Avail\n1000 100 900\n",
             ("src-1.lab", ReadOperation.INVENTORY): LISTING,
@@ -653,6 +655,8 @@ def _run_selftest(rigged, window, growth=None):
     ]
     destination.records += [
         session(),
+        record("GET", "/api/v1/version", {"version": "9.0.2.0200"}),
+        record("GET", "/api/v2/data-migrations", {}),
         record("GET", "/api/v1/version", {"version": "9.0.2.0200"}),
         record("GET", "/api/v1/partitioning", {"partitions": []}),
         record("GET", "/api/v2/data-migrations", {}),
@@ -2269,7 +2273,7 @@ def test_node_inventories_run_in_parallel_and_are_reused(rigged):
     env.source_cluster()
     assert not [op for _, op in ssh.reads if op == ReadOperation.USAGE]
     assert len([op for _, op in ssh.reads if op == ReadOperation.INVENTORY]) == 2
-    assert not messages
+    assert messages == ["Listing buckets…", "Listing buckets…"]
 
 
 def test_plan_warns_that_undated_open_buckets_may_hold_backfill_without_dropping_the_frontier(
@@ -2827,3 +2831,125 @@ def test_probe_asks_about_the_destination_ssh_identity_before_any_credential(rig
     with pytest.raises(TrustRequired) as asked:
         env.probe_endpoints()
     assert "dst.lab:22" in {i.name for i in asked.value.identities}
+
+
+class _DestinationStub:
+    def __init__(self, *, version="9.0.2", api=None):
+        self._version, self._api = version, api
+
+    def version(self):
+        if isinstance(self._version, Exception):
+            raise self._version
+        return self._version
+
+    def migration_status(self):
+        if isinstance(self._api, Exception):
+            raise self._api
+        return {}
+
+
+def _not_found():
+    error = MigrationError(Code.CONNECTION)
+    error.status = 404
+    return error
+
+
+def _version_rig(rigged, *, source="8.18.7", **stub):
+    env, _, _, ssh = trusted(rigged)
+    for host in ("src-1.lab", "src-2.lab"):
+        ssh.replies[(host, ReadOperation.VERSION)] = f"{source}\n"
+    env.destination_client = _DestinationStub(**stub)
+    return env
+
+
+def test_version_check_passes_when_source_is_older_and_the_api_answers(rigged):
+    result = _version_rig(rigged, version="9.0.2.0200").version_check()
+    assert result["passed"] and result["api"] == "present"
+    assert result["source"] == {"src-1.lab": "8.18.7", "src-2.lab": "8.18.7"}
+    assert result["destination"] == {"cluster": "9.0.2.0200"}
+
+
+def test_version_check_refuses_a_source_newer_than_the_destination(rigged):
+    result = _version_rig(rigged, source="9.1.0", version="9.0.2").version_check()
+    assert not result["passed"] and "newer than destination" in result["message"]
+
+
+def test_version_check_maps_a_404_to_absent_and_other_failures_to_unchecked(rigged):
+    env = _version_rig(rigged, api=_not_found())
+    absent = env.version_check()
+    assert not absent["passed"] and absent["api"] == "absent"
+    assert "does not answer the migration API" in absent["message"]
+    env.destination_client = _DestinationStub(api=MigrationError(Code.CONNECTION))
+    unchecked = env.version_check()
+    assert not unchecked["passed"] and unchecked["api"] == "unchecked"
+    assert unchecked["code"] == Code.INCOMPLETE.value
+
+
+def test_version_check_refuses_destination_nodes_on_different_versions(rigged, monkeypatch):
+    env = _version_rig(rigged)
+    monkeypatch.setattr(LiveEnvironment, "_destination_ssh_enabled", lambda self: True)
+    ssh = rigged[3]
+    ssh.replies[("dst.lab", ReadOperation.MEMBERS)] = (
+        '<distributed><daemon host="dst-1.lab"/><daemon host="dst-2.lab"/></distributed>'
+    )
+    ssh.replies[("dst-1.lab", ReadOperation.VERSION)] = "9.0.2.0200\n"
+    ssh.replies[("dst-2.lab", ReadOperation.VERSION)] = "9.1.1.0100\n"
+    result = env.version_check()
+    assert not result["passed"] and "different versions" in result["message"]
+    assert result["evidence"] == "Versions read on each node over SSH."
+    ssh.replies[("dst-2.lab", ReadOperation.VERSION)] = "9.0.2.0200\n"
+    assert env.version_check()["passed"]
+
+
+def test_version_check_fails_closed_on_an_unreadable_node_version(rigged):
+    env = _version_rig(rigged, source="not-a-version")
+    with pytest.raises(MigrationError) as error:
+        env.version_check()
+    assert error.value.code == Code.SCHEMA
+
+
+def test_version_check_infers_9_1_from_the_token_path_and_compares_major_minor(rigged):
+    from dataclasses import replace
+
+    env = _version_rig(rigged, source="9.1.0", version=MigrationError(Code.CONNECTION))
+    env.connection = replace(env.connection, ops_url="ops.lab")
+    result = env.version_check()
+    assert result["passed"] and result["destination"] == {"cluster": "9.1"}
+    assert "inferred" in result["evidence"]
+    assert result["warnings"][0] == "Only major and minor versions could be compared."
+    for host in ("src-1.lab", "src-2.lab"):
+        rigged[3].replies[(host, ReadOperation.VERSION)] = "9.2.0\n"
+    assert not env.version_check()["passed"]
+
+
+def test_selftest_reuses_a_supplied_version_check_instead_of_reading_again(rigged):
+    from logs_migrate import selftest
+
+    env = _version_rig(rigged, version="9.0.2.0200")
+    first = env.version_check()
+    reads_after_check = len(rigged[3].reads)
+    env.version_check = lambda: pytest.fail("the check must not run a second time")
+    report = selftest.run(env, version_check=first)
+    assert report.steps[0].name == "Version compatibility" and report.steps[0].status == "pass"
+    assert not any(op == ReadOperation.VERSION for _, op in rigged[3].reads[reads_after_check:])
+
+
+def test_selftest_records_a_failing_version_read_as_a_failed_step(rigged):
+    from logs_migrate import selftest
+
+    env = _version_rig(rigged, source="garbage")
+    report = selftest.run(env)
+    assert [(s.name, s.status) for s in report.steps] == [("Version compatibility", "fail")]
+
+
+def test_probe_reports_source_then_destination_stages_in_order(rigged):
+    env = rigged[0]
+    messages = []
+    env.on_progress = messages.append
+    with pytest.raises(TrustRequired):
+        env.probe_endpoints()
+    stages = [m for m in messages if not m.startswith("Contacting ")]
+    assert stages == ["Testing source…", "Testing destination…"]
+    source_end = messages.index("Testing destination…")
+    assert all("src.lab" in m for m in messages[1:source_end])
+    assert all("dst.lab" in m for m in messages[source_end + 1 :])

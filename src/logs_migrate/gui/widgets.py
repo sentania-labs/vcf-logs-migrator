@@ -116,13 +116,16 @@ def metric(title: str, value: str, caption: str) -> tuple[QFrame, QLabel, QLabel
 class KeyValues(QWidget):
     """Muted keys on the left, values right aligned, as every mockup card shows them."""
 
-    def __init__(self):
+    def __init__(self, *, compact: bool = False):
         super().__init__()
+        self.compact = compact
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(16)
         self.grid.setVerticalSpacing(6)
         self.grid.setColumnStretch(1, 1)
+        if compact:
+            self.grid.setColumnStretch(0, 1)
 
     def set_rows(self, rows: Iterable[tuple[str, str]]) -> None:
         while self.grid.count():
@@ -131,7 +134,7 @@ class KeyValues(QWidget):
                 item.widget().hide()
                 item.widget().deleteLater()
         for row, (key, value) in enumerate(rows):
-            key_label = label(key, "muted")
+            key_label = label(key, "muted", wrap=self.compact)
             value_label = label(value, "value", wrap=True)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
             value_label.setTextInteractionFlags(

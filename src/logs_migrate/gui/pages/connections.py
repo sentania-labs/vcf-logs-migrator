@@ -8,12 +8,10 @@ from ..widgets import (
     Table,
     badge,
     banner,
-    button,
     card,
     columns,
     field,
     label,
-    row,
     set_banner,
     set_status,
 )
@@ -41,7 +39,10 @@ class ConnectionsPage(Page):
             "warn",
         )
         self.preview.hide()
+        self.version_caution = banner("Untested destination", "", "warn")
+        self.version_caution.hide()
         self.body.addWidget(self.error)
+        self.body.addWidget(self.version_caution)
         self.body.addWidget(self.preview)
 
         source, source_layout = card("Source")
@@ -62,7 +63,7 @@ class ConnectionsPage(Page):
             )
         )
         self.source_badge = badge("Not tested")
-        source_layout.addWidget(row(button("Test source", "", self.connect), self.source_badge))
+        source_layout.addWidget(self.source_badge)
         source_layout.addWidget(
             label(
                 "Root SSH lets destination nodes read history. Tests cover every source node; "
@@ -110,8 +111,7 @@ class ConnectionsPage(Page):
             )
         )
         self.destination_badge = badge("Not tested")
-        self.destination_button = button("Test destination", "", self.connect)
-        destination_layout.addWidget(row(self.destination_button, self.destination_badge))
+        destination_layout.addWidget(self.destination_badge)
         self.switch_hint = label(
             "To sign in to 9.1.1 with an Ops token, enter its VCF Operations URL above.",
             "hint",
@@ -124,6 +124,7 @@ class ConnectionsPage(Page):
         self.ops_url.textChanged.connect(lambda _text: self.refresh())
         for edit in self.inputs():
             edit.returnPressed.connect(self.connect)
+            edit.textChanged.connect(lambda _text: self.refresh())
 
         checks, checks_layout = card("Connection checks")
         self.checks = Table(["Check", "Result"], wrap=True)
@@ -143,7 +144,7 @@ class ConnectionsPage(Page):
 
         self.note.setText("Connection tests are read only.")
         self.disconnect_button = self.add_action("Disconnect", "", self.disconnect)
-        self.selftest_button = self.add_action("Run self-test", "", self.app.run_selftest)
+        self.test_button = self.add_action("Test connections", "primary", self.connect)
         self.compare_button = self.add_action(
             "Compare configuration", "primary", lambda: self.app.show_page("configuration")
         )
@@ -204,18 +205,7 @@ class ConnectionsPage(Page):
     def connect(self) -> None:
         self.remember_addresses()
         values = self.values()
-        missing = (
-            vm.missing_fields(values, bool(self.ops_url.text().strip()))
-            if self.app.state.settings.fixture_path
-            else [
-                label
-                for key, label in (
-                    ("source_host", "Cluster member"),
-                    ("destination_host", "Logs host and port"),
-                )
-                if not values[key].strip()
-            ]
-        )
+        missing = vm.missing_fields(values, bool(self.ops_url.text().strip()))
         if missing:
             self.validation = "Enter " + ", ".join(missing) + " before testing."
             self.refresh()
@@ -247,10 +237,15 @@ class ConnectionsPage(Page):
             set_banner(self.error, "Required fields are empty", self.validation, "bad")
             self.error.show()
         elif state.connect_error:
+            version_refused = bool(
+                discovered
+                and discovered.get("version_check")
+                and not discovered["version_check"]["passed"]
+            )
             set_banner(
                 self.error,
-                "Connection failed",
-                vm.describe_error(state.connect_error) + " No migration request was submitted.",
+                "Versions not compatible" if version_refused else "Connection failed",
+                vm.describe_error(state.connect_error),
                 "bad",
             )
             self.error.show()
@@ -265,18 +260,39 @@ class ConnectionsPage(Page):
         else:
             source, destination = discovered["source"], discovered["destination"]
             mode = "live" if state.live else "simulator"
-            self.source_badge.setText(f"{vm.format_version(source['version'])} · {mode}")
-            self.destination_badge.setText(f"{vm.format_version(destination['version'])} · {mode}")
-            for widget in (self.source_badge, self.destination_badge):
-                set_status(widget, "ok")
+            self.source_badge.setText(f"{source['version']} · {mode}")
+            self.destination_badge.setText(f"{destination['version']} · {mode}")
+            check = discovered.get("version_check", {})
+            problem = check.get("message", "") if not check.get("passed", True) else ""
+            source_bad = bool(
+                problem and (problem.startswith("Source") or "Source version" in problem)
+            )
+            destination_bad = bool(
+                problem and (not source_bad or problem.startswith("Destination"))
+            )
+            set_status(self.source_badge, "bad" if source_bad else "ok")
+            set_status(self.destination_badge, "bad" if destination_bad else "ok")
             self.set_heading(
                 "Connections" + (" · 9.1.1 Preview" if state.preview else ""),
-                f"{vm.format_version(source['version'])} → "
-                f"{vm.format_version(destination['version'])} · "
+                f"{source['version']} → "
+                f"{destination['version']} · "
                 "use a member address for each cluster"
                 if not state.preview
                 else "Same connection step; version selects the authentication method",
             )
+        check = (discovered or {}).get("version_check", {})
+        caution = next((w for w in check.get("warnings", []) if "has not been tested" in w), None)
+        if caution and check.get("passed"):
+            version = discovered["destination"]["version"]
+            set_banner(
+                self.version_caution,
+                "Untested destination",
+                f"Destination {version} has not been tested. You can continue.",
+                "warn",
+            )
+            self.version_caution.show()
+        else:
+            self.version_caution.hide()
         token = state.preview or bool(self.ops_url.text().strip())
         self.preview.setVisible(state.preview)
         self.before_import.setVisible(state.preview)
@@ -284,7 +300,24 @@ class ConnectionsPage(Page):
         self.password_fields.setVisible(not token)
         self.ssh_fields.setVisible(not token)
         self.switch_hint.setVisible(not token)
-        self.destination_button.setText("Exchange token and test" if token else "Test destination")
+        missing = vm.missing_fields(self.values(), token)
+        self.test_button.setEnabled(
+            not missing
+            and "connect" not in self.app.worker.pending
+            and "probe" not in self.app.worker.pending
+        )
+        self.test_button.setText(
+            "Test again" if discovered or state.connect_error else "Test connections"
+        )
+        self.test_button.setProperty("variant", "" if state.connected else "primary")
+        self.test_button.style().unpolish(self.test_button)
+        self.test_button.style().polish(self.test_button)
+        if missing:
+            self.note.setText("Enter " + ", ".join(missing) + " to test both connections.")
+        elif state.connected:
+            self.note.setText("Connections are ready. Continue to configuration.")
+        else:
+            self.note.setText("Test both connections to continue.")
         rows = vm.connection_checks(
             discovered, discovered.get("compatible") if discovered else None, state.mode
         )
@@ -296,8 +329,4 @@ class ConnectionsPage(Page):
             rows = [("Self-test", "Failed · " + vm.describe_error(state.selftest_error))] + rows
         self.checks.set_rows(rows)
         self.disconnect_button.setEnabled(state.connected)
-        self.selftest_button.setVisible(state.live)
-        self.selftest_button.setEnabled(
-            state.connected and state.live and "selftest" not in self.app.worker.pending
-        )
         self.compare_button.setEnabled(state.connected)

@@ -65,7 +65,7 @@ class PlanPage(Page):
         self.stack.addWidget(self._blocked_view())
         self.finish_body()
         self.change_button = self.add_action("Change dates", "", self.change_dates)
-        self.refresh_button = self.add_action("Refresh preview", "", self.preview)
+        self.refresh_button = self.add_action("Preview dates", "primary", self.preview)
         self.start_button = self.add_action("Start migration", "primary", self.start)
 
     def _plan_view(self) -> QWidget:
@@ -74,10 +74,12 @@ class PlanPage(Page):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         self.preview_badge = badge("9.1.1 Preview", "warn")
+        self.untested_badge = badge("", "warn")
         self.badges = row(
-            badge("No migration service stop", "info"),
-            badge("Active tail excluded", "warn"),
+            badge("Source stays running", "info"),
+            badge("Logs still being written are left for later", "warn"),
             self.preview_badge,
+            self.untested_badge,
         )
         layout.addWidget(self.badges)
         self.error = banner("", "", "bad")
@@ -114,6 +116,7 @@ class PlanPage(Page):
             button(name, "", lambda _checked=False, n=name: self.apply_preset(n))
             for name, _ in vm.PRESETS
         ]
+        self.preset_buttons = presets
         for widget in presets:
             widget.setAccessibleName(f"Preset {widget.text()}")
         window_layout.addWidget(row(*presets))
@@ -144,7 +147,12 @@ class PlanPage(Page):
         ):
             bar = TimelineBar(caption)
             self.bars[caption] = bar
-            grid.addWidget(label(caption, "muted"), index, 0)
+            display = {
+                "Included copy": "Logs to copy",
+                "Destination overlap": "Already at destination",
+                "Latest excluded": "Still being written",
+            }.get(caption, caption)
+            grid.addWidget(label(display, "muted"), index, 0)
             grid.addWidget(bar, index, 1)
         grid_holder = QWidget()
         grid_holder.setLayout(grid)
@@ -154,10 +162,10 @@ class PlanPage(Page):
         window_layout.addWidget(self.included)
         window_layout.addWidget(self.sealed)
 
-        groups_card, groups_layout = card("Groups in this window")
+        groups_card, groups_layout = card("Stored log groups in these dates")
         self.groups_title = label("", "subhead")
         groups_layout.addWidget(self.groups_title)
-        self.groups = Table(["Group", "Dates UTC", "Size / events", "Action"])
+        self.groups = Table(["Stored logs", "Dates UTC", "Size / events", "Action"])
         groups_layout.addWidget(self.groups)
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -168,7 +176,7 @@ class PlanPage(Page):
         left_layout.addStretch(1)
 
         checks_card, checks_layout = card("Checks")
-        self.checks = KeyValues()
+        self.checks = KeyValues(compact=True)
         checks_layout.addWidget(self.checks)
         estimate_card, estimate_layout = card("Estimated time")
         self.estimate = label("Preview the dates to see an estimate.", "body", wrap=True)
@@ -208,15 +216,15 @@ class PlanPage(Page):
         self.split = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.split.setContentsMargins(0, 0, 0, 0)
         self.split.setSpacing(16)
-        self.split.addWidget(left, 7)
-        self.split.addWidget(right, 3)
+        self.split.addWidget(left, 5)
+        self.split.addWidget(right, 4)
         self.split_holder = QWidget()
         self.split_holder.setLayout(self.split)
         layout.addWidget(self.split_holder)
         self.ack = QCheckBox("I understand you aren't going to copy the latest data.")
         self.ack.setAccessibleName("Latest-data acknowledgment")
         self.ack.stateChanged.connect(self._ack_changed)
-        layout.addWidget(self.ack)
+        self.footer.layout().insertWidget(0, self.ack)
         return holder
 
     def _blocked_view(self) -> QWidget:
@@ -315,8 +323,11 @@ class PlanPage(Page):
     def resizeEvent(self, event):  # noqa: N802 (Qt override)
         super().resizeEvent(event)
         self.warning_timer.start(0)
-        # Below 1200px the side cards stack under the window card, as the 1024x700 study shows.
-        narrow = self.width() < 1200
+        # Keep the plan and its checks together at common desktop widths.
+        narrow = self.width() < 1000
+        self.footer.layout().setDirection(
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
         direction = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
         if self.split.direction() != direction:
             self.split.setDirection(direction)
@@ -345,11 +356,21 @@ class PlanPage(Page):
         if days is None:
             return
         self._set_dates(days)
-        self.preview()
+        for widget in self.preset_buttons:
+            widget.setProperty("variant", "primary" if widget.text() == name else "")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self.app.state.plan_run = None
+        self.refresh()
 
     def preview(self) -> None:
         state = self.app.state
-        if not state.connected:
+        if not state.connected or "discover" in self.app.worker.pending:
+            return
+        if (state.discovered or {}).get("inventory_pending"):
+            state.plan_error = None
+            self.app.submit("discover", "discover")
+            self.refresh()
             return
         start, end = self.current_dates()
         self.date_message = vm.window_error(start, end) or ""
@@ -438,7 +459,28 @@ class PlanPage(Page):
             if started
             else "Start migration · unavailable"
         )
-        self.refresh_button.setEnabled(state.connected and not pending)
+        self.refresh_button.setEnabled(
+            state.connected
+            and not pending
+            and "discover" not in self.app.worker.pending
+            and (
+                not (state.discovered or {}).get("inventory_pending", False)
+                or bool(state.plan_error)
+            )
+        )
+        self.refresh_button.setText(
+            "Retry inventory"
+            if (state.discovered or {}).get("inventory_pending") and state.plan_error
+            else "Preview dates"
+        )
+        ready_to_start = view is not None and self._preview_is_current() and not started
+        for widget, primary in (
+            (self.refresh_button, not ready_to_start),
+            (self.start_button, ready_to_start),
+        ):
+            widget.setProperty("variant", "primary" if primary else "")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def refresh(self) -> None:
         state = self.app.state
@@ -447,6 +489,13 @@ class PlanPage(Page):
         self.ack.setChecked(state.acknowledged)
         self.ack.blockSignals(False)
         self.preview_badge.setVisible(state.preview)
+        check = (discovered or {}).get("version_check", {})
+        caution = any("has not been tested" in w for w in check.get("warnings", []))
+        self.untested_badge.setVisible(bool(caution and check.get("passed")))
+        if caution:
+            self.untested_badge.setText(
+                f"Destination {discovered['destination']['version']} untested"
+            )
         code = (state.plan_error or "").partition(": ")[0]
         blocked = bool(
             state.plan_error
@@ -457,7 +506,9 @@ class PlanPage(Page):
         if blocked and not self.blocked_dismissed:
             self.stack.setCurrentIndex(1)
             detail = vm.plan_error_text(
-                state.plan_error, discovered, vm.window_from_days(*self.current_dates())
+                state.plan_error,
+                discovered,
+                vm.window_from_days(*self.current_dates()),
             )
             set_banner(
                 self.blocked_banner,
@@ -519,7 +570,9 @@ class PlanPage(Page):
                 self.error,
                 "Migration needs attention",
                 vm.plan_error_text(
-                    state.plan_error, discovered, vm.window_from_days(*self.current_dates())
+                    state.plan_error,
+                    discovered,
+                    vm.window_from_days(*self.current_dates()),
                 )
                 + " Adjust the dates or refresh the preview.",
                 "bad",
@@ -555,7 +608,8 @@ class PlanPage(Page):
         if state.plan_run is None:
             self.set_heading(
                 "Discovery & Plan",
-                "Choose dates; whole sealed groups are selected"
+                "Choose how far back to migrate, then Preview. "
+                "Whole finished log groups are copied."
                 if state.connected
                 else "Connect both environments to preview history",
             )
@@ -574,12 +628,25 @@ class PlanPage(Page):
                 "Destination overlap",
                 "Latest excluded",
             ):
-                self.bars[caption].set_span(extent, None, "No preview yet", "soft")
+                text = (
+                    "Preparing preview…"
+                    if "plan" in self.app.worker.pending
+                    else "Choose dates, then Preview"
+                )
+                self.bars[caption].set_span(extent, None, text, "soft")
             self.included.setText("")
             self.sealed.setText("")
-            self.groups_title.setText("No preview yet")
+            self.groups_title.setText(
+                "Listing buckets…"
+                if "discover" in self.app.worker.pending
+                else "Preparing the preview…"
+                if "plan" in self.app.worker.pending
+                else "Choose dates, then select Preview dates."
+            )
             self.groups.set_rows([])
-            self.checks.set_rows([("Preview", "Not run")])
+            self.checks.set_rows(
+                [("Preview", "Running…" if "plan" in self.app.worker.pending else "Not run")]
+            )
             self.storage.set_rows([])
             self.estimate.setText("Preview the dates to see an estimate.")
             self.warnings.setText("")
@@ -597,7 +664,10 @@ class PlanPage(Page):
         for widget, text in zip(self.axis_labels, vm.axis_labels(extent), strict=True):
             widget.setText(text)
         self.bars["Source history"].set_span(
-            extent, extent, vm.format_day_range(*extent, suffix=""), "solid"
+            extent,
+            extent,
+            vm.format_day_range(*extent, suffix=""),
+            "solid",
         )
         self.bars["Requested dates"].set_span(
             extent, view["window"], view["requested"].replace(" UTC", ""), "soft"
@@ -619,8 +689,10 @@ class PlanPage(Page):
             f"<b>Included: {escape(view['included'])}.</b> "
             "Whole groups can extend beyond the requested dates."
         )
+        utc_dates = vm.format_day_range(*view["window"])
         self.sealed.setText(
-            view["sealed_text"]
+            f"Requested dates in UTC: {utc_dates}. "
+            + view["sealed_text"]
             + (
                 " Open groups stay behind, even when cutover stops new events."
                 if view["active_count"]

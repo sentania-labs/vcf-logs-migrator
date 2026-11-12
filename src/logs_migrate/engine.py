@@ -526,8 +526,15 @@ class Engine:
             pass
         return {"bytes": None, "nodes": [], "window_seconds": None}
 
+    def _version_check(self):
+        from .versions import enforce
+
+        check = getattr(self.env, "version_check", None)
+        return enforce(check()) if check else None
+
     @safe_boundary
     def discover(self):
+        self._version_check()
         source, destination = self.env.discover()
         return {
             "source": asdict(source),
@@ -734,12 +741,20 @@ class Engine:
     @safe_boundary
     def plan(self, window, policy=None):
         with self._exclusive():
+            version_check = self._version_check()
             discover = getattr(self.env, "discover_window", None)
             source, destination = discover(window) if discover else self.env.discover()
             task = self._settle(destination.id)
+            if getattr(self.env, "on_progress", None):
+                self.env.on_progress("Checking space…")
             if destination.inventory_available:
                 destination = self.env.destination_cluster(fresh=True)
+            if getattr(self.env, "on_progress", None):
+                self.env.on_progress("Planning…")
             plan = self._plan_with_existing(source, destination, window)
+            if version_check:
+                plan["version_check"] = version_check
+                plan["warnings"].extend(version_check["warnings"])
             plan["estimate"] = self._estimate(plan, self._nodes_observed(destination))
             plan["source_ingest"] = self._source_ingest()
             growth = plan["source_ingest"]
@@ -789,11 +804,20 @@ class Engine:
                 "query_policy": asdict(policy or Policy()),
                 "verification": {"outcome": Verification.PENDING.value, "complete": False},
             }
-            self._audit(run, "plan_previewed")
+            self._audit(run, "plan_previewed", {"version_check": version_check})
             return run
 
     def _resume_plan(self, root):
         original = root["plan"]
+        try:
+            version_check = self._version_check()
+        except MigrationError as error:
+            self._audit(
+                root,
+                "version_check_failed",
+                {"version_check": getattr(error, "version_check", None)},
+            )
+            raise
         window = Window(**original["window"])
         invalidate = getattr(self.env, "invalidate_inventory", None)
         if invalidate is not None:
@@ -908,6 +932,15 @@ class Engine:
         filtered = replace(source, buckets=tuple(b for b in source.buckets if b.id not in received))
         plan_destination = replace(destination, buckets=()) if journal_only else destination
         plan = build_plan(filtered, plan_destination, window)
+        if version_check:
+            plan["version_check"] = version_check
+            plan["warnings"].extend(version_check["warnings"])
+            old = original["destination"]["version"]
+            if old != destination.version:
+                plan["warnings"].append(
+                    f"Destination version changed from {old} to {destination.version}; "
+                    "the current pairing passed the version check."
+                )
         plan["already_received"] = [intended[i] for i in sorted(received)]
         if not journal_only and duplicates:
             plan["warnings"].append("Multiple destination copies: " + "; ".join(duplicates))
@@ -949,7 +982,7 @@ class Engine:
                 "resume_parent": run_id,
                 "verification": {"outcome": Verification.PENDING.value, "complete": False},
             }
-            self._audit(run, "resume_previewed")
+            self._audit(run, "resume_previewed", {"version_check": plan.get("version_check")})
             return run
 
     def _counts(self, policy, scope, window, keys):
@@ -994,6 +1027,16 @@ class Engine:
                 ),
                 Code.STATE,
             )
+            try:
+                version_check = self._version_check()
+            except MigrationError as error:
+                self._audit(
+                    run,
+                    "version_check_failed",
+                    {"version_check": getattr(error, "version_check", None)},
+                )
+                raise
+            self._audit(run, "version_checked", {"version_check": version_check})
             # Authorization always rechecks the appliances, even after a cached preview.
             cache = getattr(self.env, "_inventory_cache", None)
             if cache is not None:

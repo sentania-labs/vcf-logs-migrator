@@ -123,7 +123,7 @@ The example report counts whole selected groups on the source, but only the requ
 
 Open the download as shown above. These pictures come from the simulator, not a real environment.
 
-1. On **Connections**, enter the source and destination addresses and credentials. Test the connection and compare the fingerprint in each trust prompt with the appliance. Then run the self-test and read the results.
+1. On **Connections**, enter the source and destination addresses and credentials. Press **Test connections** and compare the fingerprint in each trust prompt with the appliance. One test checks both appliances, their versions and the destination's migration API; against real appliances it also runs the self-test. Read the results, then follow the next step the page suggests.
 
    ![Connections page in the simulator](docs/images/gui/04-connections.png)
 

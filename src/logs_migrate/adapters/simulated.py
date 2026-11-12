@@ -132,6 +132,24 @@ class SimulatedEnvironment:
                 self._persist()
                 self.locked = False
 
+    def version_check(self):
+        from ..versions import evaluate
+
+        source = self.data["source"]
+        destination = self.data["destination"]
+        source_versions = source.get("node_versions") or {
+            n["id"]: source["version"] for n in source["nodes"]
+        }
+        destination_versions = destination.get("node_versions") or {
+            n["id"]: destination["version"].removesuffix("-preview") for n in destination["nodes"]
+        }
+        return evaluate(
+            source_versions,
+            destination_versions,
+            destination.get("migration_api", "present"),
+            "Simulator node versions",
+        )
+
     def destination_topology(self):
         self._fault("discover")
         destination = self.data["destination"]
@@ -145,6 +163,8 @@ class SimulatedEnvironment:
 
         def cluster(scope):
             data = dict(self.data[scope])
+            data.pop("node_versions", None)
+            data.pop("migration_api", None)
             data.pop("config", None)
             data.pop("hosts", None)
             if (

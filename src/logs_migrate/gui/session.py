@@ -76,10 +76,46 @@ class Session:
         self.journal = Journal(journal_path)
         self.env = env
         self.engine = Engine(env, self.journal, clock)
-        result = self.discover()
-        result["mode"] = self.mode
-        result["checks"] = self._checks(result)
-        return result
+        # A connection test checks access and versions only. Bucket inventory begins on Plan.
+        if self.on_progress:
+            self.on_progress("Testing source…")
+        if self.mode == "live" and hasattr(env, "source_version"):
+            env.source_version()
+        if self.on_progress:
+            self.on_progress("Testing destination…")
+        check = env.version_check()
+
+        def side(name):
+            versions = check[name]
+            return {
+                "id": self.connection.get("source_host" if name == "source" else "destination")
+                or name,
+                "version": next(iter(versions.values()), "Unknown"),
+                "nodes": [{"id": node} for node in versions],
+                "buckets": [],
+                "partitions": [],
+                "fields": [],
+            }
+
+        rows = [
+            ("Source connection", "Passed"),
+            ("Destination migration API", "Passed" if check["api"] == "present" else "Failed"),
+            (
+                "Version compatibility",
+                ("Passed · " if check["passed"] else "Failed · ") + check["message"],
+            ),
+            ("Version evidence", check["evidence"]),
+        ]
+        rows.extend(("Version caution", warning) for warning in check["warnings"])
+        return {
+            "source": side("source"),
+            "destination": side("destination"),
+            "compatible": None if check["passed"] else "gui:" + check["message"],
+            "version_check": check,
+            "inventory_pending": True,
+            "mode": self.mode,
+            "checks": rows,
+        }
 
     def probe_endpoints(self, *, connection: dict[str, str]) -> None:
         self.disconnect()
@@ -182,11 +218,11 @@ class Session:
         )
         return rows
 
-    def selftest(self) -> dict:
+    def selftest(self, version_check: dict | None = None) -> dict:
         from .. import selftest
 
         require(self.env is not None and self.mode == "live", Code.STATE)
-        return selftest.run(self.env).data()
+        return selftest.run(self.env, version_check=version_check).data()
 
     def reconnect(self, *, fixture: str, journal: str) -> dict:
         """Re-open the same environment after a lost connection; credentials stay in memory."""
@@ -255,6 +291,8 @@ class Session:
         return self._engine().stop(task_id)
 
     def verify(self, *, run_id: str) -> dict:
+        if self.on_progress:
+            self.on_progress("Verifying counts…")
         return self._engine().verify(run_id)
 
     def runs(self) -> list[dict]:

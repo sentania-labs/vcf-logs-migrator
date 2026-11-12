@@ -113,7 +113,12 @@ class OverviewPage(Page):
                     "Available history",
                     vm.format_day_range(*extent) if extent else vm.UNAVAILABLE,
                 ),
-                ("Sealed events", vm.format_count(vm.selected_message_count(sealed))),
+                (
+                    "Sealed events",
+                    "Not checked yet"
+                    if state.discovered.get("inventory_pending")
+                    else vm.format_count(vm.selected_message_count(sealed)),
+                ),
             ]
         )
         self.destination_rows.set_rows(
@@ -127,7 +132,9 @@ class OverviewPage(Page):
                 ("Version", vm.cluster_summary(destination)),
                 (
                     "Existing history",
-                    f"{len(destination['buckets'])} bucket"
+                    "Not checked yet"
+                    if state.discovered.get("inventory_pending")
+                    else f"{len(destination['buckets'])} bucket"
                     + ("s" if len(destination["buckets"]) != 1 else "")
                     if not state.preview
                     else "Not exposed by 9.1.1",
