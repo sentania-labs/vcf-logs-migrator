@@ -229,9 +229,10 @@ write to the destination.
 ## The desktop window
 
 `logs-migrate gui` with an empty fixture path in Settings connects to appliances.
-Enter the addresses and passwords on Connections and press Test; unknown identities
-open a dialog with the fingerprints. The Connections page lists the same checks as
-the self-test (Run self-test button) and the rest of the workflow is unchanged:
+Enter the addresses and passwords on Connections and press Test connections; unknown
+identities open a dialog with the fingerprints. That one test checks the versions and
+migration API, then runs the self-test, and the Connections page lists the same checks
+as the CLI self-test. The rest of the workflow is unchanged:
 Discovery & Plan, Start, Migration, Verification, Reports.
 
 ## 9.1.1 preview
