@@ -82,8 +82,7 @@ A probe that fails prints which host it was contacting, for example
 nothing from the remote side.
 
 When several SSH hosts present the same host key (common for appliances cloned from
-one image), the CLI prints `SSH host X presents the same key as Y.` to stderr and the
-trust dialog adds the same line. Each host is still enrolled separately; confirm the
+one image), the CLI prints `SSH host X presents the same key as Y.` to stderr. Each host is still enrolled separately; confirm the
 sharing is expected.
 
 Enrolled identities live in `~/.config/vcf-logs-migrator/trusted-identities.json`
