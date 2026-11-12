@@ -15,6 +15,162 @@ from logs_migrate.reporting import markdown
 from logs_migrate.verification import reconcile, stable_counts
 
 
+def test_complete_duplicate_destination_copies_are_counted_once(rig):
+    engine, env, _ = rig
+    source = env.data["source"]["buckets"][0]
+    for node in ("dst-1", "dst-2", "dst-3"):
+        env.data["destination"]["buckets"].append({**source, "node": node})
+    run = planned(engine)
+    assert [b["id"] for b in run["plan"]["already_received"]] == [source["id"]]
+    assert len(run["plan"]["selected"]) == 2
+    assert any("dst-1" in warning and "dst-2" in warning for warning in run["plan"]["warnings"])
+    execute(engine, run)
+    assert engine.status()["status"] == "completed"
+    copies = [b for b in env.data["destination"]["buckets"] if b["id"] == source["id"]]
+    assert len(copies) == 3
+    assert engine.verify(run["id"])["outcome"] == "verified_success"
+
+
+@pytest.mark.parametrize("nodes", [("dst-1",), ("dst-1", "dst-2")])
+def test_buckets_already_on_the_destination_never_block_whichever_node_holds_them(rig, nodes):
+    engine, env, _ = rig
+    source = env.data["source"]["buckets"][0]
+    for node in nodes:
+        env.data["destination"]["buckets"].append({**source, "node": node})
+    plan = planned(engine)["plan"]
+    assert [b["id"] for b in plan["already_received"]] == [source["id"]]
+    assert source["id"] not in {b["id"] for b in plan["selected"]}
+    assert len(plan["selected"]) == 2
+    assert any("another node" in w and source["id"] in w for w in plan["warnings"])
+
+
+def test_running_external_transfer_names_overlapping_buckets(rig):
+    engine, env, _ = rig
+    bucket = env.discover()[0].buckets[0]
+    env.data["complete_after_polls"] = 100
+    env.start(Window(bucket.start, bucket.start + DAY), ())
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert error.value.code == Code.OVERLAP
+    assert "transfer is running" in error.value.message
+    assert bucket.id in error.value.message and "2026-03-01" in error.value.message
+
+
+def _earlier_task_listing(env, bucket):
+    env.data["destination"]["inventory_available"] = True
+    env.data["history"] = [
+        {
+            "source": env.data["source"]["id"],
+            "destination": env.data["destination"]["id"],
+            "window": {"start": bucket.start, "end": bucket.end + 1},
+            "destination_nodes": [],
+            "bucket_ids": [bucket.id],
+            "complete": True,
+            "task_id": "earlier-1",
+        }
+    ]
+
+
+@pytest.mark.parametrize("crossing", [False, True])
+def test_unfinished_earlier_task_holds_buckets_the_destination_lacks(rig, crossing):
+    engine, env, _ = rig
+    bucket = env.discover()[0].buckets[0]
+    _earlier_task_listing(env, bucket)
+    if crossing:
+        env.data["history"][0]["bucket_ids"] = []
+    env.transfer = lambda: Transfer("earlier-1", "unknown")
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert error.value.code == Code.OVERLAP
+    assert bucket.id in error.value.affected_ids
+    assert (
+        bucket.id in error.value.message and "after that transfer finishes" in error.value.message
+    )
+
+
+@pytest.mark.parametrize("crossing", [False, True])
+def test_finished_earlier_task_listing_absent_buckets_warns_and_proceeds(rig, crossing):
+    engine, env, _ = rig
+    bucket = env.discover()[0].buckets[0]
+    _earlier_task_listing(env, bucket)
+    if crossing:
+        env.data["history"][0]["bucket_ids"] = []
+    plan = planned(engine)["plan"]
+    assert bucket.id in {b["id"] for b in plan["selected"]}
+    note = next(w for w in plan["warnings"] if "not on the destination" in w)
+    assert bucket.id in note
+
+
+def test_repeated_destination_listing_on_one_node_is_incomplete_only_when_selected(rig):
+    engine, env, _ = rig
+    source = env.data["source"]["buckets"][0]
+    env.data["destination"]["buckets"] += [{**source, "node": "dst-1"}] * 2
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert error.value.code == Code.INCOMPLETE
+    assert source["id"] in error.value.message
+    other = env.data["source"]["buckets"][1]
+    plan = engine.plan(Window(other["start"], other["end"] + 1), Policy(poll_seconds=0))["plan"]
+    assert source["id"] not in {b["id"] for b in plan["selected"]}
+
+
+@pytest.mark.parametrize(
+    "field,value", [("complete", False), ("registered", False), ("size", 1), ("messages", 1)]
+)
+def test_unsafe_existing_copy_names_bucket_and_destination(rig, field, value):
+    engine, env, _ = rig
+    source = env.data["source"]["buckets"][0]
+    env.data["destination"]["buckets"].append({**source, "node": "dst-1", field: value})
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert source["id"] in error.value.message
+    assert "dst-1" in error.value.message and "2026-03-01" in error.value.message
+    assert "dealt with on the destination" in error.value.message
+
+
+def test_all_bad_copies_are_listed_together(rig):
+    engine, env, _ = rig
+    first, second = env.data["source"]["buckets"][:2]
+    env.data["destination"]["buckets"].extend(
+        [{**first, "node": "dst-1", "size": 1}, {**second, "node": "dst-2", "messages": 1}]
+    )
+    with pytest.raises(MigrationError) as error:
+        planned(engine)
+    assert first["id"] in error.value.message and second["id"] in error.value.message
+    assert "source size 1000 bytes, destination size 1 byte" in error.value.message
+    assert "source 2 messages, destination 1 message" in error.value.message
+
+
+def test_verification_reports_a_copy_that_became_incomplete(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    assert engine.status()["status"] == "completed"
+    copy = env.data["destination"]["buckets"][0]
+    copy["complete"] = False
+    result = engine.verify(run["id"])
+    assert result["incomplete_destination_copies"] == [f"{copy['node']}/{copy['id']}"]
+    report = markdown(journal.load(run["id"]), journal.events(run["id"]))
+    assert "Incomplete or unregistered destination groups" in report
+    assert f"{copy['node']}/{copy['id']}" in report
+
+
+def test_verification_rejects_conflicting_same_node_entries_in_simulation(rig):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    assert engine.status()["status"] == "completed"
+    original = env.data["destination"]["buckets"][0]
+    differing = {**original, "messages": original["messages"] - 1}
+    env.data["destination"]["buckets"].insert(0, differing)
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    assert result["conflicting_destination_copies"] == [f"{original['node']}/{original['id']}"]
+    report = markdown(journal.load(run["id"]), journal.events(run["id"]))
+    assert "conflicting message counts" in report
+    assert f"{original['node']}/{original['id']}" in report
+
+
 @pytest.mark.parametrize("fixture_name", ["sealed-populated.fixture", "sealed-911.fixture"])
 def test_api_flow_preserves_source_and_verifies_daily_counts(rig, fixture_name):
     engine, _, journal = rig
@@ -362,7 +518,8 @@ def test_overlap_guard_survives_current_task_replacement_and_missing_destination
     else:
         with pytest.raises(MigrationError) as error:
             planned(Engine(env, journal, engine.clock))
-        assert error.value.code == Code.OVERLAP
+        assert error.value.code == Code.INCOMPLETE
+        assert "inventory does not show them" in error.value.message
 
 
 def test_whole_bucket_cannot_be_sent_twice_in_adjacent_windows(rig):

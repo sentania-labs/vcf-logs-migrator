@@ -853,6 +853,66 @@ def test_destination_directory_inspection_detects_unregistered_bucket(tmp_path):
         LiveEnvironment.inspect_destination_buckets(adapter, orphan, {bucket.id})
 
 
+def test_destination_inspection_retains_copies_from_each_node(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    env, _ = _live_rig(tmp_path)
+    source, destination = env.discover()
+    bucket = source.buckets[0]
+    nodes = destination.nodes[:2]
+    destination = replace(
+        destination,
+        buckets=tuple(replace(bucket, node=node.id) for node in nodes),
+        inventory_available=True,
+    )
+
+    class SSH:
+        def __init__(self, host):
+            self.host = host
+
+        def existing_bucket_usage(self, ids):
+            return (
+                f"{bucket.size} /store/{bucket.id}\n" if self.host in {n.id for n in nodes} else ""
+            )
+
+    adapter = SimpleNamespace(
+        connection=SimpleNamespace(destination_ssh_user="root"),
+        _ssh=lambda host, credential, user: SSH(host),
+    )
+    inspected = LiveEnvironment.inspect_destination_buckets(adapter, destination, {bucket.id})
+    assert {b.node for b in inspected.buckets} == {node.id for node in nodes}
+
+
+def test_destination_inspection_names_an_indexed_bucket_without_a_directory(tmp_path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    env, _ = _live_rig(tmp_path)
+    source, destination = env.discover()
+    bucket = source.buckets[0]
+    node = destination.nodes[0]
+    destination = replace(
+        destination,
+        buckets=(replace(bucket, node=node.id),),
+        inventory_available=True,
+    )
+
+    class SSH:
+        def existing_bucket_usage(self, ids):
+            return ""
+
+    adapter = SimpleNamespace(
+        connection=SimpleNamespace(destination_ssh_user="root"),
+        _ssh=lambda host, credential, user: SSH(),
+    )
+    with pytest.raises(MigrationError) as error:
+        LiveEnvironment.inspect_destination_buckets(adapter, destination, {bucket.id})
+    assert error.value.code == Code.INCOMPLETE
+    assert error.value.affected_ids == {bucket.id}
+    assert f"{node.id}: {bucket.id}" in error.value.message
+
+
 def test_live_settlement_uses_registered_inventory_and_excludes_pending(tmp_path):
     from dataclasses import replace
 
@@ -2078,6 +2138,14 @@ def test_active_buckets_keep_recorded_dates(rigged):
     )
 
 
+def test_repeated_listing_on_one_node_does_not_fail_discovery(rigged):
+    env, _, _, _ = trusted(rigged)
+    inventory = env.node_inventory("src-1.lab")
+    inventory.buckets.append(inventory.buckets[0])
+    cluster = env._cluster_from_nodes("c", "8.18.7", [inventory], (), "i")
+    assert len(cluster.buckets) == len(inventory.buckets)
+
+
 def test_empty_active_bucket_sentinel_has_no_dates():
     line = (
         f"id={C}, status=active cmd=[startTime=9223372036854775807 "
@@ -2422,7 +2490,7 @@ def test_external_window_overlap_warns_only_with_destination_inventory(tmp_path)
     env.discover = lambda: (source, replace(destination, inventory_available=True))
     run = engine.plan(window, Policy(poll_seconds=0))
     assert any(
-        "old-task" in warning and "Selected groups" in warning
+        "old-task" in warning and "not on the destination" in warning
         for warning in run["plan"]["warnings"]
     )
 
@@ -2471,6 +2539,78 @@ def test_live_bucket_verification_checks_destination_counts(tmp_path):
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_discrepancy"
     assert len(result["bucket_check"]["unmatched"]) == 1
+
+
+@pytest.mark.parametrize("matching_last", [True, False])
+def test_verification_rejects_conflicting_repeated_destination_entries(tmp_path, matching_last):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], active_ack=ACTIVE_ACK)
+    engine.status()
+    source, destination = env.discover()
+    ids = {b["id"] for b in run["plan"]["selected"]}
+    matching = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids
+    )
+    differing = replace(matching[0], messages=matching[0].messages - 1)
+    copies = (differing, matching[0]) if matching_last else (matching[0], differing)
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=(*copies, *matching[1:]), inventory_available=True
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] != "verified_success"
+    assert any(matching[0].id in key for key in result["bucket_check"]["unmatched"])
+    env.destination_cluster = lambda fresh=False: replace(
+        destination,
+        buckets=(replace(matching[0], messages=None), differing, matching[0], *matching[1:]),
+        inventory_available=True,
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_discrepancy"
+    env.destination_cluster = lambda fresh=False: replace(
+        destination, buckets=(matching[0], matching[0], *matching[1:]), inventory_available=True
+    )
+    result = engine.verify(run["id"])
+    assert result["outcome"] == "verified_success"
+    assert result["bucket_check"]["matched_groups"] == len(matching)
+
+
+def test_live_verification_reports_count_loss_and_incomplete_copy_separately(tmp_path):
+    from dataclasses import replace
+
+    from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
+
+    env, engine = _live_rig(tmp_path)
+    window = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    run = engine.plan(window, Policy(poll_seconds=0))
+    engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
+    engine.status()
+    source, destination = env.discover()
+    ids = {b["id"] for b in run["plan"]["selected"]}
+    matching = tuple(
+        replace(b, node=destination.nodes[0].id) for b in source.buckets if b.id in ids
+    )
+
+    def verify(buckets):
+        env.destination_cluster = lambda fresh=False: replace(
+            destination, buckets=buckets, inventory_available=True
+        )
+        return engine.verify(run["id"])
+
+    lost = verify((replace(matching[0], messages=matching[0].messages - 1), *matching[1:]))
+    assert lost["outcome"] == "verified_discrepancy"
+    assert lost["bucket_check"]["unmatched"] == [
+        next(f"{b.node}/{b.id}" for b in source.buckets if b.id == matching[0].id)
+    ]
+    assert "incomplete_destination_copies" not in lost
+    partial = verify((replace(matching[0], complete=False), *matching[1:]))
+    assert partial["incomplete_destination_copies"] == [f"{matching[0].node}/{matching[0].id}"]
+    assert partial["outcome"] == "verified_discrepancy"
 
 
 def test_live_bucket_verification_does_not_claim_difference_for_unknown_count(tmp_path):

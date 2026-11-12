@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from gui_driver import FIXTURES, Driver  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from logs_migrate.gui import viewmodel as vm  # noqa: E402
 
@@ -254,7 +255,7 @@ def test_live_connect_trusts_identities_then_runs_the_workflow(driver, monkeypat
     driver.plan()
     plan_page = driver.pages["plan"]
     checks = dict(plan_page.checks.rows())
-    assert checks["Source ingest"] == "No active bucket growth in 5 s"
+    assert checks["Source ingest"] == "No open group growth in 5 s"
     driver.acknowledge()
     driver.start()
     driver.poll_until_finished()
@@ -534,7 +535,7 @@ def test_editing_a_date_retires_the_preview_and_acknowledgment(driver):
     assert page.start_button.isEnabled()
 
 
-def test_blocked_preview_keeps_the_date_editors_reachable(driver):
+def test_blocked_preview_offers_refresh_without_asking_for_dates(driver):
     driver.connect()
     driver.plan()
     driver.acknowledge()
@@ -545,6 +546,8 @@ def test_blocked_preview_keeps_the_date_editors_reachable(driver):
     page = driver.pages["plan"]
     page.refresh()
     assert page.stack.currentIndex() == 1 and page.change_button.isVisible()
+    assert page.refresh_button.isEnabled() and not page.start_button.isEnabled()
+    assert "refresh" in page.blocked_next.text().lower()
     page.change_dates()
     driver.wait(30)
     assert page.stack.currentIndex() == 0
@@ -572,6 +575,43 @@ def test_blocked_page_shows_the_refusal_it_received(driver):
     assert "in-flight transfer" in refused
 
 
+def test_destination_conflict_shows_and_copies_the_affected_bucket(driver):
+    driver.connect()
+    driver.show("plan")
+    bucket_id = "00000000-0000-0000-0000-000000000001"
+    driver.state.plan_error = (
+        "bucket_identity_conflict: 1 destination bucket needs attention: "
+        f"{bucket_id} (2026-03-01 to 2026-03-01 UTC; destination: dst-1; "
+        "source size 1000 bytes, destination size 1 bytes). "
+        "The named copies on the destination must be dealt with there."
+    )
+    driver.state.plan_affected = [bucket_id]
+    page = driver.pages["plan"]
+    page.refresh()
+    assert page.stack.currentIndex() == 1
+    assert "source size" in dict(page.overlap_rows.rows())["Refused"]
+    assert "transfer" not in page.blocked_banner.text().lower()
+    page.group_ids_toggle.click()
+    assert page.group_ids.toPlainText() == bucket_id
+    page.group_ids_copy.click()
+    assert QApplication.clipboard().text() == bucket_id
+
+
+def test_blocked_page_is_chosen_by_error_code_not_by_message_wording(driver):
+    driver.connect()
+    driver.show("plan")
+    page = driver.pages["plan"]
+    driver.state.plan_error = "topology_changed: Wording nobody matches on."
+    page.refresh()
+    assert page.stack.currentIndex() == 1
+    driver.state.plan_error = "incomplete_evidence: A destination bucket needs attention."
+    page.refresh()
+    assert page.stack.currentIndex() == 0
+    driver.state.plan_affected = ["b1"]
+    page.refresh()
+    assert page.stack.currentIndex() == 1
+
+
 def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(driver):
     driver.connect()
     driver.plan()
@@ -584,7 +624,11 @@ def test_duplicate_source_identities_are_not_shown_as_prior_import_overlap(drive
     page.refresh()
     assert page.stack.currentIndex() == 0 and not page.change_button.isVisible()
     text = page.error.text()
-    assert "duplicate identities" in text and f"{first['node']}/{first['id']}" in text
+    assert "duplicate identities" in text and first["node"] in text
+    assert first["id"] not in text
+    assert page.error_ids_toggle.isVisible()
+    page.error_ids_toggle.click()
+    assert first["id"] in page.error_ids.toPlainText()
     assert "Inspect the source inventory" in text
     assert "overlaps a previous import" not in page.title.text()
 
@@ -997,6 +1041,127 @@ def test_unknown_group_count_explains_retry_and_expands_id(driver):
     assert group["id"] in page.group_ids.toPlainText()
 
 
+@pytest.mark.parametrize("with_bucket_check", [False, True])
+def test_incomplete_destination_copy_is_visible_when_daily_counts_match(driver, with_bucket_check):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.verify()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    result = driver.state.verification
+    result["outcome"] = "verified_discrepancy"
+    result["incomplete_destination_copies"] = ["dst-1/" + group["id"]]
+    if with_bucket_check:
+        result["daily_outcome"] = "verified_success"
+        result["bucket_check"] = {
+            "matched_groups": 3,
+            "total_groups": 3,
+            "matched_events": 6,
+            "total_events": 6,
+            "unmatched": [],
+            "unknown": [],
+        }
+    page = driver.pages["verification"]
+    page.refresh()
+    assert "incomplete" in page.banner.text().lower()
+    assert "dst-1" in page.banner.text() and group["id"] not in page.banner.text()
+    assert page.group_ids_toggle.isVisible()
+    page.group_ids_toggle.click()
+    assert group["id"] in page.group_ids.toPlainText()
+    page.group_ids_copy.click()
+    assert group["id"] in QApplication.clipboard().text()
+
+
+def test_mismatched_group_count_uses_a_label_and_offers_its_id(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.verify()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    result = driver.state.verification
+    result["outcome"] = "verified_discrepancy"
+    result["daily_outcome"] = "verified_success"
+    result["bucket_check"] = {
+        "matched_groups": 2,
+        "total_groups": 3,
+        "matched_events": 4,
+        "total_events": 6,
+        "unmatched": [group["node"] + "/" + group["id"]],
+        "unknown": [],
+    }
+    page = driver.pages["verification"]
+    page.refresh()
+    assert "Group 1" in page.banner.text() and group["id"] not in page.banner.text()
+    assert page.group_ids_toggle.isVisible()
+
+
+def test_conflicting_destination_entries_are_visible_without_raw_ids(driver):
+    driver.connect()
+    driver.plan()
+    driver.acknowledge()
+    driver.start()
+    driver.poll_until_finished()
+    driver.verify()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    result = driver.state.verification
+    result["outcome"] = "verified_discrepancy"
+    result["conflicting_destination_copies"] = ["dst-1/" + group["id"]]
+    page = driver.pages["verification"]
+    page.refresh()
+    assert "conflicting message counts" in page.banner.text().lower()
+    assert "dst-1" in page.banner.text() and group["id"] not in page.banner.text()
+    assert page.group_ids_toggle.isVisible()
+    page.group_ids_toggle.click()
+    assert group["id"] in page.group_ids.toPlainText()
+
+
+@pytest.mark.parametrize("code", ["bucket_identity_conflict", "incomplete_evidence"])
+def test_blocked_reason_stays_visible_when_changing_dates(driver, code):
+    from PySide6.QtCore import QDate
+
+    driver.connect()
+    driver.plan()
+    group = driver.state.plan_run["plan"]["selected"][0]
+    driver.state.plan_error = (
+        f"{code}: 1 destination bucket needs attention: {group['id']} "
+        "(2026-03-01 to 2026-03-01 UTC; destination: dst-1; source size 1000 bytes, "
+        "destination size 1 bytes). Inspect the destination."
+    )
+    driver.state.plan_affected = [group["id"]]
+    page = driver.pages["plan"]
+    page.refresh()
+    assert group["id"] not in page.blocked_banner.text()
+    assert group["id"] not in str(page.overlap_rows.rows())
+    page.change_dates()
+    page.start_date.setDate(QDate(2025, 1, 1))
+    page.end_date.setDate(QDate(2025, 1, 31))
+    assert "dst-1" in page.error.text() and "2026-03-01" in page.error.text()
+    assert group["id"] not in page.error.text()
+    assert page.error_ids_toggle.isVisible()
+    page.error_ids_toggle.click()
+    page.error_ids_copy.click()
+    assert group["id"] in QApplication.clipboard().text()
+
+
+def test_warning_for_already_received_group_hides_id_and_offers_copy(driver):
+    driver.connect()
+    driver.plan()
+    plan = driver.state.plan_run["plan"]
+    group = plan["selected"].pop(0)
+    plan["already_received"] = [group]
+    plan["warnings"].append(f"Multiple destination copies: {group['id']} (destination: dst-1).")
+    page = driver.pages["plan"]
+    page.refresh()
+    assert group["id"] not in page.warnings.text()
+    assert page.warning_ids_toggle.isVisible()
+    page.warning_ids_toggle.click()
+    assert group["id"] in page.warning_ids.toPlainText()
+
+
 def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, monkeypatch):
     import time
 
@@ -1025,3 +1190,23 @@ def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, mon
     driver.idle()
     assert asked and store.enrolled
     assert not driver.window.probe_activity.isVisible()
+
+
+def test_failed_job_does_not_keep_groups_from_an_earlier_failure(driver, monkeypatch):
+    from logs_migrate.errors import Code, MigrationError
+    from logs_migrate.gui.session import Session
+
+    first = MigrationError(Code.COLLISION, "copy differs")
+    first.affected_ids = {"stale-bucket"}
+    outcomes = [first, RuntimeError("boom")]
+
+    def failing_plan(self, **kwargs):
+        raise outcomes.pop(0)
+
+    monkeypatch.setattr(Session, "plan", failing_plan)
+    worker = driver.window.worker
+    worker.blockSignals(True)
+    worker._run("plan", "plan", {})
+    assert worker.affected["plan"] == ["stale-bucket"]
+    worker._run("plan", "plan", {})
+    assert worker.affected.get("plan") is None

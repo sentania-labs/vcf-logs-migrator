@@ -99,10 +99,10 @@ def test_plan_view_reports_groups_checks_and_start_gate(rig):
     [
         (
             {"bytes": 3_000_000, "nodes": ["a", "b"], "window_seconds": 9},
-            "Active buckets on a, b grew by 3.0 MB in 9 s",
+            "Open groups on a, b grew by 3.0 MB in 9 s",
             True,
         ),
-        ({"bytes": 0, "nodes": [], "window_seconds": 5}, "No active bucket growth in 5 s", False),
+        ({"bytes": 0, "nodes": [], "window_seconds": 5}, "No open group growth in 5 s", False),
         ({"bytes": None, "nodes": [], "window_seconds": None}, "Unavailable", True),
     ],
 )
@@ -454,8 +454,11 @@ def test_plan_error_text_distinguishes_an_empty_window(rig):
         "incomplete_evidence: Selected groups have no proven start and end: "
         "node-1/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa."
     )
-    assert vm.plan_error_text(named, discovered, inside) == vm.describe_error(named)
-    assert "node-1/aaaaaaaa" in vm.plan_error_text(named, discovered, inside)
+    assert "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" not in vm.plan_error_text(
+        named, discovered, inside
+    )
+    assert "a group" in vm.plan_error_text(named, discovered, inside)
+    assert "node-1" in vm.plan_error_text(named, discovered, inside)
     assert vm.describe_error("gui:custom text") == "custom text"
 
 
@@ -475,10 +478,10 @@ def test_plan_error_text_lists_only_the_selected_conflicting_groups(rig):
         f"bucket_identity_conflict: Source groups have duplicate identities: "
         f"{first['node']}/{first['id']}. Inspect the source inventory before retrying."
     )
-    assert vm.plan_error_text(duplicate, discovered, None) == (
-        f"Source groups have duplicate identities: {first['node']}/{first['id']}. "
-        "Inspect the source inventory before retrying."
-    )
+    duplicate_text = vm.plan_error_text(duplicate, discovered, None)
+    assert first["id"] not in duplicate_text
+    assert "Group 1" in duplicate_text and first["node"] in duplicate_text
+    assert "Inspect the source inventory" in duplicate_text
 
 
 def test_conflict_group_lines_list_full_node_id_and_dates(rig):

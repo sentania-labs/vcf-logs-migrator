@@ -282,10 +282,18 @@ class SimulatedEnvironment:
         self._trace("test_source_credentials", node=node)
         self._fault("source_credentials." + node)
 
+    def _assigned_node(self, bucket_id, destination):
+        """The fixture's deterministic assignment, not the appliance's hash."""
+        return destination.nodes[int(digest(bucket_id)[:8], 16) % len(destination.nodes)].id
+
     def start(self, window, bucket_keys):
         self._trace("start", window=asdict(window))
         self._fault("start.before")
         require(self.data["task"] is None or self.data["task"]["status"] != "running", Code.BUSY)
+        source, dest = self.discover()
+        # The real API accepts dates, not a list of bucket IDs.
+        if not dest.preview:
+            bucket_keys = tuple(b.key for b in source.buckets if b.selected(window))
         self.data["task"] = {
             "id": f"sim-{len(self.data['history']) + 1}",
             "status": "running",
@@ -298,7 +306,6 @@ class SimulatedEnvironment:
             "destination": self.data["destination"]["id"],
         }
         self.data["poll"] = 0
-        source, dest = self.discover()
         self.data["history"].append(
             asdict(
                 History(
@@ -376,22 +383,25 @@ class SimulatedEnvironment:
                 source, dest = self.discover()
                 skip = set(self.data.get("skip_buckets", []))
                 limit = self.data.get("cancel_after")
+                copied = 0
                 for key in task["keys"]:
-                    if limit is not None and len(task["completed"]) >= limit:
+                    if limit is not None and copied >= limit:
                         break
                     b = next(b for b in source.buckets if b.key == key)
                     if key in skip:
                         task["skipped"].append(key)
                         continue
+                    node = self._assigned_node(b.id, dest)
                     if not dest.preview:
-                        existing = [item for item in dest.buckets if item.id == b.id]
+                        existing = [
+                            item for item in dest.buckets if item.id == b.id and item.node == node
+                        ]
                         if existing:
                             if all(item.registered and item.complete for item in existing):
                                 task["completed"].append(key)
                             else:
                                 task["skipped"].append(key)
                             continue
-                    node = dest.nodes[int(digest(b.id)[:8], 16) % len(dest.nodes)].id
                     if node in self.data.get("failed_nodes", []):
                         task["skipped"].append(key)
                         continue
@@ -414,12 +424,13 @@ class SimulatedEnvironment:
                         if e["bucket"] == key:
                             self.data["destination_events"].append({**e, "cohort": "migration"})
                     task["completed"].append(key)
+                    copied += 1
                     task["bytes_transferred"] += b.size
                     for n in self.data["destination"]["nodes"]:
                         if n["id"] == node:
                             n["used"] += b.size
                             n["repository_available"] -= b.size
-                cancelled = limit is not None and len(task["completed"]) >= limit
+                cancelled = limit is not None and copied >= limit
                 task["status"] = (
                     "cancelled"
                     if cancelled
@@ -455,10 +466,14 @@ class SimulatedEnvironment:
             return task is not None and bucket.key in task["completed"]
         copies = [b for b in self.data["destination"]["buckets"] if b["id"] == bucket.id]
         return (
-            len(copies) == 1
-            and copies[0]["complete"]
-            and copies[0].get("registered", True)
-            and copies[0]["manifest"] == bucket.manifest
+            bool(copies)
+            and bucket.manifest is not None
+            and all(
+                copy["complete"]
+                and copy.get("registered", True)
+                and copy["manifest"] == bucket.manifest
+                for copy in copies
+            )
         )
 
     def test_node_credentials(self, node):

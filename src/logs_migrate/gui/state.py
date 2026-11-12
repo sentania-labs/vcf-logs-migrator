@@ -18,6 +18,7 @@ class AppState:
     config_result: dict | None = None
     plan_run: dict | None = None
     plan_error: str | None = None
+    plan_affected: list[str] = field(default_factory=list)
     acknowledged: bool = False
     run_id: str | None = None
     status: dict | None = None
@@ -69,6 +70,7 @@ class AppState:
         self.config_result = None
         self.plan_run = None
         self.plan_error = None
+        self.plan_affected = []
         self.acknowledged = False
         self.run_id = None
         self.status = None

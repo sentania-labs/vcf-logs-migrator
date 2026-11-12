@@ -516,6 +516,7 @@ class MainWindow(QMainWindow):
         elif job == "plan":
             state.plan_run = result
             state.plan_error = None
+            state.plan_affected = []
             state.start_error = None
             state.acknowledged = False
             state.run_id = result["id"]
@@ -588,6 +589,7 @@ class MainWindow(QMainWindow):
                 state.report = result
                 if state.plan_run is None or state.plan_run["id"] != state.run_id:
                     state.plan_error = None
+                    state.plan_affected = []
                 # The journal's copy is the plan every page describes: it carries what the
                 # engine recorded at start (per-group counts) and the latest verification.
                 state.plan_run = result["run"]
@@ -626,6 +628,7 @@ class MainWindow(QMainWindow):
         elif job == "plan":
             state.plan_run = None
             state.plan_error = code
+            state.plan_affected = self.worker.affected.pop("plan", [])
         elif job == "resume":
             state.resume_error = "gui:pre_start:" + vm.describe_error(code)
         elif job == "start":

@@ -35,6 +35,7 @@ class EngineWorker(QObject):
         self.moveToThread(self.thread)
         self._queued.connect(self._run)
         self.pending: set[str] = set()
+        self.affected: dict[str, list[str]] = {}
 
     def start(self) -> None:
         self.thread.start()
@@ -56,6 +57,7 @@ class EngineWorker(QObject):
 
     @Slot(str, str, dict)
     def _run(self, job: str, method: str, kwargs: dict) -> None:
+        self.affected.pop(job, None)
         try:
             result = getattr(self.session, method)(**kwargs)
         except TrustRequired as pending:
@@ -79,6 +81,7 @@ class EngineWorker(QObject):
             self.failed.emit(job, f"gui:{error.message}")
         except MigrationError as error:
             logging.getLogger(__name__).exception("Job %s failed", job)
+            self.affected[job] = sorted(getattr(error, "affected_ids", ()))
             self.failed.emit(
                 job,
                 f"{error.code.value}: {error.message}"

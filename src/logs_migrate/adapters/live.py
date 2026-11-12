@@ -1050,27 +1050,42 @@ class LiveEnvironment:
             "Destination SSH inventory is needed to resume safely.",
         )
         updated = []
+        missing_by_node = {}
+        unread_by_node = {}
         for node in cluster.nodes:
             ssh = self._ssh(node.id, "destination_ssh", self.connection.destination_ssh_user)
             usage = {}
             ordered = sorted(ids)
             for start in range(0, len(ordered), 256):
                 usage.update(parse_usage(ssh.existing_bucket_usage(ordered[start : start + 256])))
-            indexed = {b.id: b for b in cluster.buckets if b.node == node.id and b.id in ids}
-            missing = set(usage) - indexed.keys()
-            require(
-                not missing,
-                Code.INCOMPLETE,
-                f"{node.id}: a bucket directory exists without an index entry: "
-                + ", ".join(sorted(missing))
-                + ". Inspect it before resuming.",
-            )
-            require(
-                set(indexed) <= usage.keys(),
-                Code.INCOMPLETE,
-                f"{node.id}: could not inspect every indexed bucket directory.",
-            )
-            updated.extend(replace(b, size=usage[b.id]) for b in indexed.values())
+            indexed = [b for b in cluster.buckets if b.node == node.id and b.id in ids]
+            indexed_ids = {b.id for b in indexed}
+            if missing := set(usage) - indexed_ids:
+                missing_by_node[node.id] = missing
+            if unread := indexed_ids - usage.keys():
+                unread_by_node[node.id] = unread
+            updated.extend(replace(b, size=usage[b.id]) for b in indexed if b.id in usage)
+        for by_node, problem in (
+            (missing_by_node, "a directory without an index entry"),
+            (unread_by_node, "an index entry without a readable directory"),
+        ):
+            if by_node:
+                affected = set().union(*by_node.values())
+                locations = "; ".join(
+                    f"{node}: {', '.join(sorted(bucket_ids))}"
+                    for node, bucket_ids in sorted(by_node.items())
+                )
+                error = MigrationError(
+                    Code.INCOMPLETE,
+                    f"{len(affected)} destination "
+                    f"bucket{'s have' if len(affected) != 1 else ' has'} {problem}: "
+                    + locations
+                    + ". The named copies on the destination are incomplete or differ from the "
+                    "source and must be dealt with on the destination before those dates can "
+                    "be copied.",
+                )
+                error.affected_ids = affected
+                raise error
         return replace(cluster, buckets=tuple(updated))
 
     def destination_topology(self) -> tuple[str, str]:
