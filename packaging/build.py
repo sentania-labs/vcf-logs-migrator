@@ -42,7 +42,7 @@ def executable(platform: str) -> Path:
     return DIST / (NAME + (".exe" if platform == "windows-x64" else ""))
 
 
-def freeze(name: str, script: str, *layout: str) -> None:
+def freeze(name: str, script: str, icon: Path | None, *layout: str) -> None:
     # Insert the notices after Analysis, so their inventory comes from the actual
     # module and binary graph rather than the build environment's installed packages.
     BUILD.mkdir(exist_ok=True)
@@ -74,6 +74,8 @@ def freeze(name: str, script: str, *layout: str) -> None:
             "paramiko",
             "--exclude-module",
             "tkinter",
+            # The executable's own icon: the .exe on Windows, the app bundle on macOS.
+            *(["--icon", str(icon)] if icon else []),
             str(PACKAGING / script),
         ],
         check=True,
@@ -114,6 +116,9 @@ def freeze(name: str, script: str, *layout: str) -> None:
 
 
 def build(platform: str) -> Path:
+    sys.path.insert(0, str(PACKAGING))
+    import icons
+
     mac = platform.startswith("macos-")
     for stale in (DIST / APP, DIST / f"{NAME}.app", executable(platform)):
         if stale.is_dir():
@@ -121,9 +126,20 @@ def build(platform: str) -> Path:
         elif stale.exists():
             stale.unlink()
     if mac:
-        freeze(NAME, "launcher.py", "--onedir", "--windowed", "--osx-bundle-identifier", BUNDLE_ID)
+        icon = icons.icns(BUILD / f"{NAME}.icns")
+        freeze(
+            NAME,
+            "launcher.py",
+            icon,
+            "--onedir",
+            "--windowed",
+            "--osx-bundle-identifier",
+            BUNDLE_ID,
+        )
     else:
-        freeze(NAME, "launcher.py", "--onefile", "--console")
+        # Linux has no executable icon to embed; its window carries the icon at run time.
+        icon = icons.ico(BUILD / f"{NAME}.ico") if platform == "windows-x64" else None
+        freeze(NAME, "launcher.py", icon, "--onefile", "--console")
     if mac:
         built = DIST / f"{NAME}.app"
         built.rename(DIST / APP)
