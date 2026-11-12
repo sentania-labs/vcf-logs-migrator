@@ -74,10 +74,12 @@ class PlanPage(Page):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         self.preview_badge = badge("9.1.1 Preview", "warn")
+        self.untested_badge = badge("", "warn")
         self.badges = row(
             badge("Source stays running", "info"),
             badge("Logs still being written are left for later", "warn"),
             self.preview_badge,
+            self.untested_badge,
         )
         layout.addWidget(self.badges)
         self.error = banner("", "", "bad")
@@ -322,7 +324,10 @@ class PlanPage(Page):
         super().resizeEvent(event)
         self.warning_timer.start(0)
         # Keep the plan and its checks together at common desktop widths.
-        narrow = self.width() < 800
+        narrow = self.width() < 1000
+        self.footer.layout().setDirection(
+            QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
+        )
         direction = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
         if self.split.direction() != direction:
             self.split.setDirection(direction)
@@ -484,6 +489,13 @@ class PlanPage(Page):
         self.ack.setChecked(state.acknowledged)
         self.ack.blockSignals(False)
         self.preview_badge.setVisible(state.preview)
+        check = (discovered or {}).get("version_check", {})
+        caution = any("has not been tested" in w for w in check.get("warnings", []))
+        self.untested_badge.setVisible(bool(caution and check.get("passed")))
+        if caution:
+            self.untested_badge.setText(
+                f"Destination {discovered['destination']['version']} untested"
+            )
         code = (state.plan_error or "").partition(": ")[0]
         blocked = bool(
             state.plan_error

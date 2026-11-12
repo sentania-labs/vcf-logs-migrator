@@ -69,6 +69,7 @@ class MainWindow(QMainWindow):
         self.activity_current = ""
         self.activity_completed = []
         self.activity_job = ""
+        self.activity_page = None
         self.activity_pending = []
         self.worker.progress.connect(self._show_progress)
         self.worker.start()
@@ -99,33 +100,35 @@ class MainWindow(QMainWindow):
         middle.addWidget(self._sidebar())
         self.stack = QStackedWidget()
         content = QVBoxLayout()
+        self.activity_panel = QFrame(self.stack)
+        self.activity_panel.setProperty("lattice", "card")
+        self.activity_panel.setFixedWidth(360)
+        activity = QVBoxLayout(self.activity_panel)
+        activity.setContentsMargins(12, 10, 12, 10)
         self.page_progress = label("", "body", wrap=True)
         self.page_progress.setAccessibleName("Current operation progress")
-        self.page_progress.hide()
-        content.addWidget(self.page_progress)
+        activity.addWidget(self.page_progress)
         self.upcoming = label("", "hint", wrap=True)
         self.upcoming.hide()
-        content.addWidget(self.upcoming)
+        activity.addWidget(self.upcoming)
         self.probe_activity = QProgressBar()
         self.probe_activity.setRange(0, 0)
         self.probe_activity.setTextVisible(False)
-        self.probe_activity.setAccessibleName("Checking appliance identities")
+        self.probe_activity.setAccessibleName("Operation in progress")
         self.probe_activity.hide()
-        content.addWidget(self.probe_activity)
+        activity.addWidget(self.probe_activity)
         self.probe_elapsed = label("", "hint")
         self.probe_elapsed.hide()
-        content.addWidget(self.probe_elapsed)
+        activity.addWidget(self.probe_elapsed)
         self.progress_details = QPlainTextEdit()
         self.progress_details.setReadOnly(True)
         self.progress_details.setMaximumHeight(100)
         self.progress_details.hide()
         self.progress_details_button = button("Show details", "", self._toggle_progress_details)
         self.progress_details_button.hide()
-        activity_actions = QHBoxLayout()
-        activity_actions.addWidget(self.progress_details_button)
-        activity_actions.addStretch(1)
-        content.addLayout(activity_actions)
-        content.addWidget(self.progress_details)
+        activity.addWidget(self.progress_details_button)
+        activity.addWidget(self.progress_details)
+        self.activity_panel.hide()
         content.addWidget(self.stack, 1)
         middle.addLayout(content, 1)
         outer.addLayout(middle, 1)
@@ -220,11 +223,17 @@ class MainWindow(QMainWindow):
         page = self.pages[name]
         keys = [key for key, _ in NAV]
         current = self.current_page()
+        if name != current:
+            self.activity_panel.hide()
+            self.progress_details.hide()
+            self.progress_details_button.setText("Show details")
+            self.activity_page = None
         if name == "settings" and current != "settings":
             self.return_page = current
         self.nav.blockSignals(True)
         self.nav.setCurrentRow(keys.index(name) if name in keys else -1)
         self.nav.blockSignals(False)
+        self.stack.setCurrentWidget(page)
         if (
             name == "plan"
             and self.state.connected
@@ -234,7 +243,6 @@ class MainWindow(QMainWindow):
         ):
             self.submit("discover", "discover")
         page.refresh()
-        self.stack.setCurrentWidget(page)
         if self.isVisible() and not self.nav.hasFocus():
             page.focus_primary()
 
@@ -303,10 +311,24 @@ class MainWindow(QMainWindow):
 
     # Engine jobs -------------------------------------------------------------------------
 
+    def _place_activity(self) -> None:
+        self.activity_panel.adjustSize()
+        self.activity_panel.move(
+            max(0, self.stack.width() - self.activity_panel.width() - 12),
+            max(8, self.stack.height() - self.activity_panel.height() - 100),
+        )
+        self.activity_panel.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "activity_panel"):
+            self._place_activity()
+
     def _toggle_progress_details(self) -> None:
         show = not self.progress_details.isVisible()
         self.progress_details.setVisible(show)
         self.progress_details_button.setText("Hide details" if show else "Show details")
+        self._place_activity()
 
     def _update_probe_elapsed(self) -> None:
         seconds = self.probe_clock.elapsed() // 1000
@@ -316,6 +338,8 @@ class MainWindow(QMainWindow):
         self.progress_details.appendPlainText(message)
         if message.startswith("Contacting "):
             return
+        if self.activity_job == "plan" and message == "Checking versions…":
+            message = "Preparing preview…"
         if message.startswith("Self-test:"):
             message = "Checking " + message.partition(":")[2].strip().lower() + "…"
         elif message.startswith("Reading cluster members"):
@@ -333,13 +357,16 @@ class MainWindow(QMainWindow):
         self.upcoming.setVisible(bool(self.activity_pending))
         completed = "\n".join("✓ " + item for item in self.activity_completed[-4:])
         self.page_progress.setText((completed + "\n" if completed else "") + "◌ " + message)
-        self.page_progress.show()
+        if self.activity_page == self.current_page():
+            self.activity_panel.show()
+            self._place_activity()
 
     def submit(self, job: str, method: str, **kwargs) -> bool:
         accepted = self.worker.submit(job, method, **kwargs)
         if accepted:
             if job.split(":")[0] in PROGRESS_JOBS:
                 self.activity_job = job
+                self.activity_page = self.current_page()
                 self.activity_current = ""
                 self.activity_completed = []
                 kind = job.split(":")[0]
@@ -358,6 +385,8 @@ class MainWindow(QMainWindow):
                     else []
                 )
                 self.progress_details.clear()
+                self.progress_details.hide()
+                self.progress_details_button.setText("Show details")
                 self.probe_clock.start()
                 self._update_probe_elapsed()
                 self.probe_activity.show()
@@ -368,7 +397,7 @@ class MainWindow(QMainWindow):
                     "probe": "Testing source…",
                     "connect": "Testing source…" if self.state.live else "Checking versions…",
                     "selftest": "Checking versions…",
-                    "plan": "Checking versions…",
+                    "plan": "Preparing preview…",
                     "start": "Checking migration…",
                     "resume": "Checking versions…",
                     "verify": "Verifying counts…",
@@ -519,14 +548,27 @@ class MainWindow(QMainWindow):
             self.probe_activity.hide()
             self.upcoming.hide()
             label = {
-                "plan": "Preview complete",
+                "plan": "Plan ready",
                 "resume": "Resume preview complete",
                 "verify": "Verification complete",
-                "connect": "Connection checks complete",
-            }.get(job.split(":")[0], "Work complete")
+                "connect": "Connected to both appliances",
+                "discover": "Inventory ready",
+                "start": "Migration started",
+                "probe": "Connection identities checked",
+                "selftest": "Checks complete",
+            }.get(job.split(":")[0], "Operation complete")
             self.page_progress.setText("✓ " + label)
+            self.progress_details.hide()
+            self.progress_details_button.hide()
+            self.probe_elapsed.hide()
+            self._place_activity()
             self.activity_job = ""
+            QTimer.singleShot(4000, self._dismiss_finished_activity)
         return self.job_generation.pop(job, self.generation) == self.generation
+
+    def _dismiss_finished_activity(self) -> None:
+        if not self.activity_job:
+            self.activity_panel.hide()
 
     def _done(self, job: str, result) -> None:
         state = self.state
@@ -562,8 +604,10 @@ class MainWindow(QMainWindow):
             self.page_progress.setText(
                 "✕ Checking versions failed. See the reason below."
                 if result.get("compatible")
-                else "✓ Connection checks complete"
+                else "✓ Connected to both appliances"
             )
+            if result.get("compatible"):
+                self.activity_panel.hide()
             state.connected = result.get("compatible") is None
             state.discovered = result
             state.connect_error = result.get("compatible")
@@ -640,6 +684,7 @@ class MainWindow(QMainWindow):
             if job == "stop" and state.run_id:
                 self.poll_status()
         elif job == "discover":
+            result["version_check"] = (state.discovered or {}).get("version_check", {})
             state.discovered = result
             state.plan_error = None
             if self.seed_pending:

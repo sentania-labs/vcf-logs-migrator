@@ -77,8 +77,12 @@ class Session:
         self.env = env
         self.engine = Engine(env, self.journal, clock)
         # A connection test checks access and versions only. Bucket inventory begins on Plan.
+        if self.on_progress:
+            self.on_progress("Testing source…")
         if self.mode == "live" and hasattr(env, "source_version"):
             env.source_version()
+        if self.on_progress:
+            self.on_progress("Testing destination…")
         check = env.version_check()
 
         def side(name):

@@ -802,7 +802,7 @@ def test_ssh_failure_survives_worker_and_renders_in_connections(driver, monkeypa
     assert banner.isVisible()
     shown = banner.text()
     assert error.message in shown
-    assert "No migration request was submitted." in shown
+    assert "Connection failed" in shown
     assert "API did not respond" not in shown
 
 
@@ -854,7 +854,7 @@ def test_progress_lines_clear_when_any_progress_job_settles(driver, job):
     driver.window.activity_job = job
     driver.window.worker.pending.add(job)
     driver.window._settle(job)
-    assert "complete" in driver.window.page_progress.text()
+    assert driver.window.page_progress.text().startswith("✓ ")
     assert not driver.window.probe_activity.isVisible()
 
 

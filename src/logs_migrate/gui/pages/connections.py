@@ -39,7 +39,10 @@ class ConnectionsPage(Page):
             "warn",
         )
         self.preview.hide()
+        self.version_caution = banner("Untested destination", "", "warn")
+        self.version_caution.hide()
         self.body.addWidget(self.error)
+        self.body.addWidget(self.version_caution)
         self.body.addWidget(self.preview)
 
         source, source_layout = card("Source")
@@ -234,10 +237,15 @@ class ConnectionsPage(Page):
             set_banner(self.error, "Required fields are empty", self.validation, "bad")
             self.error.show()
         elif state.connect_error:
+            version_refused = bool(
+                discovered
+                and discovered.get("version_check")
+                and not discovered["version_check"]["passed"]
+            )
             set_banner(
                 self.error,
-                "Connection failed",
-                vm.describe_error(state.connect_error) + " No migration request was submitted.",
+                "Versions not compatible" if version_refused else "Connection failed",
+                vm.describe_error(state.connect_error),
                 "bad",
             )
             self.error.show()
@@ -252,18 +260,39 @@ class ConnectionsPage(Page):
         else:
             source, destination = discovered["source"], discovered["destination"]
             mode = "live" if state.live else "simulator"
-            self.source_badge.setText(f"{vm.format_version(source['version'])} · {mode}")
-            self.destination_badge.setText(f"{vm.format_version(destination['version'])} · {mode}")
-            for widget in (self.source_badge, self.destination_badge):
-                set_status(widget, "ok")
+            self.source_badge.setText(f"{source['version']} · {mode}")
+            self.destination_badge.setText(f"{destination['version']} · {mode}")
+            check = discovered.get("version_check", {})
+            problem = check.get("message", "") if not check.get("passed", True) else ""
+            source_bad = bool(
+                problem and (problem.startswith("Source") or "Source version" in problem)
+            )
+            destination_bad = bool(
+                problem and (not source_bad or problem.startswith("Destination"))
+            )
+            set_status(self.source_badge, "bad" if source_bad else "ok")
+            set_status(self.destination_badge, "bad" if destination_bad else "ok")
             self.set_heading(
                 "Connections" + (" · 9.1.1 Preview" if state.preview else ""),
-                f"{vm.format_version(source['version'])} → "
-                f"{vm.format_version(destination['version'])} · "
+                f"{source['version']} → "
+                f"{destination['version']} · "
                 "use a member address for each cluster"
                 if not state.preview
                 else "Same connection step; version selects the authentication method",
             )
+        check = (discovered or {}).get("version_check", {})
+        caution = next((w for w in check.get("warnings", []) if "has not been tested" in w), None)
+        if caution and check.get("passed"):
+            version = discovered["destination"]["version"]
+            set_banner(
+                self.version_caution,
+                "Untested destination",
+                f"Destination {version} has not been tested. You can continue.",
+                "warn",
+            )
+            self.version_caution.show()
+        else:
+            self.version_caution.hide()
         token = state.preview or bool(self.ops_url.text().strip())
         self.preview.setVisible(state.preview)
         self.before_import.setVisible(state.preview)
