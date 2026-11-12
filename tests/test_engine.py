@@ -396,6 +396,38 @@ def test_status_requires_run_identity_and_supplies_estimates(rig):
     assert engine.status(run["id"])["status"] == "idle"
 
 
+@pytest.mark.parametrize(
+    ("elapsed", "later", "expected_offset"),
+    [(1800, 4 * 3600, 1800), (4 * 3600, 600, 600), (None, 4 * 3600, None)],
+)
+def test_the_recorded_end_of_a_task_is_start_plus_elapsed_not_when_it_was_first_seen(
+    rig, elapsed, later, expected_offset
+):
+    engine, env, journal = rig
+    run = planned(engine)
+    execute(engine, run)
+    started = datetime.fromisoformat(
+        journal.transfers(run["plan"]["destination"]["id"])[0]["attempted_at"]
+    )
+    engine.clock.sleep(later)
+    env.transfer = lambda: Transfer(
+        "sim-1",
+        "completed",
+        bytes_transferred=1000,
+        elapsed_seconds=elapsed,
+        total_bytes=1000,
+        destination=run["plan"]["destination"]["id"],
+    )
+    engine.status(run["id"])
+    finished = journal.load(run["id"])["finished"]
+    if expected_offset is None:
+        assert "at" not in finished
+    else:
+        assert datetime.fromisoformat(finished["at"]) == started + timedelta(
+            seconds=expected_offset
+        )
+
+
 @pytest.mark.parametrize("status", ["failed", "cancelled", "idle", "unknown"])
 def test_only_a_running_task_reports_an_eta(rig, status):
     _, env, _ = rig

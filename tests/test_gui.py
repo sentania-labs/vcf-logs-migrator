@@ -485,6 +485,25 @@ def test_other_refusals_name_the_fix():
         driver.close()
 
 
+def test_the_use_these_dates_button_checks_the_new_dates_in_one_press():
+    driver = ready("space")
+    try:
+        driver.choose("Last 12 months")
+        driver.page.start_date.setDate(driver.page.start_date.date().addYears(-3))
+        driver.page.end_date.setDate(driver.page.start_date.date().addDays(30))
+        driver.click("Check these dates")
+        driver.idle()
+        assert "The source has no finished logs in these dates" in plain(driver)
+        driver.click(driver.buttons()[-1])
+        driver.idle()
+        text = plain(driver)
+        assert "The source has no finished logs in these dates" not in text
+        assert "No plan yet" not in text
+        assert driver.state.plan is not None or driver.state.plan_refusal is not None
+    finally:
+        driver.close()
+
+
 def test_a_source_server_that_does_not_answer_stops_the_check_with_try_again():
     driver = ready("listfail")
     try:

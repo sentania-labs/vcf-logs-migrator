@@ -1687,8 +1687,20 @@ class Engine:
         }
         previous = run.get("finished") or {}
         if {k: previous.get(k) for k in seen} != seen:
-            run["finished"] = {**seen, "at": self.clock.now()}
+            ended = self._ended_at(result.get("started_at"), task.elapsed_seconds)
+            run["finished"] = {**seen, **({"at": ended} if ended else {})}
             self.journal.save(run, "task_finished")
+
+    def _ended_at(self, started_at, elapsed_seconds) -> str | None:
+        """When the task ended: its recorded start plus its elapsed time, never later than
+        now. Unknown when either is missing, so no screen shows a time that may be wrong."""
+        if not started_at or not isinstance(elapsed_seconds, (int, float)):
+            return None
+        try:
+            ended = datetime.fromisoformat(started_at) + timedelta(seconds=elapsed_seconds)
+            return min(ended, datetime.fromisoformat(self.clock.now())).isoformat()
+        except (TypeError, ValueError):
+            return None
 
     @safe_boundary
     def stop(self, task_id):

@@ -205,8 +205,7 @@ class DatesPage(Page):
             self.check(state.excluded or None)
         elif action == "preset":
             self.apply_preset(argument)
-            if argument != "Everything" or state.plan_refusal:
-                self.check()
+            self.check()
         elif action == "add-sign-in":
             self.app.add_sign_in(back=False)
         elif action == "rules":
