@@ -442,12 +442,10 @@ class Session:
         return env.version_check()
 
     def _sign_in_live(self, env, token: bool) -> dict:
-        source_host = env.connection.source_host
-
         def where(error: MigrationError) -> dict:
             """Which box a failure during `open()` belongs to, from the probe in flight."""
             stage = str(env.notes.get("stage") or "")
-            side = "source" if source_host in stage or not stage else "destination"
+            side = "destination" if env.notes.get("stage_role") == "destination" else "source"
             if env.notes.get("identity_changed") or (
                 isinstance(error, SSHFailure) and "host key" in error.message
             ):
@@ -856,7 +854,11 @@ class Session:
         require(copy is not None, Code.INVALID_INPUT)
         result = copies.check(copy)
         started = vm._local(copy["started_at"], "UTC")
-        stem = "logs-copy-report-" + (started.strftime("%Y-%m-%d-%H%M") if started else copy_id[:8])
+        stem = (
+            "logs-copy-report-"
+            + (started.strftime("%Y-%m-%d-%H%M-") if started else "")
+            + copy_id[:8]
+        )
         runs = [run for part in copy["parts"] for run in part["runs"] if part["started"]]
         data = {
             "schema_version": 3,

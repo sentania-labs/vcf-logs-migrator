@@ -734,8 +734,9 @@ class LiveEnvironment:
 
         # `stage` names the probe in flight so a failure can say which host, without any
         # remote text.
-        def contact(stage, probe, key=False):
+        def contact(role, stage, probe, key=False):
             self.notes["stage"] = stage
+            self.notes["stage_role"] = role
             if self.on_progress:
                 self.on_progress(f"Contacting {stage}")
             result = probe()
@@ -744,8 +745,9 @@ class LiveEnvironment:
 
         if self.on_progress:
             self.on_progress("Testing source…")
-        contact(f"tls {tls_source[0]}:{tls_source[1]}", lambda: probe_tls(*tls_source))
+        contact("source", f"tls {tls_source[0]}:{tls_source[1]}", lambda: probe_tls(*tls_source))
         contact(
+            "source",
             f"ssh {connection.source_host}:{connection.ssh_port}",
             lambda: probe_ssh(connection.source_host, connection.ssh_port),
             key=True,
@@ -753,13 +755,16 @@ class LiveEnvironment:
         if self.on_progress:
             self.on_progress("Testing destination…")
         contact(
-            f"tls {tls_destination[0]}:{tls_destination[1]}", lambda: probe_tls(*tls_destination)
+            "destination",
+            f"tls {tls_destination[0]}:{tls_destination[1]}",
+            lambda: probe_tls(*tls_destination),
         )
         if connection.preview:
             ops = connection.ops_endpoint
-            contact(f"tls {ops[0]}:{ops[1]}", lambda: probe_tls(*ops))
+            contact("destination", f"tls {ops[0]}:{ops[1]}", lambda: probe_tls(*ops))
         if not connection.preview and connection.destination_ssh_user.strip():
             contact(
+                "destination",
                 f"ssh {tls_destination[0]}:{connection.ssh_port}",
                 lambda: probe_ssh(tls_destination[0], connection.ssh_port),
                 key=True,
@@ -775,6 +780,7 @@ class LiveEnvironment:
         tls_destination = connection.destination_endpoint
         unknown: list[Identity] = []
         self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port} (members)"
+        self.notes["stage_role"] = "source"
         self.source_client = self._logs_client(tls_source, "source_api", connection.source_api_user)
         if connection.preview:
             logs = self._https(tls_destination)
@@ -791,12 +797,14 @@ class LiveEnvironment:
         for host in self.members:
             if host != connection.source_host.lower():
                 self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
+                self.notes["stage_role"] = "source"
                 if self.on_progress:
                     self.on_progress(f"Contacting {self.notes['stage']}")
                 identity, line = probe_ssh(host, connection.ssh_port)
                 self._check(identity, line, unknown)
         if self._destination_ssh_enabled():
             self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port} (members)"
+            self.notes["stage_role"] = "destination"
             if self.on_progress:
                 self.on_progress(f"Reading cluster members from {tls_destination[0]}")
             self.destination_members = self._members(
@@ -805,11 +813,13 @@ class LiveEnvironment:
             for host in self.destination_members:
                 if host != tls_destination[0].lower():
                     self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
+                    self.notes["stage_role"] = "destination"
                     identity, line = probe_ssh(host, connection.ssh_port)
                     self._check(identity, line, unknown)
         if unknown:
             raise TrustRequired(unknown)
         self.notes.pop("stage", None)
+        self.notes.pop("stage_role", None)
         return self
 
     def _https(self, endpoint: tuple[str, int]) -> HTTPS:
