@@ -662,10 +662,6 @@ class LiveEnvironment:
         self._new_listings = {}
         self._listing_seconds = {}
         self.on_progress = None
-        # The window confirms the two typed addresses with the operator, then records each
-        # server's SSH key on first contact without a second question. A changed key is
-        # still refused. The CLI leaves this off and asks about every identity.
-        self.auto_enroll_ssh = False
 
     # Identity trust ----------------------------------------------------------------------
 
@@ -680,10 +676,6 @@ class LiveEnvironment:
 
                 raise SSHFailure("host")
             raise MigrationError(Code.AUTH)
-        if identity.kind == "ssh" and self.auto_enroll_ssh:
-            self.trust.trust(identity, key_line)
-            self.notes.setdefault("ssh_enrolled", []).append(identity.name)
-            return
         unknown.append(identity)
         if key_line:
             self._pending[identity.name] = key_line
@@ -708,6 +700,28 @@ class LiveEnvironment:
             if self.on_progress:
                 self.on_progress(f"Contacting {self.notes['stage']}")
             identity = probe_tls(host, port)
+            found.append((role, identity, self.trust.check(identity)))
+        self.notes.pop("stage", None)
+        self.notes.pop("stage_role", None)
+        return found
+
+    def server_identities(self) -> list[tuple[str, Identity, str]]:
+        """The host key of the server at each typed address, with its trust state. Sends
+        nothing but a key exchange: no user name and no password. Never raises for an
+        unknown or changed identity. The servers behind an address beyond the typed one
+        are only known after signing in to it; `open()` stops for those."""
+        connection = self.connection
+        targets = [("source", connection.source_host)]
+        if not connection.preview and connection.destination_ssh_user.strip():
+            targets.append(("destination", connection.destination_endpoint[0]))
+        found = []
+        for role, host in targets:
+            self.notes["stage"] = f"ssh {host}:{connection.ssh_port}"
+            self.notes["stage_role"] = role
+            if self.on_progress:
+                self.on_progress(f"Contacting {self.notes['stage']}")
+            identity, line = probe_ssh(host, connection.ssh_port)
+            self._pending[identity.name] = line
             found.append((role, identity, self.trust.check(identity)))
         self.notes.pop("stage", None)
         self.notes.pop("stage_role", None)

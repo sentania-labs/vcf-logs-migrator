@@ -726,13 +726,14 @@ def test_a_part_whose_logs_are_gone_is_skipped_once_and_never_asked_for_again(
     from logs_migrate.gui.session import Session
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
     fixture = standin.write(tmp_path, "plain", speed=50000, delay=0)
     journal = str(tmp_path / "journal.sqlite")
     names = {"source_host": "logs-old.example.com", "destination": "logs-new.example.com"}
     session = Session()
     try:
-        session.open_record(journal=journal)
-        session.connect(
+        standin.sign_in(
+            session,
             fixture=str(fixture),
             journal=journal,
             credentials={"destination_ssh": "x"},
@@ -827,12 +828,13 @@ def _split_copy_in_session(tmp_path, monkeypatch):
     from logs_migrate.gui.session import Session
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
     fixture = standin.write(tmp_path, "plain", speed=50000, delay=0)
     journal = str(tmp_path / "journal.sqlite")
     names = {"source_host": "logs-old.example.com", "destination": "logs-new.example.com"}
     session = Session()
-    session.open_record(journal=journal)
-    session.connect(
+    standin.sign_in(
+        session,
         fixture=str(fixture),
         journal=journal,
         credentials={"destination_ssh": "x"},

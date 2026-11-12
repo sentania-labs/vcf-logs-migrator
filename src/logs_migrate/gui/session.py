@@ -23,7 +23,7 @@ from ..models import ACTIVE_ACK, Policy, Window
 from ..ports import SystemClock
 from ..reporting import display_events, display_run, report_data
 from ..security import Credentials
-from ..trust import Identity, TrustStore
+from ..trust import Identity, TrustRequired, TrustStore
 from . import copies, copyview
 from . import viewmodel as vm
 
@@ -35,6 +35,14 @@ class Failure(Exception):
         super().__init__(code)
         self.code = code
         self.data = data
+
+
+# Signing in met a server nobody has confirmed and stopped before sending it anything. The
+# window asks about it; anywhere else (a reconnect) this sentence is what the person reads.
+UNCONFIRMED = (
+    "gui:A server whose identity code has not been confirmed was found. "
+    "Test the connections on Connect to see it."
+)
 
 
 class StandInClock(SystemClock):
@@ -86,7 +94,9 @@ class Session:
         self.credentials = None
         self.connection: dict[str, str] = {}
         self.pending: dict[str, Identity] = {}
+        self.key_lines: dict[str, str | None] = {}
         self.store = None
+        self.want_server = False
         self.job = ""
         self.delay = 0.0
         self.errors: list[str] = []
@@ -215,11 +225,13 @@ class Session:
             source_api_user=values.get("source_api_user") or "admin",
             source_ssh_user=values.get("source_ssh_user") or "root",
             destination_api_user=values.get("destination_api_user") or "admin",
-            destination_ssh_user=values.get("destination_ssh_user") or "",
+            # Without its password the destination's servers are never contacted.
+            destination_ssh_user=(values.get("destination_ssh_user") or "")
+            if self.want_server
+            else "",
             ops_url=values.get("ops_url") or "",
         )
         env = LiveEnvironment(connection, self.credentials, self.store)
-        env.auto_enroll_ssh = True
         env.on_progress = self._appliance_progress
         self.delay = 0.0
         return env
@@ -247,14 +259,41 @@ class Session:
             names["ops"] = f"{host}:{port}"
         return names
 
-    def probe(self, *, fixture: str, connection: dict[str, str]) -> dict:
-        """Find the typed addresses and read the certificate each one presents. Nothing
-        else is sent, and no password leaves this computer."""
+    def _shown(self, role: str, identity: Identity, state: str) -> dict:
+        """One identity as the window shows it. What was shown is what can be confirmed."""
+        self.pending[identity.name] = identity
+        return {
+            "kind": "address" if identity.kind == "tls" else "server",
+            "role": role,
+            "name": identity.name,
+            "fingerprint": identity.fingerprint,
+            "detail": identity.detail,
+            "state": state,
+        }
+
+    def _stand_in_servers(self, env, side: str) -> list[Identity]:
+        return [
+            Identity("ssh", f"{name}:22", digest, "ssh-ed25519")
+            for name, digest in env.server_digests(side)
+        ]
+
+    def probe(
+        self, *, fixture: str, connection: dict[str, str], destination_server: bool = False
+    ) -> dict:
+        """Find the typed addresses and read the certificate each one presents, and the
+        identity code of the server at each. Nothing else is sent, and no password leaves
+        this computer. `destination_server` says a destination server sign-in was typed."""
         self.disconnect()
         self.job = "connect"
         self.connection = dict(connection)
         self.credentials = Credentials({}, interactive=False)
         self.store = self._store(fixture)
+        self.key_lines = {}
+        self.want_server = bool(
+            destination_server
+            and connection.get("destination_ssh_user")
+            and not connection.get("ops_url")
+        )
         self.stage(0)
         found: list[tuple[str, Identity, str]] = []
         try:
@@ -290,10 +329,27 @@ class Session:
                     )
                     identity = Identity("tls", names[role], digest)
                     found.append((role, identity, self.store.check(identity)))
+                for side in ("source", "destination") if self.want_server else ("source",):
+                    identity = self._stand_in_servers(env, side)[0]
+                    found.append((side, identity, self.store.check(identity)))
             else:
                 env = self._live()
                 try:
                     found = env.address_identities()
+                    try:
+                        servers = env.server_identities()
+                    except MigrationError as error:
+                        role = env.notes.get("stage_role")
+                        raise self._fail(
+                            error,
+                            side=_side(role),
+                            field="address",
+                            kind="reach",
+                            servers=True,
+                            other_found=True,
+                        ) from None
+                    self.key_lines = {i.name: env.key_line(i) for _role, i, _state in servers}
+                    found += servers
                 except MigrationError as error:
                     role = env.notes.get("stage_role")
                     other_found = role != "source"
@@ -315,22 +371,15 @@ class Session:
         except Failure:
             self.disconnect()
             raise
-        self.pending = {identity.name: identity for _role, identity, _state in found}
+        self.pending = {}
         return {
-            "identities": [
-                {
-                    "role": role,
-                    "name": identity.name,
-                    "fingerprint": identity.fingerprint,
-                    "state": state,
-                }
-                for role, identity, state in found
-            ]
+            "identities": [self._shown(role, identity, state) for role, identity, state in found]
         }
 
     def trust(self, *, identities: list[dict], replace: bool = False) -> list[str]:
         """Record the identities the person confirmed, by the fingerprint they were shown.
-        A changed identity is replaced only when the person said so explicitly."""
+        A changed address is replaced only when the person said so explicitly. A changed
+        server code is never replaced from here: it stops the test."""
         require(self.store is not None, Code.STATE)
         enrolled = []
         for shown in identities:
@@ -339,11 +388,11 @@ class Session:
                 continue
             state = self.store.check(identity)
             if state == "changed":
-                if not replace:
+                if not replace or identity.kind != "tls":
                     continue
                 self.store.forget(identity.kind, identity.name)
             if state != "trusted":
-                self.store.trust(identity)
+                self.store.trust(identity, self.key_lines.get(identity.name))
             enrolled.append(identity.name)
         return enrolled
 
@@ -367,6 +416,7 @@ class Session:
         self.server_sign_in = bool(
             not token and connection.get("destination_ssh_user") and secrets.get("destination_ssh")
         )
+        self.want_server = self.server_sign_in
         self.stage(0)
         try:
             if fixture:
@@ -393,6 +443,44 @@ class Session:
             except MigrationError as error:
                 raise self._fail(error, side=side, field=field, kind=kind, **extra) from None
 
+        more: list[dict] = []
+        later: list[tuple] = []
+
+        def servers(side, secret, **extra):
+            """The server password goes to the server at the typed address first. Only that
+            server can say which others stand behind the address, and none of them is sent
+            the password before the person has confirmed its code."""
+            for index, identity in enumerate(self._stand_in_servers(env, side)):
+                state = self.store.check(identity)
+                name = identity.name.rsplit(":", 1)[0]
+                if state == "changed":
+                    raise self._fail(
+                        MigrationError(Code.AUTH, f"The identity of {name} changed."),
+                        side=side,
+                        field="address",
+                        kind="identity",
+                        server=name,
+                    )
+                if state == "unknown":
+                    more.append(self._shown(side, identity, state))
+                    if index == 0:
+                        return  # Not even the typed server is confirmed: nothing is sent.
+                    continue
+
+                def send(name=name):
+                    return attempt(
+                        side,
+                        "server_password",
+                        "auth",
+                        lambda: env.check_sign_in(side + "_ssh", secret, server=name),
+                        **extra,
+                    )
+
+                if index == 0:
+                    send()
+                else:
+                    later.append(send)
+
         self.stage(1)
         attempt(
             "source",
@@ -401,13 +489,7 @@ class Session:
             lambda: env.check_sign_in("source_api", secrets.get("source_api", "")),
             other_found=True,
         )
-        attempt(
-            "source",
-            "server_password",
-            "auth",
-            lambda: env.check_sign_in("source_ssh", secrets.get("source_ssh", "")),
-            other_found=True,
-        )
+        servers("source", secrets.get("source_ssh", ""), other_found=True)
         self.stage(2)
         nine_one = env.data["destination"]["version"].startswith("9.1")
         if nine_one and not token:
@@ -429,17 +511,47 @@ class Session:
                 other_signed_in=True,
             )
             if self.server_sign_in:
-                attempt(
-                    "destination",
-                    "server_password",
-                    "auth",
-                    lambda: env.check_sign_in(
-                        "destination_ssh", secrets.get("destination_ssh", "")
-                    ),
-                    other_signed_in=True,
-                )
+                servers("destination", secrets.get("destination_ssh", ""), other_signed_in=True)
+        if more:
+            raise Failure(UNCONFIRMED, kind="servers_found", identities=more)
+        for send in later:
+            send()
         self.stage(3)
         return env.version_check()
+
+    def _same_server(self, env, identities: list[Identity]) -> list[Identity]:
+        """A server found under another name that presents exactly the code the person
+        confirmed for a typed address is that same server (only the holder of its key can
+        present it), so it is recorded without a second question. Returns the rest."""
+        port = env.connection.ssh_port
+        typed = (env.connection.source_host, env.connection.destination_endpoint[0])
+        confirmed = {
+            self.store.known(Identity("ssh", f"{host}:{port}", ""))
+            for name in typed
+            for host in (name, name.lower())
+        } - {None}
+        rest = []
+        for identity in identities:
+            if identity.kind == "ssh" and identity.fingerprint in confirmed:
+                self.store.trust(identity, env.key_line(identity))
+            else:
+                rest.append(identity)
+        return rest
+
+    def _servers_found(self, env, identities: list[Identity]) -> Failure:
+        """Identities met after sign-in began that nobody has confirmed. Nothing has been
+        sent to them; the window asks, and the test starts again once they are confirmed."""
+        self.key_lines.update({i.name: env.key_line(i) for i in identities})
+        behind = {host: "destination" for host in env.destination_members}
+        names = {name: role for role, name in self._roles().items()}
+        shown = []
+        for identity in identities:
+            host = identity.name.rsplit(":", 1)[0]
+            role = names.get(identity.name) or behind.get(host, "source")
+            if identity.kind == "ssh" and host == env.connection.destination_endpoint[0].lower():
+                role = "destination"
+            shown.append(self._shown(role, identity, "unknown"))
+        return Failure(UNCONFIRMED, kind="servers_found", identities=shown)
 
     def _sign_in_live(self, env, token: bool) -> dict:
         def where(error: MigrationError) -> dict:
@@ -449,7 +561,11 @@ class Session:
             if env.notes.get("identity_changed") or (
                 isinstance(error, SSHFailure) and "host key" in error.message
             ):
-                return {"side": side, "field": "address", "kind": "identity"}
+                data = {"side": side, "field": "address", "kind": "identity"}
+                changed = str(env.notes.get("identity_changed") or "")
+                if isinstance(error, SSHFailure) and changed:
+                    data["server"] = changed.rsplit(":", 1)[0]
+                return data
             if isinstance(error, SSHFailure) and error.code == Code.AUTH:
                 return {"side": side, "field": "server_password", "kind": "auth"}
             if stage.startswith("ssh"):
@@ -464,12 +580,19 @@ class Session:
                 hint = None
             if hint and hint.startswith("9.1"):
                 raise Failure("needs_token", side="destination", kind="token_needed")
-        try:
-            env.open()
-        except MigrationError as error:
-            data = where(error)
-            data["other_found"] = True
-            raise self._fail(error, **data) from None
+        for attempt in range(3):
+            try:
+                env.open()
+                break
+            except TrustRequired as asked:
+                # `open()` stops before anything is sent to an identity nobody confirmed.
+                rest = self._same_server(env, asked.identities)
+                if rest or attempt == 2:
+                    raise self._servers_found(env, rest or asked.identities) from None
+            except MigrationError as error:
+                data = where(error)
+                data["other_found"] = True
+                raise self._fail(error, **data) from None
         self.stage(1)
         try:
             env.source_version()

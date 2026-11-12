@@ -77,20 +77,58 @@ def test_first_launch_opens_on_connect_and_says_what_is_missing(driver):
     assert driver.page.source_user.text() == "admin" and driver.page.ssh_user.text() == "root"
 
 
-def test_one_test_asks_about_the_two_addresses_before_any_password_is_sent(driver):
+@pytest.fixture
+def handed(monkeypatch):
+    """Every password the app hands to a stand-in system, as (which sign-in, which server).
+    The stand-ins themselves keep the list, so it does not depend on what the app says."""
+    from logs_migrate.adapters.simulated import SimulatedEnvironment
+
+    seen: list[tuple[str, str | None]] = []
+    real = SimulatedEnvironment.check_sign_in
+
+    def check_sign_in(self, kind, secret, server=None):
+        seen.append((kind, server))
+        return real(self, kind, secret, server)
+
+    monkeypatch.setattr(SimulatedEnvironment, "check_sign_in", check_sign_in)
+    return seen
+
+
+def fits(driver: Driver) -> bool:
+    """The open question lies wholly inside the window."""
+    box = driver.window.modal.box
+    return driver.window.modal.rect().contains(box.geometry())
+
+
+def test_one_test_asks_about_the_two_addresses_before_any_password_is_sent(driver, handed):
     window = driver.window
     driver.sign_in(confirm=False)
     assert window.modal.isVisible() and "First time connecting" in window.modal.title
     text = plain(driver)
     assert "No password has been sent yet" in text
+    assert handed == [], "nothing is handed over while the question is open"
     assert re.search(r"([0-9A-F]{2}:){15}[0-9A-F]{2}", text), "fingerprints as a browser shows them"
     assert SOURCE in text and DESTINATION in text
+    # The server at each typed address is on the same screen, with its code, and the
+    # screen says another question may follow.
+    assert "logs-old-1 (source)" in text and "logs-new-1 (destination)" in text
+    assert text.count("SHA256:") == 2 and "logs-old-2" not in text
+    assert "If a system has several servers, one more question like this follows" in text
+    driver.resize(1024, 700)
+    assert fits(driver)
+    driver.resize(1280, 800)
+    # The technical detail is in a saved file, not on the screen.
+    driver.link("save")
+    driver.until(lambda: (driver.reports / "identity-details.txt").exists())
+    saved = (driver.reports / "identity-details.txt").read_text()
+    assert "SSH host key" in saved and "logs-old-1, SSH port 22 (source)" in saved
+    assert "ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub" in saved
     driver.click("Cancel. Send nothing.")
-    assert not driver.state.connected and "Nothing was sent." in window.toasts
-    driver.click("Test connections")
-    driver.until(lambda: window.modal.isVisible())
-    driver.click("These are my systems. Continue.")
     driver.idle()
+    assert not driver.state.connected and "Nothing was sent." in window.toasts
+    assert handed == [], "declining sends nothing"
+    driver.click("Test connections")
+    driver.confirm()
     assert driver.state.connected
     text = plain(driver)
     assert "Connected. These two systems can migrate." in text
@@ -107,6 +145,76 @@ def test_one_test_asks_about_the_two_addresses_before_any_password_is_sent(drive
     driver.sign_in(confirm=False)
     driver.idle()
     assert driver.state.connected and not window.modal.isVisible()
+
+
+def test_servers_found_by_signing_in_are_confirmed_before_their_password_is_sent(driver, handed):
+    window = driver.window
+    others = {"logs-old-2", "logs-old-3", "logs-new-2", "logs-new-3"}
+
+    def servers() -> set:
+        return {server for _kind, server in handed if server}
+
+    driver.sign_in(confirm=False)
+    driver.click("These are my systems. Continue.")
+    assert driver.asked() and window.modal.title == "More servers found"
+    text = plain(driver)
+    assert "Signing in found 4 more servers behind these addresses" in text
+    assert "No password has been sent to them." in text
+    assert all(name in text for name in others) and text.count("SHA256:") == 4
+    # Only the two servers confirmed on the first screen have been handed a password.
+    assert servers() == {"logs-old-1", "logs-new-1"}
+    driver.resize(1024, 700)
+    assert fits(driver)
+    driver.resize(1280, 800)
+    before = list(handed)
+    driver.click("Cancel. Send nothing more.")
+    driver.idle()
+    assert handed == before, "declining sends nothing more"
+    assert not driver.state.connected
+    assert "Nothing was sent to those servers." in window.toasts
+    # Asked again on the next test, and still nothing reaches them until the answer.
+    driver.click("Test connections")
+    assert driver.asked() and window.modal.title == "More servers found"
+    assert servers() == {"logs-old-1", "logs-new-1"}
+    driver.click("These are my servers. Continue.")
+    driver.idle()
+    assert driver.state.connected and servers() == others | {"logs-old-1", "logs-new-1"}
+    # Confirmed once: the next sign-in asks nothing.
+    driver.click("Sign out of both")
+    driver.click("Sign out")
+    driver.sign_in(confirm=False)
+    driver.idle()
+    assert driver.state.connected and not window.modal.isVisible()
+
+
+def test_a_server_whose_code_changed_stops_the_test_and_is_sent_no_password(handed):
+    import json
+
+    first = Driver("plain", delay=0)
+    home = first.home
+    try:
+        first.sign_in()
+        assert first.state.connected
+        # One of the source's servers now presents another code, as a rebuilt one would.
+        for path in (first.fixture, first.journal.with_suffix(".simulated-state")):
+            if path.exists():
+                data = json.loads(path.read_text())
+                data["server_seeds"] = {"logs-old-2": "rebuilt"}
+                path.write_text(json.dumps(data))
+        first.click("Sign out of both")
+        first.click("Sign out")
+        del handed[:]
+        first.sign_in(confirm=False)
+        first.idle()
+        assert not first.state.connected and not first.window.modal.isVisible()
+        text = plain(first)
+        assert "One of the source's servers has changed identity" in text
+        assert "logs-old-2" in text and "No password was sent to that server." in text
+        assert ("source_ssh", "logs-old-2") not in handed
+        assert ("source_ssh", "logs-old-3") not in handed, "nothing goes on past the stop"
+    finally:
+        first.close()
+    assert home is not None
 
 
 def test_identity_codes_list_both_addresses_and_every_server(driver):
@@ -139,7 +247,7 @@ def test_a_wrong_password_marks_only_that_box_and_keeps_the_side_that_worked(dri
     assert "Password changed. Test again to check it." in driver.texts()
     assert page.destination_password.property("status") != "bad"
     driver.click("Test again")
-    driver.idle()
+    driver.confirm()
     assert driver.state.connected
 
 
@@ -227,10 +335,7 @@ def test_a_9_1_destination_asks_for_an_access_token_only_once_it_is_seen():
         assert "VCF Operations address, access token" in driver.page.hint.text()
         driver.fill(ops_url="ops.example.com", ops_token="a-token")
         driver.click("Test again")
-        driver.until(lambda: driver.window.modal.isVisible() or not driver.window.busy("connect"))
-        if driver.window.modal.isVisible():
-            driver.click("These are my systems. Continue.")
-        driver.idle()
+        driver.confirm()
         assert driver.state.connected and not driver.state.server_sign_in
     finally:
         driver.close()
@@ -602,7 +707,13 @@ def test_without_the_destination_server_sign_in_the_cost_is_said_everywhere_it_b
         assert "destination server sign-in" in page.hint.text()
         driver.fill(destination_ssh_user="root", destination_ssh_password="letmein")
         driver.click("Test again")
-        driver.idle()
+        # The destination's servers are met for the first time: the one at the address
+        # is asked about before its password is sent, then the others behind it.
+        assert (
+            driver.asked() and driver.window.modal.title == "First time connecting to this server"
+        )
+        assert "logs-new-1 (destination)" in plain(driver)
+        driver.confirm()
         assert "Now the stopped copy can be continued." in driver.texts()
         driver.click("Back to the stopped copy →")
         assert driver.buttons() == ["Check what arrived so far", "Continue copying"]

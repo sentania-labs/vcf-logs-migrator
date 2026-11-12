@@ -407,11 +407,19 @@ the saved detail files and the troubleshooting file, not to a screen.
 
 Three things differ from the command line:
 
-- **Identities.** Test connections reads the certificate of the two typed addresses first
-  and asks once, before any password is sent, whether they are the systems you meant. It
-  then records each server's SSH host key on first contact without a second question, and
-  lists them under "Show the recorded identity codes". A changed identity still stops the
-  test. The command line asks about every identity.
+- **Identities.** Test connections first reads the certificate of the two typed addresses
+  and the SSH host key of the server at each, and asks once, before any password is sent,
+  whether they are the systems you meant. The cluster's other members are only known after
+  signing in to that first server, so when there are any the window asks once more, with
+  their host keys, before a password goes to any of them. A member that presents exactly
+  the key already confirmed for the typed address is the same server under another name
+  and is not asked about again. No server is sent a password before its key has been
+  confirmed. The screen calls a host key an "identity code"; "Save the details" in the
+  question writes `identity-details.txt` with the ports, key types and the commands to
+  check each one. Confirmed keys are listed under "Show the recorded identity codes". A
+  changed identity still stops the test; after a server has been rebuilt,
+  `logs-migrate trust forget ssh host:22` removes the old entry and the window asks about
+  that server again. The command line asks about every identity.
 - **Continuing without the destination's server sign-in.** The window does not continue a
   stopped or failed copy unless the destination's server sign-in was given, because it
   cannot see what arrived. It says so on Connect, in the plan and in the Stop question.

@@ -59,6 +59,9 @@ def connect_walk(shots: Shots) -> None:
     d.until(lambda: d.window.modal.isVisible())
     shots.take(d, "04-connect-first-time-identity", sizes=False)
     d.click("These are my systems. Continue.")
+    assert d.asked(), "signing in finds the other servers and asks before sending them anything"
+    shots.take(d, "04b-connect-more-servers-found", sizes=False)
+    d.click("These are my servers. Continue.")
     d.wait(500)
     shots.take(d, "03-connect-testing")
     d.idle()
@@ -259,10 +262,7 @@ def versions_walk(shots: Shots) -> None:
     shots.take(d, "10-connect-destination-needs-other-sign-in")
     d.fill(ops_url="ops.example.com", ops_token="a-token")
     d.click("Test again")
-    d.until(lambda: d.window.modal.isVisible() or not d.window.busy("connect"))
-    if d.window.modal.isVisible():
-        d.click("These are my systems. Continue.")
-    d.idle()
+    d.confirm()
     shots.take(d, "10b-connect-connected-with-token")
     d.close()
 
@@ -323,8 +323,9 @@ def no_server_sign_in_walk(shots: Shots) -> None:
     d.resize(1280, 800)
     d.fill(destination_ssh_user="root", destination_ssh_password="letmein")
     d.click("Test again")
-    d.until(lambda: d.window.modal.isVisible() or not d.window.busy("connect"))
-    d.idle()
+    assert d.asked(), "the destination's server is asked about before its password is sent"
+    shots.take(d, "12e-connect-first-time-server", sizes=False)
+    d.confirm()
     shots.take(d, "12d-connect-stopped-copy-can-continue")
     d.click("Back to the stopped copy →")
     d.idle()

@@ -365,6 +365,33 @@ def write(folder: Path, scenario: str = "plain", **options) -> Path:
     return path
 
 
+def sign_in(session, *, fixture, journal, credentials, connection) -> dict:
+    """Connect a session the way a person does: confirm the identities shown before any
+    password is sent, and again the servers that signing in finds, then sign in."""
+    from logs_migrate.gui.session import Failure
+
+    session.open_record(journal=journal)
+    shown = session.probe(
+        fixture=fixture,
+        connection=connection,
+        destination_server=bool(credentials.get("destination_ssh")),
+    )
+    session.trust(identities=shown["identities"])
+    details = {
+        "fixture": fixture,
+        "journal": journal,
+        "credentials": credentials,
+        "connection": connection,
+    }
+    try:
+        return session.connect(**details)
+    except Failure as found:
+        if found.data.get("kind") != "servers_found":
+            raise
+        session.trust(identities=found.data["identities"])
+        return session.connect(**details)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter

@@ -143,9 +143,10 @@ class SimulatedEnvironment:
         if expected and host != expected.lower():
             raise MigrationError(Code.CONNECTION)
 
-    def check_sign_in(self, kind, secret):
+    def check_sign_in(self, kind, secret, server=None):
         """A fixture may declare the secret a sign-in expects (any other is refused), or a
-        list of secrets it refuses (any other is accepted)."""
+        list of secrets it refuses (any other is accepted). `server` names the one server
+        a server sign-in is handed to."""
         expected = self.data.get("sign_in", {}).get(kind)
         refused = secret in expected if isinstance(expected, list) else secret != expected
         if expected is not None and refused:
@@ -155,17 +156,23 @@ class SimulatedEnvironment:
         """A stable stand-in for the certificate digest of one address."""
         return hashlib.sha256(self.data[side]["identity"].encode()).hexdigest()
 
-    def server_keys(self, side):
-        """Stand-in host keys, in the form an administrator sees them (`SHA256:...`)."""
+    def server_digests(self, side):
+        """A stable stand-in for each server's host key digest. A fixture may give a server
+        another seed, to stand for one that was rebuilt."""
+        seeds = self.data.get("server_seeds", {})
         return [
             (
                 node["id"],
-                "SHA256:"
-                + base64.b64encode(hashlib.sha256(node["id"].encode()).digest())
-                .decode()
-                .rstrip("="),
+                hashlib.sha256(str(seeds.get(node["id"], node["id"])).encode()).hexdigest(),
             )
             for node in self.data[side]["nodes"]
+        ]
+
+    def server_keys(self, side):
+        """Stand-in host keys, in the form an administrator sees them (`SHA256:...`)."""
+        return [
+            (name, "SHA256:" + base64.b64encode(bytes.fromhex(digest)).decode().rstrip("="))
+            for name, digest in self.server_digests(side)
         ]
 
     @property

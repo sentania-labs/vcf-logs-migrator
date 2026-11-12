@@ -210,8 +210,24 @@ class Driver:
             what="identity question",
         )
         if self.window.modal.isVisible() and confirm:
-            self.click("These are my systems. Continue.")
-            self.idle()
+            self.confirm()
+
+    def asked(self) -> bool:
+        """Wait for the test to ask something or to finish; True when it asked."""
+        self.until(
+            lambda: self.window.modal.isVisible() or not self.window.busy("connect"),
+            what="a question or the verdict",
+        )
+        return self.window.modal.isVisible()
+
+    def confirm(self) -> None:
+        """Agree to the first-time question, and to the one that follows it when signing
+        in finds more servers behind an address."""
+        for _ in range(3):
+            if not self.asked():
+                break
+            self.click(self.buttons()[-1])
+        self.idle()
 
     def copy_rules(self) -> None:
         """Copy every ticked rule, so a copy of logs can be planned."""

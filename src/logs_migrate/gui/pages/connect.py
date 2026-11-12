@@ -303,8 +303,8 @@ class ConnectPage(Page):
             "Identity codes",
             [
                 rich(
-                    "Recorded the first time each was contacted. The app warns you if one "
-                    "ever changes.",
+                    "Recorded when you confirmed them, the first time each was contacted. The "
+                    "app warns you if one ever changes.",
                     "soft",
                 ),
                 label("The two addresses", "subhead"),
@@ -644,7 +644,7 @@ class ConnectPage(Page):
                 rich(
                     (
                         f"The app found the {vm.plural(found, 'server')} behind these two "
-                        "addresses and recorded each one’s identity code. "
+                        "addresses and keeps the identity code you confirmed for each. "
                         if found
                         else "The app recorded the identity of both addresses. "
                     )

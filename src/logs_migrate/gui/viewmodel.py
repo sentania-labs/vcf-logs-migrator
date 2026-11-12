@@ -431,6 +431,68 @@ def server_key(digest: str) -> str:
         return digest
 
 
+KEY_FILES = {
+    "ssh-ed25519": "ssh_host_ed25519_key.pub",
+    "ssh-rsa": "ssh_host_rsa_key.pub",
+    "rsa-sha2-256": "ssh_host_rsa_key.pub",
+    "rsa-sha2-512": "ssh_host_rsa_key.pub",
+    "ecdsa-sha2-nistp256": "ssh_host_ecdsa_key.pub",
+    "ecdsa-sha2-nistp384": "ssh_host_ecdsa_key.pub",
+    "ecdsa-sha2-nistp521": "ssh_host_ecdsa_key.pub",
+}
+
+
+def identity_details(identities: list[dict], zone: str) -> str:
+    """The saved file behind the first-time question: the same identities with the
+    technical detail the screen leaves out, and how an administrator checks each."""
+    roles = {"source": "source", "destination": "destination", "ops": "VCF Operations"}
+    now = datetime.now(UTC).isoformat()
+    lines = [
+        "VCF Logs Migrator: identities shown for confirmation",
+        f"Saved {format_when(now, zone)}",
+        "",
+    ]
+    addresses = [item for item in identities if item["kind"] == "address"]
+    servers = [item for item in identities if item["kind"] == "server"]
+    if addresses:
+        lines += ["ADDRESSES: HTTPS (TLS) certificate, SHA-256 fingerprint", ""]
+        for item in addresses:
+            lines += [
+                f"  {item['name']} ({roles[item['role']]})",
+                f"    {fingerprint_pairs(item['fingerprint'])}",
+            ]
+        lines += [
+            "",
+            "  To check: open https://<address> in a browser, click the padlock, open the",
+            "  certificate and compare its SHA-256 fingerprint. Or, from a shell:",
+            "    openssl s_client -connect <address>:<port> </dev/null 2>/dev/null \\",
+            "      | openssl x509 -noout -fingerprint -sha256",
+            "",
+        ]
+    if servers:
+        lines += ["SERVERS: SSH host key, SHA-256 fingerprint", ""]
+        files = set()
+        for item in servers:
+            host, _, port = item["name"].rpartition(":")
+            kind = item.get("detail") or "key type not reported"
+            files.add(KEY_FILES.get(item.get("detail") or "", "ssh_host_<type>_key.pub"))
+            lines += [
+                f"  {host}, SSH port {port} ({roles[item['role']]}), {kind}",
+                f"    {server_key(item['fingerprint'])}",
+            ]
+        lines += [
+            "",
+            "  To check: on the server's own console (not over the network), run",
+            *[f"    ssh-keygen -l -f /etc/ssh/{name}" for name in sorted(files)],
+            "  and compare the SHA256:... value it prints with the code above.",
+            "",
+            "  The app sends a server its password only after its code has been confirmed,",
+            "  and refuses to connect if a recorded code later changes.",
+            "",
+        ]
+    return "\n".join(lines)
+
+
 def _versions(versions: dict[str, str]) -> str:
     distinct = sorted({format_version(v) for v in versions.values()})
     return " and ".join(distinct) if distinct else "not known"
@@ -572,6 +634,15 @@ def failure_banner(failure: dict) -> tuple[str, str, str]:
             "bad",
             title,
             f"Fix the {what} below (marked in red), then test again. Nothing else needs retyping.",
+        )
+    if kind == "identity" and failure.get("server"):
+        return (
+            "bad",
+            f"One of the {side}'s servers has changed identity since you first connected.",
+            f"The app recorded the identity code of {failure['server']} when you confirmed it, "
+            "and that server now presents a different one. That is expected if the server "
+            "was rebuilt. If it was not, stop and ask whoever runs it. No password was sent "
+            "to that server.",
         )
     if kind == "identity":
         return (

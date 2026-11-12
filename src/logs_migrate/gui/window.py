@@ -6,6 +6,7 @@ redraw from it. Nothing on a screen is a migration decision.
 
 from __future__ import annotations
 
+from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -35,7 +36,7 @@ from .pages.runs import RunsPage
 from .pages.settings_page import SettingsPage
 from .settings import Settings
 from .state import AppState
-from .widgets import GridTable, Overlay, button, label, rich, set_prop
+from .widgets import GridTable, Overlay, button, label, rich, scrolling, set_prop
 from .worker import EngineWorker
 
 STAGES = {
@@ -723,76 +724,162 @@ class MainWindow(QMainWindow):
             "probe",
             fixture=state.settings.fixture_path,
             connection=self.connection_values(),
+            destination_server=bool(credentials.get("destination_ssh")),
         )
         self.refresh_all()
 
-    def _ask_identities(self, identities: list[dict]) -> None:
+    def _ask_identities(self, identities: list[dict], found: bool = False) -> None:
+        """The first-time question: the two addresses and the server at each, before any
+        password is sent. With `found`, the servers that signing in turned up behind an
+        address, before any password is sent to them."""
         names = {"source": "source", "destination": "destination", "ops": "VCF Operations"}
-        table = GridTable(["System", "Certificate fingerprint (SHA-256)"], stretch=[2, 5])
-        rows = []
-        for item in identities:
-            pairs = vm.fingerprint_pairs(item["fingerprint"])
-            half = len(pairs) // 2 + 1
-            host = item["name"].rsplit(":", 1)[0]
-            rows.append(
-                (
-                    f"{host} ({names[item['role']]})",
-                    '<span style="font-family:monospace;font-size:11.5px">'
-                    f"{pairs[:half]}<br>{pairs[half:]}</span>",
+        mono = '<span style="font-family:monospace;font-size:11.5px">{}</span>'
+        addresses = [item for item in identities if item["kind"] == "address"]
+        servers = [item for item in identities if item["kind"] == "server"]
+        changed = [item for item in addresses if item["state"] == "changed"]
+        one = len(servers) == 1
+        body: list = []
+        if addresses:
+            table = GridTable(["System", "Certificate fingerprint (SHA-256)"], stretch=[2, 5])
+            rows = []
+            for item in addresses:
+                pairs = vm.fingerprint_pairs(item["fingerprint"])
+                half = len(pairs) // 2 + 1
+                host = item["name"].rsplit(":", 1)[0]
+                rows.append(
+                    (
+                        f"{escape(host)} ({names[item['role']]})",
+                        mono.format(f"{pairs[:half]}<br>{pairs[half:]}"),
+                    )
                 )
+            table.set_rows(rows)
+            body.append(table)
+        if servers:
+            listed = GridTable(["Server", "Identity code"], stretch=[2, 5])
+            listed.set_rows(
+                [
+                    (
+                        f"{escape(item['name'].rsplit(':', 1)[0])} ({names[item['role']]})",
+                        mono.format(vm.server_key(item["fingerprint"])),
+                    )
+                    for item in servers
+                ]
             )
-        table.set_rows(rows)
-        both = "\n".join(
-            f"{item['name'].rsplit(':', 1)[0]}  {vm.fingerprint_pairs(item['fingerprint'])}"
-            for item in identities
-        )
-        changed = [item for item in identities if item["state"] == "changed"]
-        intro = (
-            "No password has been sent yet. First, check that these two addresses are the "
-            "systems you meant. If they are, and you are on your own network, that is "
-            "normally enough."
-        )
-        if changed:
-            who = " and ".join(names[item["role"]] for item in changed)
-            intro = (
-                f"No password has been sent. <b>The {who} now presents a different identity "
-                "than the one recorded when you first connected.</b> That is expected if its "
-                "certificate was replaced or the system was rebuilt. If neither happened, "
-                "cancel and ask whoever runs it."
-            )
-        more = rich(
-            "<b>For extra certainty,</b> compare the fingerprints: open each system’s web "
-            "page in a browser, click the padlock, open the certificate, and find “SHA-256 "
-            "fingerprint”. It is shown in the same form as above (pairs of letters and "
-            "digits). The app remembers these and warns you if one ever changes. After "
-            "signing in it also records an identity code for each server behind these "
-            'addresses; you can see those on the next screen. <a href="copy">Copy both '
-            "fingerprints</a>",
-            "subtle",
-            lambda _href: self.copy_text(both, "Fingerprints copied"),
+            if addresses:
+                body.append(
+                    rich(
+                        "Each address is answered by a server with an identity code of its "
+                        "own. If a system has several servers, one more question like this "
+                        "follows before any of them is sent a password.",
+                        "soft",
+                    )
+                )
+            body.append(scrolling(listed, 200, "More servers") if len(servers) > 5 else listed)
+        everything = "\n".join(
+            [
+                f"{item['name'].rsplit(':', 1)[0]}  {vm.fingerprint_pairs(item['fingerprint'])}"
+                for item in addresses
+            ]
+            + [
+                f"{item['name'].rsplit(':', 1)[0]}  {vm.server_key(item['fingerprint'])}"
+                for item in servers
+            ]
         )
 
+        def link(href: str) -> None:
+            if href == "copy":
+                self.copy_text(everything, "Copied")
+            else:
+                self.save_text(
+                    "identity-details.txt",
+                    vm.identity_details(identities, self.state.settings.timezone),
+                    "identity",
+                )
+
+        links = '<a href="copy">Copy these</a> · <a href="save">Save the details</a>'
+        whose = "this is your server" if one else "these are your servers"
+        if found:
+            title = "One more server found" if one else "More servers found"
+            sides = sorted({item["role"] for item in servers})
+            where = "these addresses" if len(sides) > 1 else f"the {names[sides[0]]} address"
+            intro = (
+                f"Signing in found {vm.plural(len(servers), 'more server')} behind {where}. "
+                f"<b>No password has been sent to {'it' if one else 'them'}.</b> Check that "
+                f"{whose}. If {'it is' if one else 'they are'}, and you are on your own "
+                "network, that is normally enough."
+            )
+            extra = (
+                "<b>For extra certainty,</b> ask whoever runs "
+                f"{'the server' if one else 'these servers'} to read "
+                f"{'its identity code' if one else 'each identity code'} out to you. The app "
+                f"remembers {'it' if one else 'them'} and warns you if one ever changes. "
+            )
+            decline, notice = "Cancel. Send nothing more.", "Nothing was sent to those servers."
+        elif addresses:
+            title = (
+                "These systems have changed identity"
+                if changed
+                else "First time connecting to these systems"
+            )
+            intro = (
+                "No password has been sent yet. First, check that these two addresses are the "
+                "systems you meant. If they are, and you are on your own network, that is "
+                "normally enough."
+            )
+            if changed:
+                who = " and ".join(names[item["role"]] for item in changed)
+                intro = (
+                    f"No password has been sent. <b>The {who} now presents a different "
+                    "identity than the one recorded when you first connected.</b> That is "
+                    "expected if its certificate was replaced or the system was rebuilt. If "
+                    "neither happened, cancel and ask whoever runs it."
+                )
+            extra = (
+                "<b>For extra certainty,</b> compare the fingerprints: open each system’s web "
+                "page in a browser, click the padlock, open the certificate, and find “SHA-256 "
+                "fingerprint”. It is shown in the same form as above (pairs of letters and "
+                "digits). "
+                + (
+                    "Whoever runs a server can read its identity code out to you. "
+                    if servers
+                    else ""
+                )
+                + "The app remembers all of these and warns you if one ever changes. "
+            )
+            decline, notice = "Cancel. Send nothing.", "Nothing was sent."
+        else:
+            title = "First time connecting to " + ("this server" if one else "these servers")
+            intro = (
+                f"No password has been sent yet. First, check that {whose}. If "
+                f"{'it is' if one else 'they are'}, and you are on your own network, that is "
+                "normally enough."
+            )
+            extra = (
+                "<b>For extra certainty,</b> ask whoever runs "
+                f"{'the server' if one else 'these servers'} to read "
+                f"{'its identity code' if one else 'each identity code'} out to you. The app "
+                f"remembers {'it' if one else 'them'} and warns you if one ever changes. If a "
+                "system has several servers, one more question like this follows once the app "
+                "can see them. "
+            )
+            decline, notice = "Cancel. Send nothing.", "Nothing was sent."
+
         def refuse():
-            self.cancel_test("Nothing was sent.")
+            self.cancel_test(notice)
 
         def accept():
             self.submit("trust", "trust", identities=identities, replace=bool(changed))
 
+        if changed:
+            agree = "This is still my system. Continue."
+        elif addresses:
+            agree = "These are my systems. Continue."
+        else:
+            agree = "This is my server. Continue." if one else "These are my servers. Continue."
         self.ask(
-            "These systems have changed identity"
-            if changed
-            else "First time connecting to these systems",
-            [intro, table, more],
-            [
-                ("Cancel. Send nothing.", refuse),
-                (
-                    "This is still my system. Continue."
-                    if changed
-                    else "These are my systems. Continue.",
-                    accept,
-                    "primary",
-                ),
-            ],
+            title,
+            [intro, *body, rich(extra + links, "subtle", link)],
+            [(decline, refuse), (agree, accept, "primary")],
         )
 
     def cancel_test(self, notice: str) -> None:
@@ -1122,9 +1209,20 @@ class MainWindow(QMainWindow):
             self._after_record()
         elif job == "probe":
             state.identities = result["identities"]
-            unknown = any(item["state"] != "trusted" for item in result["identities"])
-            if unknown or state.settings.confirmed_pair != self.pair():
-                self._ask_identities(result["identities"])
+            addresses = [item for item in result["identities"] if item["kind"] == "address"]
+            # A server whose code changed is not asked about: signing in stops for it.
+            ask = [
+                item
+                for item in result["identities"]
+                if item["kind"] == "server" and item["state"] == "unknown"
+            ]
+            if (
+                any(item["state"] != "trusted" for item in addresses)
+                or state.settings.confirmed_pair != self.pair()
+            ):
+                ask = addresses + ask
+            if ask:
+                self._ask_identities(ask)
             else:
                 self._connect()
         elif job == "trust":
@@ -1308,6 +1406,15 @@ class MainWindow(QMainWindow):
             return
         failure = {**data, "code": code}
         activity = self.pages[self.owners[job]].activity if job in self.owners else None
+        if job == "signin" and data.get("kind") == "servers_found":
+            # Not a failure: signing in met servers nobody has confirmed, and stopped
+            # before sending them anything. The test goes on once they are confirmed.
+            self._ask_identities(
+                data["identities"],
+                found=all(item["kind"] == "server" for item in data["identities"]),
+            )
+            self.refresh_all()
+            return
         if job in {"probe", "trust", "signin"}:
             self.active.pop("connect", None)
             self.owners.pop("connect", None)

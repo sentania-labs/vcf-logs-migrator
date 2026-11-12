@@ -21,7 +21,7 @@ Each download has both a desktop window and a command-line interface (CLI). You 
 - On the source, you need the address of one 8.18 cluster member, a Logs API account and password, and root SSH access to **every** 8.18 member. Your workstation has to reach the source Logs API on port 9543 and each source member over SSH on port 22. The destination needs SSH access to each source member too.
 - On the destination, you need the Logs address, an API account and password, and access to port 9543. If you also give it root SSH access, the plan can check free storage on each destination node.
 - During the copy, the source root SSH password goes to the destination so it can pull the data. Type passwords at a prompt or in the window. For automation, use the private credential methods in the [lab guide](docs/testing-against-a-lab.md), and never put a password in a command argument.
-- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. The command line asks about every one. The window asks once about the two addresses you typed, then records each server's key the first time it is contacted and stops if one ever changes. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
+- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. The command line asks about every one. The window asks once, before any password is sent, about the two addresses you typed and the server at each. If signing in finds more servers behind an address, it asks once more about those before any password goes to them. It stops if a recorded identity ever changes. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
 
 ## Walk through a migration with the CLI
 
@@ -123,9 +123,11 @@ The example report counts whole selected groups on the source, but only the requ
 
 Open the download as shown above. The window is five steps down the left side, done in order: **Connect, Copy rules, Choose dates, Copy logs, Check result.** A step you can't do yet is greyed out and says why. Every screen has one main button, bottom right, with a sentence beside it saying what happens next. These pictures come from stand-in systems, not a real environment.
 
-1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant and shows each certificate's fingerprint for comparing. You then see whether these two systems can migrate, and if not, which one has to change.
+1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant. It shows each certificate's fingerprint and the identity code of the server at each address, for comparing. If a system has several servers, one more question lists the others, and none of them is sent a password until you have confirmed it. You then see whether these two systems can migrate, and if not, which one has to change.
 
    ![Connect, first launch](docs/images/gui/01-connect.png)
+   ![The first-time question](docs/images/gui/14-first-time-question.png)
+   ![More servers found behind an address](docs/images/gui/15-more-servers-found.png)
    ![Connected, both systems can migrate](docs/images/gui/02-connected.png)
 
 2. **Copy rules.** The app compares the rules on both systems by itself and lists the ones that are missing or different, in plain words. A rule the copy depends on is marked **Needed**. Untick what you don't want, confirm once, and each rule is shown as copied.

@@ -2965,3 +2965,151 @@ def test_probe_reports_source_then_destination_stages_in_order(rigged):
     source_end = messages.index("Testing destination…")
     assert all("src.lab" in m for m in messages[1:source_end])
     assert all("dst.lab" in m for m in messages[source_end + 1 :])
+
+
+# The window's first-time question: no password before a code is confirmed ------------------
+
+
+def _window_session(rigged, tmp_path, monkeypatch, codes=None):
+    """The window's session over the rigged live transports. `built` lists every server a
+    sign-in was opened to, which is where a server password goes."""
+    import hashlib
+
+    from logs_migrate.gui.session import Session
+
+    env, source, destination, ssh, store = rigged
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
+    codes = codes or (lambda host: hashlib.sha256(host.encode()).hexdigest())
+    monkeypatch.setattr(
+        live,
+        "probe_ssh",
+        lambda host, port=22, timeout=15: (
+            Identity("ssh", f"{host}:{port}", codes(host), "ssh-ed25519"),
+            f"{host} ssh-ed25519 AAAA",
+        ),
+    )
+    built = []
+
+    def open_server(self, host, credential, username):
+        built.append(host)
+        return ssh.client(host)
+
+    monkeypatch.setattr(LiveEnvironment, "_ssh", open_server)
+    session = Session()
+    details = {
+        "fixture": "",
+        "journal": str(tmp_path / "journal.sqlite"),
+        "credentials": {"source_api": "x", "source_ssh": "y", "destination_api": "z"},
+        "connection": {"source_host": "src.lab", "destination": "dst.lab:9543"},
+    }
+    session.open_record(journal=details["journal"])
+    return session, details, built
+
+
+def test_window_shows_the_typed_server_code_and_sends_nothing_until_it_is_confirmed(
+    rigged, tmp_path, monkeypatch
+):
+    from logs_migrate.gui.session import Failure
+
+    session, details, built = _window_session(rigged, tmp_path, monkeypatch)
+    try:
+        shown = session.probe(fixture="", connection=details["connection"])["identities"]
+        assert [(item["kind"], item["name"], item["state"]) for item in shown] == [
+            ("address", "src.lab:9543", "unknown"),
+            ("address", "dst.lab:9543", "unknown"),
+            ("server", "src.lab:22", "unknown"),
+        ]
+        assert built == []
+        # Signing in without the confirmation is refused before anything is opened.
+        with pytest.raises(Failure) as asked:
+            session.connect(**details)
+        assert asked.value.data["kind"] == "servers_found" and built == []
+        # Declining is simply not confirming: nothing was sent, and nothing is recorded.
+        session.disconnect()
+        assert built == [] and session.store.entries() == []
+    finally:
+        session.close()
+
+
+def test_window_asks_about_servers_found_behind_an_address_before_their_password_is_sent(
+    rigged, tmp_path, monkeypatch
+):
+    from logs_migrate.gui.session import Failure
+
+    session, details, built = _window_session(rigged, tmp_path, monkeypatch)
+    try:
+        shown = session.probe(fixture="", connection=details["connection"])["identities"]
+        session.trust(identities=shown)
+        with pytest.raises(Failure) as asked:
+            session.connect(**details)
+        found = asked.value.data["identities"]
+        assert asked.value.data["kind"] == "servers_found"
+        assert [(item["kind"], item["role"], item["name"]) for item in found] == [
+            ("server", "source", "src-1.lab:22"),
+            ("server", "source", "src-2.lab:22"),
+        ]
+        # Only the confirmed server at the typed address was signed in to, to read the list.
+        assert set(built) == {"src.lab"}
+        session.disconnect()
+        assert set(built) == {"src.lab"}
+        # Confirming one of the two is not enough for the other.
+        session.trust(identities=found[:1])
+        with pytest.raises(Failure) as again:
+            session.connect(**details)
+        assert [item["name"] for item in again.value.data["identities"]] == ["src-2.lab:22"]
+        assert "src-2.lab" not in built
+    finally:
+        session.close()
+
+
+def test_window_does_not_ask_twice_about_the_typed_server_under_another_name(
+    rigged, tmp_path, monkeypatch
+):
+    """A member that presents exactly the code confirmed for the typed address is that
+    server; one with any other code is still asked about."""
+    from logs_migrate.gui.session import Failure
+
+    codes = {"src.lab": "b" * 64, "src-1.lab": "b" * 64, "src-2.lab": "d" * 64}
+    session, details, built = _window_session(rigged, tmp_path, monkeypatch, codes.__getitem__)
+    try:
+        shown = session.probe(fixture="", connection=details["connection"])["identities"]
+        session.trust(identities=shown)
+        with pytest.raises(Failure) as asked:
+            session.connect(**details)
+        assert [item["name"] for item in asked.value.data["identities"]] == ["src-2.lab:22"]
+        assert session.store.known(Identity("ssh", "src-1.lab:22", "")) == "b" * 64
+        assert "src-2.lab" not in built
+    finally:
+        session.close()
+
+
+def test_window_never_replaces_a_changed_server_code_from_the_question(
+    rigged, tmp_path, monkeypatch
+):
+    session, details, built = _window_session(rigged, tmp_path, monkeypatch)
+    try:
+        shown = session.probe(fixture="", connection=details["connection"])["identities"]
+        session.trust(identities=shown)
+        recorded = session.store.known(Identity("ssh", "src.lab:22", ""))
+        monkeypatch.setattr(
+            live,
+            "probe_ssh",
+            lambda host, port=22, timeout=15: (
+                Identity("ssh", f"{host}:{port}", "e" * 64, "ssh-ed25519"),
+                f"{host} ssh-ed25519 BBBB",
+            ),
+        )
+        again = session.probe(fixture="", connection=details["connection"])["identities"]
+        server = next(item for item in again if item["kind"] == "server")
+        assert server["state"] == "changed"
+        session.trust(identities=again, replace=True)
+        assert session.store.known(Identity("ssh", "src.lab:22", "")) == recorded
+        from logs_migrate.gui.session import Failure
+
+        with pytest.raises(Failure) as stopped:
+            session.connect(**details)
+        assert stopped.value.data["kind"] == "identity" and built == []
+        assert stopped.value.data["server"] == "src.lab"
+    finally:
+        session.close()

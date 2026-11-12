@@ -229,8 +229,10 @@ write to the destination.
 
 `logs-migrate gui` connects to appliances. On Connect, enter the addresses and passwords
 and press Test connections. The first time, it shows the certificate fingerprint of each
-address and asks whether these are your systems before any password is sent; it then
-records each server's SSH host key on first contact. That one test signs in to both,
+address and the SSH host key of the server at each (the screen calls it an identity code)
+and asks whether these are your systems before any password is sent. If signing in finds
+more cluster members, it shows their host keys and asks once more before a password goes
+to any of them. That one test signs in to both,
 checks every source server's sign-in and reads the versions. The rest follows the same
 order as the commands above: Copy rules, Choose dates, Copy logs, Check result.
 
