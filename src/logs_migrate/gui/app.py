@@ -42,10 +42,8 @@ def create(
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv[:1])
     app.setApplicationName("VCF Logs Migrator")
     app.setApplicationVersion(__version__)
-    # Title bar, taskbar or dock, and every dialog; the desktop file name lets Linux
-    # shells match the running window to an installed launcher.
+    # Title bar, taskbar or dock, and every dialog.
     app.setWindowIcon(app_icon())
-    app.setDesktopFileName("vcf-logs-migrator")
     settings = Settings.load()
     if fixture:
         settings.fixture_path = str(fixture)
