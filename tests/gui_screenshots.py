@@ -479,10 +479,6 @@ def copy_trouble_walk(shots: Shots) -> None:
     d.until(lambda: d.window.copy_phase() == "unsure", what="an unanswered start")
     d.wait(1200)
     shots.take(d, "46-copy-not-sure-it-started")
-    d.step("dates")
-    d.click("Check these dates")
-    d.idle()
-    shots.take(d, "46b-dates-locked-after-unanswered-start")
     d.close()
 
 

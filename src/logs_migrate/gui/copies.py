@@ -228,17 +228,12 @@ def next_part(copy: dict) -> dict | None:
 
 
 def _latest_check(part: dict) -> dict | None:
-    """The newest count of this part, unless more was copied after it was taken."""
-    checked = [
-        run["verification"]
-        for run in part["started"]
-        if run["verification"].get("outcome") != "verification_pending"
-    ]
-    if not checked:
+    """The count taken on the part's newest run. A count taken before the copy was
+    continued no longer speaks for it, so it is not used."""
+    if not part["started"]:
         return None
-    latest = max(checked, key=lambda v: v.get("at", ""))
-    ended = max((run.get("finished") or {}).get("at") or "" for run in part["started"])
-    return latest if latest.get("at", "") >= ended else None
+    result = part["started"][-1]["verification"]
+    return result if result.get("outcome") != "verification_pending" else None
 
 
 def check(copy: dict) -> dict:
@@ -258,6 +253,7 @@ def check(copy: dict) -> dict:
     judged: set[date] = set()
     unjudged: set[date] = set()
     reasons: list[dict] = []
+    unsettled: list[str] = []  # Parts the engine did not call verified, for whatever reason.
     checked_any = False
     checked_at = ""
     for part in copy["parts"]:
@@ -289,6 +285,42 @@ def check(copy: dict) -> dict:
         for node, node_days in sorted(by_node.items()):
             for first, last in day_ranges(node_days):
                 issues.append({"kind": "missing", "first": first, "last": last, "node": node})
+        # What the destination's own list of stored logs says, where it could be read:
+        # a piece whose count differs, one that is incomplete, one listed two ways.
+        every = {
+            g["node"] + "/" + g["id"]: g
+            for g in (
+                *part["root"]["plan"]["selected"],
+                *part["root"]["plan"].get("already_received", []),
+            )
+        }
+        by_id = {group["id"]: group for group in every.values()}
+        exact = result.get("bucket_check") or {}
+        flagged = set(not_received)
+        for kind, keys in (
+            ("broken", result.get("incomplete_destination_copies", [])),
+            ("conflict", result.get("conflicting_destination_copies", [])),
+            ("differs", [key for key in exact.get("unmatched", []) if key in every]),
+        ):
+            for key in keys:
+                group = every.get(key) or by_id.get(_id(key))
+                if group is None or key in flagged or group["id"] in flagged:
+                    continue
+                flagged.update({key, group["id"]})
+                span = group_days(group)
+                if span:
+                    issues.append(
+                        {
+                            "kind": kind,
+                            "first": span[0],
+                            "last": span[-1],
+                            "node": key.rsplit("/", 1)[0] if kind != "differs" else group["node"],
+                        }
+                    )
+        if exact.get("unknown") and result.get("outcome") != "verified_success":
+            reasons.append({"reason": "counts_unknown", "detail": ""})
+        if result.get("outcome") != "verified_success":
+            unsettled.append(result.get("reason") or result.get("outcome") or "")
         if "daily" not in result:
             reasons.append(
                 {"reason": result.get("reason") or "", "detail": result.get("detail") or ""}
@@ -336,6 +368,11 @@ def check(copy: dict) -> dict:
         phase = "diff"
     elif copy["state"] == "missing":
         phase = "diff"
+    elif unsettled:
+        # Nothing this screen can point at differs, yet the engine did not call the copy
+        # verified. Never say "everything arrived" on its behalf.
+        phase = "incomplete"
+        reasons.append({"reason": unsettled[0], "detail": ""})
     else:
         phase = "ok"
     return {

@@ -726,15 +726,11 @@ def test_selftest_names_the_exception_class_of_an_unexpected_failure(rigged, mon
     assert "KeyError" in step.detail and "secret-looking" not in step.detail
 
 
-def test_selftest_failure_detail_is_plain_for_the_cli_and_named_in_the_window(rigged, monkeypatch):
-    from logs_migrate.gui import viewmodel as vm
-
+def test_selftest_failure_detail_is_plain_for_the_cli(rigged, monkeypatch):
     monkeypatch.setattr(live.LiveEnvironment, "source_version", lambda self: 1 / 0, raising=False)
     _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
     (step,) = [s for s in result.steps if s.name == "Source API version"]
     assert not step.detail.startswith("gui:") and "ZeroDivisionError" in step.detail
-    rows = dict(vm.selftest_rows(result.data()))
-    assert "ZeroDivisionError" in rows["Source API version"]
 
 
 def test_selftest_without_a_window_does_not_size_all_sealed_buckets(rigged):
@@ -2384,8 +2380,7 @@ def test_live_verification_separates_days_not_measured(tmp_path):
     assert result["measured_arrival_count"] == 2
 
 
-def test_unmeasured_days_headline_is_one_figure_in_the_window_and_the_report(tmp_path):
-    from logs_migrate.gui import viewmodel as vm
+def test_unmeasured_days_headline_is_one_figure_in_the_report(tmp_path):
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
     from logs_migrate.reporting import markdown
 
@@ -2397,13 +2392,10 @@ def test_unmeasured_days_headline_is_one_figure_in_the_window_and_the_report(tmp
     )
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     engine.status()
-    result = engine.verify(run["id"])
+    engine.verify(run["id"])
     sent = sum(b["messages"] for b in run["plan"]["selected"])
-    view = vm.verification_view(result, engine.status(), 0, False)
-    assert [t[0] for t in view["tiles"]] == ["Sent from selected groups", "Excluded latest data"]
-    assert view["tiles"][0][1] == f"{sent:,}"
-    assert "requested dates only" in view["tiles"][0][2]
-    assert "2 other days these groups touch were not counted" in view["tiles"][0][2]
+    # The window does not call a copy verified while days it touched were not counted.
+    assert _window_result(engine)[1]["phase"] != "ok"
     report = markdown(engine.journal.load(run["id"]), [])
     summary = report.splitlines()[2]
     assert f"{sent:,} events sent from selected groups" in summary
@@ -2455,9 +2447,11 @@ def test_missing_sealed_message_count_stays_unknown(rigged, count_text):
 
 
 def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
-    from logs_migrate.gui import viewmodel as vm
+    from datetime import date
+
+    from logs_migrate.gui import copies, copyview
     from logs_migrate.models import ACTIVE_ACK, Policy, parse_time
-    from logs_migrate.reporting import markdown
+    from logs_migrate.reporting import display_run, markdown
 
     env, engine = _live_rig(tmp_path)
     env.data["source"]["buckets"][0]["messages"] = None
@@ -2466,13 +2460,19 @@ def test_live_unknown_selected_count_does_not_become_zero(tmp_path):
         Policy(poll_seconds=0),
     )
     assert run["plan"]["selected"][0]["messages"] is None
-    assert "Unavailable" in str(vm.plan_view(run, None))
+    view = copyview.plan_view(
+        copies.preview([display_run(run)]),
+        (date(2026, 3, 1), date(2026, 3, 31)),
+        None,
+        server_sign_in=True,
+    )
+    size = next(line for line in view["lines"] if line["key"] == "Size")
+    assert "log entries" not in size["text"]  # An unknown count is left out, not shown as 0.
     engine.run(run["id"], backup_ack=True, active_ack=ACTIVE_ACK)
     engine.status()
     result = engine.verify(run["id"])
     assert result["expected_count"] is None
     assert result["actual_count"] == 6
-    assert "Unavailable" in str(vm.verification_view(result, engine.status(), 0, False, run))
     assert "unavailable" in markdown(engine.journal.load(run["id"]), []).lower()
 
 
@@ -2751,8 +2751,18 @@ def test_verify_reads_only_the_destination_after_the_task(tmp_path):
     assert discoveries == []
 
 
+def _window_result(engine):
+    """The copy as the window reads it from the record, with its day-by-day result."""
+    from logs_migrate.gui import copies
+    from logs_migrate.reporting import display_run
+
+    journal = engine.journal
+    found = copies.build([display_run(r) for r in journal.runs()], journal.transfer_rows())
+    return found[-1], copies.check(found[-1])
+
+
 def test_a_group_the_destination_skipped_reaches_the_not_received_guidance(tmp_path):
-    from logs_migrate.gui import viewmodel as vm
+    from logs_migrate.gui import copyview
 
     skipped = "00000000-0000-0000-0000-000000000001"
     _, engine, run, _ = _verified_rig(tmp_path, skip=skipped)
@@ -2760,46 +2770,48 @@ def test_a_group_the_destination_skipped_reaches_the_not_received_guidance(tmp_p
     assert result["outcome"] == result["daily_outcome"]
     assert result["reason"] == "selected_buckets_not_received"
     assert result["bucket_check"]["unmatched"] == ["src-1/" + skipped]
-    view = vm.verification_view(result, engine.status(), 0, False, run)
-    assert view["outcome"] == "partial"
-    tone, title, text = view["banner"]
-    assert "not received" in title
-    assert "covers the missing history again" in text
-    assert "2 of 3 groups registered" in text
+    copy, checked = _window_result(engine)
+    assert checked["phase"] == "diff" and checked["can_copy_missing"]
+    view = copyview.check_view(copy, checked)
+    assert view["table"][1][0][3] == ("bad", "Part never arrived")
+    assert view["actions"][-1][0] == "Copy what is missing"
+    assert skipped not in str(view)
 
 
 def test_an_unknown_group_count_never_hides_a_daily_discrepancy(tmp_path):
-    from logs_migrate.gui import viewmodel as vm
-
     _, engine, run, _ = _verified_rig(tmp_path, drop_events=True, unknown_first=True)
     result = engine.verify(run["id"])
     assert result["bucket_check"]["unknown"] and not result["bucket_check"]["unmatched"]
     assert result["outcome"] == "verified_discrepancy"
-    tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
-    assert title == "Group counts unavailable" and "Daily counts differ" in text
+    copy, checked = _window_result(engine)
+    assert checked["phase"] == "diff"
+    assert any(issue["kind"] in {"short", "extra"} for issue in checked["issues"])
 
 
-def test_an_unknown_group_count_alone_is_incomplete_and_the_banner_shows_both_checks(tmp_path):
-    from logs_migrate.gui import viewmodel as vm
+def test_an_unknown_group_count_alone_is_incomplete_and_never_everything_arrived(tmp_path):
+    from logs_migrate.gui import copyview
 
     _, engine, run, _ = _verified_rig(tmp_path, unknown_first=True)
     result = engine.verify(run["id"])
     assert result["outcome"] == "incomplete_verification" and not result["complete"]
-    tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
-    assert title == "Group counts unavailable"
-    assert text.index("Group 1") < text.index("Daily counts")
-    assert result["bucket_check"]["unknown"][0] not in text
+    copy, checked = _window_result(engine)
+    assert checked["phase"] == "incomplete"
+    view = copyview.check_view(copy, checked)
+    assert view["verdict"][2] == "Could not finish checking"
+    assert "could not say how many entries" in view["verdict"][3]
+    assert result["bucket_check"]["unknown"][0] not in str(view)
 
 
-def test_matching_groups_with_a_daily_difference_show_the_difference_in_the_banner(tmp_path):
-    from logs_migrate.gui import viewmodel as vm
+def test_matching_groups_with_a_daily_difference_show_the_day_that_differs(tmp_path):
+    from logs_migrate.gui import copyview
 
     _, engine, run, _ = _verified_rig(tmp_path, drop_events=True)
     result = engine.verify(run["id"])
     assert result["outcome"] == "verified_discrepancy" and not result["bucket_check"]["unmatched"]
-    tone, title, text = vm.verification_view(result, engine.status(), 0, False, run)["banner"]
-    assert title == "Selected groups checked" and tone == "bad"
-    assert text.startswith("3 of 3 groups registered") and "Daily counts differ" in text
+    copy, checked = _window_result(engine)
+    assert checked["phase"] == "diff"
+    view = copyview.check_view(copy, checked)
+    assert "need" in view["verdict"][2] and view["table"][1]
 
 
 def test_verify_reads_the_destination_inventory_once(tmp_path):

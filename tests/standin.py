@@ -76,7 +76,7 @@ def groups(today: date) -> list[dict]:
                 {
                     "id": identifier,
                     "node": name,
-                    "partition": "",
+                    "partition": "Default",
                     "status": "archived",
                     "size": int(PER_DAY_BYTES * SPAN / 3 * wobble),
                     "messages": PER_DAY_ENTRIES // 3 * SPAN,
@@ -92,7 +92,7 @@ def groups(today: date) -> list[dict]:
             {
                 "id": group_id(node, 999_999),
                 "node": name,
-                "partition": "",
+                "partition": "Default",
                 "status": "active",
                 "size": 400_000_000,
                 "messages": 3_000_000,
@@ -338,7 +338,8 @@ def build(
         data["source"]["version"] = "9.0.2"
         data["destination"]["version"] = "9.0.1"
     elif scenario == "dstold":
-        data["destination"]["version"] = "8.18.5"
+        data["source"]["version"] = "8.18.5"
+        data["destination"]["version"] = "8.18.7"
         data["destination"]["migration_api"] = "absent"
     elif scenario == "mixed":
         data["source"]["node_versions"] = {

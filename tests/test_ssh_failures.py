@@ -124,31 +124,33 @@ def test_command_nonzero_never_exposes_stderr(ssh_client):
 
 
 @pytest.mark.parametrize("stage", ["tcp", "handshake", "negotiation", "auth", "command", "host"])
-def test_gui_connect_preserves_ssh_diagnostic(monkeypatch, stage):
-    from logs_migrate.adapters import live
+def test_gui_sign_in_points_an_ssh_failure_at_a_box_and_keeps_the_diagnostic(stage):
+    from types import SimpleNamespace
+
     from logs_migrate.adapters.ssh_errors import SSHFailure
-    from logs_migrate.gui.session import LocalError, Session
+    from logs_migrate.gui.session import Failure, Session
 
     error = SSHFailure(stage)
 
     class Environment:
-        notes = {"stage": "ssh local.invalid:22"}
+        notes = {"stage": "ssh local.invalid:22 (members)"}
+        connection = SimpleNamespace(source_host="local.invalid")
 
-        def __init__(self, *args):
-            pass
+        def destination_version_hint(self):
+            return None
 
         def open(self):
             raise error
 
-    monkeypatch.setattr(live, "LiveEnvironment", Environment)
     session = Session()
-    session.store = object()
-    session.connection = {"source_host": "local.invalid", "destination": "destination.invalid"}
-    with pytest.raises(LocalError) as caught:
-        session._open_live()
-    assert error.message in str(caught.value)
-    assert "While contacting ssh local.invalid:22" in str(caught.value)
-    assert "API" not in str(caught.value)
+    with pytest.raises(Failure) as caught:
+        session._sign_in_live(Environment(), False)
+    data = caught.value.data
+    assert data["side"] == "source"
+    assert data["kind"] == {"host": "identity", "auth": "auth"}.get(stage, "reach")
+    assert data["field"] == ("server_password" if stage == "auth" else "address")
+    # The engine's own sentence is kept for the troubleshooting file, not for the screen.
+    assert error.message in caught.value.code and error.message in session.errors[-1]
 
 
 def test_trust_probe_reports_a_closed_port_as_tcp():
@@ -221,16 +223,9 @@ def test_cli_ssh_message_and_exit_contract(monkeypatch, capsys, stage):
 
 def test_selftest_keeps_safe_ssh_diagnostic():
     from logs_migrate.adapters.ssh_errors import SSHFailure
-    from logs_migrate.gui import viewmodel as vm
     from logs_migrate.selftest import _code
 
     result = _code(SSHFailure("auth", TimeoutError("canary")))
     assert "authentication_failed" in result
     assert "SSH authentication" in result
     assert "canary" not in result
-    rows = dict(
-        vm.selftest_rows({"steps": [{"name": "Source SSH", "status": "fail", "detail": result}]})
-    )
-    assert "SSH authentication" in rows["Source SSH"]
-    assert "operation failed" not in rows["Source SSH"].lower()
-    assert "canary" not in rows["Source SSH"]

@@ -389,26 +389,45 @@ fixture checks used by CI.
 
 ## Desktop GUI
 
-`logs-migrate gui [--fixture FILE] [--journal FILE]` opens the desktop window (install
-the `gui` extra first). The flags prefill the simulator fixture and private journal; both
-are also editable on the Settings page, together with theme, display timezone, status
-refresh interval, verification retry budget, count query interval and the report export
-folder, plus the troubleshooting log switch below. Settings persist in `settings.ini`
-under the user's configuration directory. Credentials entered on the Connections page stay in session memory and never reach the
-journal, the settings file or exports.
+`logs-migrate gui [--journal FILE]` opens the desktop window (install the `gui` extra
+first). The window is five steps done in order: Connect, Copy rules, Choose dates, Copy
+logs, Check result. Past runs and Settings sit beside them. Addresses, user names and
+settings persist in `settings.ini` under the user's configuration directory. Passwords and
+access tokens stay in session memory and never reach the journal, the settings file or
+saved reports.
 
-The window is a presentation layer over the commands above: Discovery & Plan runs
-`plan`, Start runs `copy` with the latest-data acknowledgment, Migration
-polls `status`, Cancel runs `stop` for the observed task ID, Verification runs `verify`
-and Reports writes the `report` Markdown and JSON. Configuration runs `config compare`
-and `config apply` with the selected rules.
+The window is a presentation layer over the commands above. Choose dates runs `plan`,
+Start copying runs `copy` with the latest-data acknowledgment, Copy logs polls `status`,
+Stop runs `stop` for the observed task ID, Continue copying runs the resume preview and
+`copy` in one step, Check result runs `verify`, and Save report writes a readable report
+and a JSON data file. Copy rules runs `config compare` and `config apply` with the ticked
+rules. The window words every result itself: bucket identifiers and engine messages go to
+the saved detail files and the troubleshooting file, not to a screen.
 
-With an empty fixture path in Settings the window connects to real appliances: the
-Connections page takes the addresses and passwords, unknown TLS certificates and SSH
-host keys open a trust dialog with their fingerprints, and Run self-test lists the
-same read-only checks as `logs-migrate selftest`. Test probes every configured
-endpoint's identity first, with the addresses being contacted and elapsed time on the
-page, and asks for trust before any credential is sent.
+Three things differ from the command line:
+
+- **Identities.** Test connections reads the certificate of the two typed addresses first
+  and asks once, before any password is sent, whether they are the systems you meant. It
+  then records each server's SSH host key on first contact without a second question, and
+  lists them under "Show the recorded identity codes". A changed identity still stops the
+  test. The command line asks about every identity.
+- **Continuing without the destination's server sign-in.** The window does not continue a
+  stopped or failed copy unless the destination's server sign-in was given, because it
+  cannot see what arrived. It says so on Connect, in the plan and in the Stop question.
+- **Leaving days out.** When the destination holds a broken copy of some days, the window
+  offers a plan without them. The destination takes one unbroken date range per request,
+  so such a copy runs as several runs back to back; the window starts each one when the
+  one before finishes, and the result and the saved report say how many parts there were.
+
+### Stand-in systems for development
+
+`logs-migrate gui --fixture FILE --journal FILE` opens the window on a simulator fixture
+instead of real systems. The fixture is a command-line option only: it is never shown in
+the window and never written to the settings file. `python tests/standin.py --output DIR
+[--scenario NAME]` writes a fixture with about twenty months of history and a copy that
+takes time, and prints the command to open it; `--scenario` chooses a refusal or failure
+to walk (broken copies, a nearly full destination, a copy that fails or goes quiet, and
+so on).
 
 Standalone downloads of this same CLI and window are described in the README.
 
@@ -419,9 +438,10 @@ timestamped log under the client configuration directory, or use
 `--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
 stderr and enables a log when used alone. The default location keeps the 10 most recent
 logs, each capped at 5 MiB plus 2 rotated files; files you choose with `--debug-log=` are never
-pruned. The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
-applies to subsequent operations. After an error, **Show details** appears in the header:
-use it to inspect the log, open its folder, or save a copy.
+pruned. The desktop Settings screen has a **Detailed log** tick box that applies to subsequent
+operations, and **Save troubleshooting file…**, which writes one zip to the reports folder:
+a summary with the most recent errors in the engine's own words, the record of runs, and
+the detailed log when one exists.
 
 The log includes request paths and status, timing, SSH transport negotiation, commands,
 and exception traces. JSON error response bodies retain field names and numeric values;
@@ -456,5 +476,5 @@ on live appliances before relying on this change.
 For simulator scenarios, set `version` on each side in the fixture. Set `node_versions`
 to a mapping of node names to versions to simulate mixed nodes, and set destination
 `migration_api` to `present`, `absent`, or `unchecked`. Use a fresh simulator state file
-when changing a fixture. The same fixture works in the CLI and desktop Settings.
+when changing a fixture. The same fixture works in the CLI and with `logs-migrate gui --fixture`.
 

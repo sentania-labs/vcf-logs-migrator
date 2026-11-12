@@ -954,6 +954,21 @@ def continue_failure(failure: dict, *, server_sign_in: bool) -> dict:
 # Check result -----------------------------------------------------------------------------
 
 INCOMPLETE_REASON = {
+    "counts_unknown": (
+        "the destination could not say how many entries some of the stored logs hold, so "
+        "those could not be compared.",
+        "check again. If it keeps happening, save a troubleshooting file and ask whoever "
+        "supports the destination.",
+    ),
+    "verified_discrepancy": (
+        "the counts on the two systems differ in a way this screen cannot pin to a day.",
+        "save the report, which holds the full figures, and keep the source until it has "
+        "been looked into.",
+    ),
+    "selected_buckets_not_received": (
+        "part of what was sent is not on the destination.",
+        "go back to Copy logs and copy what is missing, then check again.",
+    ),
     "destination_busy": (
         "a copy is still running on the destination, and counting waits until it has finished.",
         "wait for the copy to finish, then check again.",
@@ -1055,6 +1070,33 @@ def issue_rows(result: dict, *, past: bool) -> list[tuple]:
                     "button below sends only what is missing.",
                 )
             )
+        elif issue["kind"] in {"broken", "conflict", "differs"}:
+            where = {
+                "broken": f"The destination server {issue['node']} holds only part of the logs "
+                "for these days.",
+                "conflict": f"The destination server {issue['node']} lists the logs for these "
+                "days in two different ways.",
+                "differs": f"The destination’s copy of the logs that source server "
+                f"{issue['node']} holds for these days has a different number of entries.",
+            }[issue["kind"]]
+            rows.append(
+                (
+                    days,
+                    vm.format_count(issue["source"]),
+                    vm.format_count(issue["arrived"]),
+                    (
+                        "bad",
+                        {
+                            "broken": "Arrived incomplete",
+                            "conflict": "Listed two ways",
+                            "differs": "Count differs",
+                        }[issue["kind"]],
+                    ),
+                    where + " This app never deletes or overwrites anything on the destination, "
+                    "so it cannot repair this. Keep the source, save the report, and ask "
+                    "whoever supports the destination.",
+                )
+            )
         elif issue["kind"] == "short":
             rows.append(
                 (
@@ -1086,10 +1128,13 @@ def all_days_rows(copy: dict, result: dict) -> list[tuple[str, str, str, str]]:
     """Every day of the copy; runs of matching days are folded into one row."""
     labels: dict[date, str] = {}
     for issue in result["issues"]:
-        label = (
-            "Part never arrived"
-            if issue["kind"] == "missing"
-            else f"{issue['difference']:,} {'fewer' if issue['kind'] == 'short' else 'more'}"
+        label = {
+            "missing": "Part never arrived",
+            "broken": "Arrived incomplete",
+            "conflict": "Listed two ways",
+            "differs": "Count differs",
+        }.get(issue["kind"]) or (
+            f"{issue['difference']:,} {'fewer' if issue['kind'] == 'short' else 'more'}"
         )
         for day in days_between(issue["first"], issue["last"]):
             labels[day] = label
@@ -1215,6 +1260,7 @@ def check_view(
     elif phase == "diff":
         missing = [i for i in result["issues"] if i["kind"] == "missing"]
         short = [i for i in result["issues"] if i["kind"] == "short"]
+        grave = [i for i in result["issues"] if i["kind"] not in {"short", "extra"}]
         differing = result["differing_days"]
         rest = max(0, total_days - differing)
         text = f"The other {vm.plural(rest, 'day')} match exactly."
@@ -1229,8 +1275,8 @@ def check_view(
             text = "Part of this copy did not arrive, and the days could not be counted."
         view.update(
             verdict=(
-                "bad" if missing else "warn",
-                "✕" if missing else "!",
+                "bad" if grave else "warn",
+                "✕" if grave else "!",
                 f"{differing:,} of {vm.plural(total_days, 'day')} "
                 f"{'needs' if differing == 1 else 'need'} attention",
                 text,

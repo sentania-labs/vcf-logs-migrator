@@ -228,18 +228,21 @@ write to the destination.
 
 ## The desktop window
 
-`logs-migrate gui` with an empty fixture path in Settings connects to appliances.
-Enter the addresses and passwords on Connections and press Test connections; unknown
-identities open a dialog with the fingerprints. That one test checks the versions and
-migration API, then runs the self-test, and the Connections page lists the same checks
-as the CLI self-test. The rest of the workflow is unchanged:
-Discovery & Plan, Start, Migration, Verification, Reports.
+`logs-migrate gui` connects to appliances. On Connect, enter the addresses and passwords
+and press Test connections. The first time, it shows the certificate fingerprint of each
+address and asks whether these are your systems before any password is sent; it then
+records each server's SSH host key on first contact. That one test signs in to both,
+checks every source server's sign-in and reads the versions. The rest follows the same
+order as the commands above: Copy rules, Choose dates, Copy logs, Check result.
 
 ## 9.1.1 preview
 
-Set `--ops-url https://ops.lab.example` (or fill the VCF Operations URL field on the
-destination card of the Connections page, which reveals the token field) and supply
-`LOGS_OPS_TOKEN`. The tool exchanges the Ops token for a Logs JWT at
+Set `--ops-url https://ops.lab.example` and supply `LOGS_OPS_TOKEN`. In the window,
+Test connections asks the destination for its version before signing in; when it answers
+9.1, the Connect screen swaps the destination's user and password for a VCF Operations
+address and an access token. If the destination does not answer that question, a failed
+destination sign-in offers "sign in with an access token instead". Whether a 9.1
+destination reports its version before sign-in has not been confirmed on a real one. The tool exchanges the Ops token for a Logs JWT at
 `POST /suite-api/api/auth/token/exchange` and sends `X-JWT-Token` to the Logs FQDN on
 9543. What is not qualified: the 9.1 query route for counts (a transfer can start, but
 no destination baseline is recorded and verification reports `unsupported_capability`),

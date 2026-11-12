@@ -170,6 +170,9 @@ class MainWindow(QMainWindow):
         self.choose_folder = self._choose_folder
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.poll_status)
+        self.focus_timer = QTimer(self)
+        self.focus_timer.setSingleShot(True)
+        self.focus_timer.timeout.connect(self._keep_focus)
         self.return_page = "connect"
 
         root = QWidget()
@@ -470,6 +473,16 @@ class MainWindow(QMainWindow):
     def refresh_all(self) -> None:
         self.update_frame()
         self.pages[self.current_page()].refresh()
+        self.focus_timer.start(0)
+
+    def _keep_focus(self) -> None:
+        """A screen that was redrawn may have lost the button that had the keyboard; give
+        it to the new main action instead of leaving the keyboard nowhere."""
+        if self.modal.isVisible() or not self.isVisible():
+            return
+        focus = QApplication.focusWidget()
+        if focus is None or not focus.isVisible() or not self.isAncestorOf(focus):
+            self.pages[self.current_page()].focus_primary()
 
     def leave_settings(self) -> None:
         target = self.return_page if self.return_page != "settings" else "connect"
@@ -1191,6 +1204,8 @@ class MainWindow(QMainWindow):
             if result.get("run_id") != state.run_id:
                 return
             self._status(result)
+            if job == "stop":
+                self.poll_status()  # Reads the copy once more, which records how it ended.
         elif job == "verify":
             state.set_record(result)
             state.verify_error = None
@@ -1259,9 +1274,16 @@ class MainWindow(QMainWindow):
             state.bytes_seen = moved
             state.quiet_since = result.get("elapsed_seconds") or 0
         if result["status"] != "running" and not state.unsure:
-            if previous == "running" or copy is None or copy["state"] in {"running", "unsure"}:
+            ended = result["status"] in {"completed", "cancelled", "failed"}
+            noted = bool(copy) and bool((copies.current_run(copy) or {}).get("finished"))
+            if (
+                previous == "running"
+                or copy is None
+                or copy["state"] in {"running", "unsure"}
+                or (ended and not noted)  # How it ended is recorded on the next reading.
+            ):
                 self.submit("record", "record")
-            if result["status"] == "idle":
+            if result["status"] == "idle" or (ended and noted):
                 self.timer.stop()
 
     def _failed(self, job_id: str, code: str, data: dict) -> None:
@@ -1369,6 +1391,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 (Qt override)
         self.timer.stop()
+        self.focus_timer.stop()
         self.worker.stop()
         super().closeEvent(event)
 

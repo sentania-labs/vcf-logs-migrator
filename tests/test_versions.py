@@ -88,11 +88,14 @@ def test_simulator_versions_in_cli_and_desktop(
     session = Session()
     try:
         response = session.connect(
-            fixture=str(path), journal=str(tmp_path / "desktop.sqlite"), credentials={}
+            fixture=str(path),
+            journal=str(tmp_path / "desktop.sqlite"),
+            credentials={},
+            connection={"source_host": "old.example", "destination": "new.example"},
         )
-        assert (response["compatible"] is None) is expected
+        assert response["passed"] is expected
     finally:
-        session.disconnect()
+        session.close()
 
 
 def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, fixture, capsys):
@@ -120,9 +123,19 @@ def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, fixture, cap
     assert "different versions" in capsys.readouterr().err
     session = Session()
     try:
+        from logs_migrate.gui import viewmodel as vm
+
         response = session.connect(
-            fixture=str(path), journal=str(tmp_path / "desktop.sqlite"), credentials={}
+            fixture=str(path),
+            journal=str(tmp_path / "desktop.sqlite"),
+            credentials={},
+            connection={"source_host": "old.example", "destination": "new.example"},
         )
-        assert "different versions" in response["compatible"]
+        assert not response["passed"]
+        assert "different versions" in response["version_check"]["message"]
+        assert (
+            "source servers are on different versions"
+            in vm.verdict(response["version_check"])["title"]
+        )
     finally:
-        session.disconnect()
+        session.close()

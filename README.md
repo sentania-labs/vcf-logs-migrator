@@ -21,7 +21,7 @@ Each download has both a desktop window and a command-line interface (CLI). You 
 - On the source, you need the address of one 8.18 cluster member, a Logs API account and password, and root SSH access to **every** 8.18 member. Your workstation has to reach the source Logs API on port 9543 and each source member over SSH on port 22. The destination needs SSH access to each source member too.
 - On the destination, you need the Logs address, an API account and password, and access to port 9543. If you also give it root SSH access, the plan can check free storage on each destination node.
 - During the copy, the source root SSH password goes to the destination so it can pull the data. Type passwords at a prompt or in the window. For automation, use the private credential methods in the [lab guide](docs/testing-against-a-lab.md), and never put a password in a command argument.
-- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
+- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. The command line asks about every one. The window asks once about the two addresses you typed, then records each server's key the first time it is contacted and stops if one ever changes. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
 
 ## Walk through a migration with the CLI
 
@@ -121,27 +121,35 @@ The example report counts whole selected groups on the source, but only the requ
 
 ## Use the window
 
-Open the download as shown above. These pictures come from the simulator, not a real environment.
+Open the download as shown above. The window is five steps down the left side, done in order: **Connect, Copy rules, Choose dates, Copy logs, Check result.** A step you can't do yet is greyed out and says why. Every screen has one main button, bottom right, with a sentence beside it saying what happens next. These pictures come from stand-in systems, not a real environment.
 
-1. On **Connections**, enter the source and destination addresses and credentials. Press **Test connections** and compare the fingerprint in each trust prompt with the appliance. One test checks both appliances, their versions and the destination's migration API; against real appliances it also runs the self-test. Read the results, then follow the next step the page suggests.
+1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant and shows each certificate's fingerprint for comparing. You then see whether these two systems can migrate, and if not, which one has to change.
 
-   ![Connections page in the simulator](docs/images/gui/04-connections.png)
+   ![Connect, first launch](docs/images/gui/01-connect.png)
+   ![Connected, both systems can migrate](docs/images/gui/02-connected.png)
 
-2. On **Discovery & Plan**, pick your dates and preview the plan. Go through the selected and excluded groups, capacity, partitions and warnings.
+2. **Copy rules.** The app compares the rules on both systems by itself and lists the ones that are missing or different, in plain words. A rule the copy depends on is marked **Needed**. Untick what you don't want, confirm once, and each rule is shown as copied.
 
-   ![Plan preview in the simulator](docs/images/gui/07-plan-light.png)
+   ![Rules that differ](docs/images/gui/03-copy-rules.png)
 
-3. Keep an eye on the **Migration** page until the destination reports it's done.
+3. **Choose dates.** Pick how far back and press **Check these dates**. The plan is a short list: what is copied, how big, how long, whether it fits, and what is left out. Tick the box beside **Start copying** to start. If the dates can't be copied as picked, the screen says which days are affected and why, and the button fixes it.
 
-   ![Migration in progress in the simulator](docs/images/gui/11-migration-light.png)
+   ![The plan](docs/images/gui/04-plan.png)
+   ![Days that cannot be copied, and the fix](docs/images/gui/05-cannot-start.png)
 
-4. Run the checks on **Verification**, then look at the partial days and anything it couldn't confirm.
+4. **Copy logs.** One percentage, a bar, time left and a row per destination server. You can close the window; the copy runs on the destination. **Stop the copy…** asks first, and **Continue copying** sends only what is missing.
 
-   ![Verification page in the simulator](docs/images/gui/15-verified-light.png)
+   ![A copy running](docs/images/gui/06-copying.png)
+   ![A copy that was stopped](docs/images/gui/07-stopped.png)
 
-5. Open **Reports** and export the results to keep.
+5. **Check result.** The app counts both systems day by day and gives one verdict, then only the days that differ and what each means. **Save report** writes a readable report and a data file.
 
-   ![Reports page in the simulator](docs/images/gui/20-reports.png)
+   ![Everything arrived](docs/images/gui/08-result.png)
+   ![Days that need attention](docs/images/gui/09-days-need-attention.png)
+
+**Past runs** lists every copy you started and opens without signing in. **Settings** holds colours, the time zone, where reports are saved and one **Save troubleshooting file** button.
+
+![Past runs](docs/images/gui/10-past-runs.png)
 
 ## What to expect
 
@@ -149,7 +157,7 @@ Open the download as shown above. These pictures come from the simulator, not a 
 - A day is partial when some of its logs are in open or unselected buckets. Its counts can differ, so check those days. On 9.0, migrated events land in the destination's Default partition. Matching counts don't show that event contents or partition placement match.
 - Plan on minutes per step against a large source. In one evaluation with about 4,300 source buckets, planning took 206 seconds and starting the transfer took 200 seconds. The transfer itself took about 146 seconds and verification took 117 seconds. Your times will depend on inventory, data, network and appliance load.
 - The tool never stops or writes to the source. It never deletes source buckets or anything on the destination, and copying only adds data. The destination applies its own retention and disk limits, so check free space first.
-- You can compare and copy forwarding, partition, masking and filter rules separately with `config compare` and `config apply`, or on the window's **Configuration** page. Only the rules you select are applied, and each one overwrites any destination rule with the same name. See [configuration rules](docs/operator-cli.md#configuration-rules).
+- You can compare and copy forwarding, partition, masking and filter rules separately with `config compare` and `config apply`, or on the window's **Copy rules** step. Only the rules you select are applied, and each one overwrites any destination rule with the same name. See [configuration rules](docs/operator-cli.md#configuration-rules).
 - 9.1.1 support is a preview, and count verification isn't available for that destination. Read the [9.1.1 notes](docs/testing-against-a-lab.md#911-preview) before you use it.
 
 For troubleshooting, see [operator troubleshooting](docs/operator-cli.md#troubleshooting-logs). Detailed logs can contain appliance addresses, so check them before you share them.
@@ -162,7 +170,7 @@ For troubleshooting, see [operator troubleshooting](docs/operator-cli.md#trouble
 
 To build locally, install the dependencies with `python -m pip install -r packaging/requirements.txt '.[ssh]'`, then run `python packaging/build.py build <platform>` and `python packaging/build.py package <platform>`. To test the result, run `python packaging/smoke.py dist/<download>`.
 
-For development, install Python 3.11+ and run `python -m pip install '.[dev,gui,ssh]'`, then `make check` and `make smoke`. GUI tests use Qt's offscreen platform and skip if PySide6 isn't installed. SSH tests skip if Paramiko isn't installed. `python tests/gui_screenshots.py --output DIR` renders the simulator's window pages so you can review them.
+For development, install Python 3.11+ and run `python -m pip install '.[dev,gui,ssh]'`, then `make check` and `make smoke`. GUI tests use Qt's offscreen platform and skip if PySide6 isn't installed. SSH tests skip if Paramiko isn't installed. `python tests/gui_screenshots.py --output DIR` walks every screen and state against stand-in systems, saves a picture of each and fails if any screen would need page scrolling. `python tests/standin.py --output DIR` writes stand-in systems you can open the window on by hand.
 
 ## Research and historical evidence
 
