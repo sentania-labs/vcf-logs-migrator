@@ -299,11 +299,13 @@ class GridTable(QWidget):
         stretch: Sequence[int] | None = None,
         right: Sequence[int] = (),
         nowrap: Sequence[int] = (0,),
+        lead: int = 0,
     ):
         super().__init__()
         self.headers = list(headers)
         self.right = set(right)
         self.nowrap = set(nowrap)
+        self.lead = lead
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(0)
@@ -352,7 +354,7 @@ class GridTable(QWidget):
                     html, plain = str(cell), str(cell)
                 widget = label(html, "td", wrap=column not in self.nowrap, rich=True)
                 widget.setAlignment(self._align(column))
-                if column == 0:
+                if column == self.lead:
                     widget.setProperty("lead", "true")
                 if column in self.right:
                     widget.setProperty("num", "true")
@@ -618,7 +620,8 @@ class ProgressCard(QFrame):
         head.setSpacing(12)
         self.percent = label("0%", "huge")
         self.size = label("", "text", rich=True)
-        self.live = label("", "subtle")
+        self.live = label("", "subtle", rich=True)
+        self.live.setAccessibleName("How fresh these figures are")
         head.addWidget(self.percent, 0, Qt.AlignmentFlag.AlignBaseline)
         head.addWidget(self.size, 0, Qt.AlignmentFlag.AlignBaseline)
         head.addStretch(1)
@@ -710,10 +713,15 @@ class ProgressCard(QFrame):
 
     def _tick(self) -> None:
         seconds = self.updated.elapsed() // 1000 if self.updated.isValid() else 0
+        colours = theme.TOKENS[theme.current_theme()]
         if self.mode == "live":
-            self.live.setText(f"● Live · last update {seconds} s ago")
+            self.live.setText(
+                f'<span style="color:{colours["ok"]}">●</span> Live · last update {seconds} s ago'
+            )
         elif self.mode == "quiet":
-            self.live.setText(f"● Connected · asked {seconds} s ago")
+            self.live.setText(
+                f'<span style="color:{colours["warn"]}">●</span> Connected · asked {seconds} s ago'
+            )
         else:
             self.live.setText(f"○ As it was at {self.lost_at}, when contact was lost")
 

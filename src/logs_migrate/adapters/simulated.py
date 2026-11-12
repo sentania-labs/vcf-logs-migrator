@@ -144,9 +144,11 @@ class SimulatedEnvironment:
             raise MigrationError(Code.CONNECTION)
 
     def check_sign_in(self, kind, secret):
-        """A fixture may declare the secret a sign-in expects; any other is refused."""
+        """A fixture may declare the secret a sign-in expects (any other is refused), or a
+        list of secrets it refuses (any other is accepted)."""
         expected = self.data.get("sign_in", {}).get(kind)
-        if expected is not None and secret != expected:
+        refused = secret in expected if isinstance(expected, list) else secret != expected
+        if expected is not None and refused:
             raise MigrationError(Code.AUTH)
 
     def tls_identity(self, side):

@@ -25,6 +25,7 @@ class CopyPage(Page):
         self.progress = ProgressCard()
         self.top = Slot(spacing=10)
         self._drawn = None
+        self.missing_job = False
         self.asked = QElapsedTimer()
         self.asking = label("", "subtle")
         self.ticker = QTimer(self)
@@ -190,9 +191,7 @@ class CopyPage(Page):
         zone = state.settings.timezone
         phase = self.app.copy_phase()
         copy = state.copy()
-        missing = bool(self.app.context.get("continue", {}).get("missing")) or getattr(
-            self, "missing_job", False
-        )
+        missing = bool(self.app.context.get("continue", {}).get("missing")) or self.missing_job
         if phase == "continuing":
             self.missing_job = bool(self.app.context.get("continue", {}).get("missing"))
             missing = self.missing_job

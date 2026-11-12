@@ -230,6 +230,7 @@ class RulesPage(Page):
                 ],
                 stretch=[0, 3, 4, 2, 5],
                 nowrap=(0,),
+                lead=1,
             )
             cells = []
             for row in rows:
