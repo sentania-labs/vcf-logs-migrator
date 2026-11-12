@@ -191,7 +191,7 @@ used to stop it. If none is found, status reports `idle` with `start_outcome: un
 `hold_until` (the start attempt plus 15 minutes) and a `start_hint`: the start's
 outcome is unknown and no task has appeared yet; keep checking status; if none
 appears, the window stays held until `hold_until`, after which you plan and copy
-again. The Migration page shows the same wording with the time the window frees up.
+again. The window's Copy logs screen shows this case as "Not sure yet whether the copy started", with the time the lock on those dates ends.
 A start that was acknowledged without a task ID is looked up the same way, but
 reports plain `idle` while no task matches. Explicit cancellation uses the
 currently observed **API task ID**:
@@ -226,8 +226,9 @@ unregistered destination directory, changed bucket size, or unresolved receipt
 record stops the preview for investigation. With destination SSH on 9.0, the
 destination's bucket inventory decides what arrived. Without it, a 9.0 task that
 lists the buckets still to do per node is settled from its own report: the run's
-selection minus those buckets and minus the ones it reports skipped. Status, verify
-and the Migration page say plainly that such a record is taken from the task report
+selection minus those buckets and minus the ones it reports skipped. Status and verify
+say plainly that such a record is taken from the task report (the window carries the
+same note in the data file saved beside its report)
 and not confirmed against the destination's bucket store (a disk-limit stop that
 drops buckets without listing them cannot be seen this way). If the task lists some
 received buckets but leaves others unaccounted for, resume requests those unaccounted
