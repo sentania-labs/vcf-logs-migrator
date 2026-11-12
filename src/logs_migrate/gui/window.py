@@ -65,7 +65,6 @@ class MainWindow(QMainWindow):
         self.worker.done.connect(self._done)
         self.worker.failed.connect(self._failed)
         self.worker.trust_required.connect(self._trust_required)
-        self.progress_lines = {}
         self.progress_label = QLabel()
         self.activity_current = ""
         self.activity_completed = []
@@ -310,15 +309,9 @@ class MainWindow(QMainWindow):
 
     def _show_progress(self, message: str) -> None:
         self.progress_details.appendPlainText(message)
-        if ": sizing " in message:
-            host = message.split(":", 1)[0]
-            names = self.progress_lines.setdefault("nodes", [])
-            if host not in names:
-                names.append(host)
-            message = f"Sizing buckets… node {len(names)} · {host}"
-        elif message.startswith("Contacting "):
-            message = "Testing connections…"
-        elif message.startswith("Self-test:"):
+        if message.startswith("Contacting "):
+            return
+        if message.startswith("Self-test:"):
             message = "Checking " + message.partition(":")[2].strip().lower() + "…"
         elif message.startswith("Reading cluster members"):
             message = "Checking cluster members…"
@@ -344,14 +337,21 @@ class MainWindow(QMainWindow):
                 self.activity_job = job
                 self.activity_current = ""
                 self.activity_completed = []
-                self.activity_pending = {
-                    "connect": ["Testing destination", "Checking versions", "Listing buckets"],
-                    "probe": ["Testing source", "Testing destination", "Checking versions"],
-                    "plan": ["Listing buckets", "Sizing buckets", "Checking space", "Planning"],
-                    "verify": ["Verifying counts", "Preparing results"],
-                    "selftest": ["Checking versions", "Listing buckets"],
-                }.get(job.split(":")[0], [])
-                self.progress_lines.clear()
+                kind = job.split(":")[0]
+                self.activity_pending = (
+                    {
+                        "connect": [
+                            "Testing destination",
+                            "Checking cluster members",
+                            "Checking versions",
+                            "Listing buckets",
+                        ],
+                        "probe": ["Testing destination"],
+                        "plan": ["Listing buckets", "Sizing buckets", "Checking space", "Planning"],
+                    }.get(kind, [])
+                    if self.state.live or kind == "probe"
+                    else []
+                )
                 self.progress_details.clear()
                 self.probe_clock.start()
                 self._update_probe_elapsed()
@@ -361,9 +361,9 @@ class MainWindow(QMainWindow):
                 self.cancel_activity.setVisible(job.split(":")[0] != "start")
                 self.probe_timer.start()
                 names = {
-                    "probe": "Testing connections…",
-                    "connect": "Testing source…",
-                    "selftest": "Testing connections…",
+                    "probe": "Testing source…",
+                    "connect": "Testing source…" if self.state.live else "Checking versions…",
+                    "selftest": "Checking versions…",
                     "plan": "Checking versions…",
                     "start": "Checking migration…",
                     "resume": "Checking versions…",
@@ -377,13 +377,7 @@ class MainWindow(QMainWindow):
     def connection_values(self) -> dict[str, str]:
         """Addresses and user names for a live connection; never secrets."""
         settings = self.state.settings
-        page = self.pages["connections"]
         return {
-            "sim_source_version": page.sim_source_version.text().strip(),
-            "sim_destination_version": page.sim_destination_version.text().strip(),
-            "sim_source_nodes": page.sim_source_nodes.text().strip(),
-            "sim_destination_nodes": page.sim_destination_nodes.text().strip(),
-            "sim_migration_api": page.sim_api.currentData(),
             "source_host": settings.source_host,
             "destination": settings.destination_host,
             "source_api_user": settings.source_api_user,

@@ -1,5 +1,7 @@
 """The real window against the simulator, offscreen. Skipped when PySide6 is not installed."""
 
+import json
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -805,13 +807,42 @@ def test_ssh_failure_survives_worker_and_renders_in_connections(driver, monkeypa
 
 def test_window_shows_each_node_inventory_progress(driver):
     driver.show("connections")
-    driver.window.worker.progress.emit("node 1/2 (source-1): sizing 2,100 buckets")
-    driver.window.worker.progress.emit("node 2/2 (source-2): sizing 2,088 buckets")
+    driver.window.worker.progress.emit("Sizing buckets… node 1 of 2 · source-1 (2,100 buckets)")
+    driver.window.worker.progress.emit("Sizing buckets… node 2 of 2 · source-2 (2,088 buckets)")
     driver.wait(50)
     text = driver.window.page_progress.text()
-    assert "source-1" in text and "source-2" in text
-    assert driver.window.progress_details.toPlainText().count("sizing") == 2
+    assert "node 2 of 2 · source-2" in text
+    assert "✓ Sizing buckets… node 1 of 2 · source-1" in text
+    assert driver.window.progress_details.toPlainText().count("Sizing buckets") == 2
     assert not driver.window.progress_label.isVisible()
+
+
+def test_connection_test_shows_source_then_destination_and_lists_only_real_stages(driver):
+    window = driver.window
+    driver.show("connections")
+    driver.state.mode = "live"
+    window.worker.submit = lambda job, method, **kwargs: True
+    window.submit("probe", "probe_endpoints", connection={})
+    assert "Testing source" in window.page_progress.text()
+    assert window.upcoming.text() == "Next: Testing destination"
+    window.worker.progress.emit("Contacting tls source.lab:9543")
+    driver.wait(50)
+    assert "Testing source" in window.page_progress.text()
+    assert "Contacting tls source.lab:9543" in window.progress_details.toPlainText()
+    window.worker.progress.emit("Testing destination…")
+    driver.wait(50)
+    text = window.page_progress.text()
+    assert "✓ Testing source…" in text and "◌ Testing destination…" in text
+    assert not window.upcoming.isVisible()
+
+
+def test_simulator_connect_lists_no_stages_it_never_runs(driver):
+    window = driver.window
+    driver.state.mode = "simulation"
+    window.worker.submit = lambda job, method, **kwargs: True
+    window.submit("connect", "connect")
+    assert "Checking versions" in window.page_progress.text()
+    assert not window.upcoming.isVisible()
 
 
 @pytest.mark.parametrize("job", ["verify:run-1", "discover", "plan"])
@@ -1187,7 +1218,7 @@ def test_delayed_probe_shows_activity_elapsed_then_prompts_for_trust(driver, mon
     driver.until(lambda: driver.window.probe_activity.isVisible())
     driver.until(lambda: "Elapsed 0:01" in driver.window.probe_elapsed.text(), timeout_ms=1500)
     assert driver.window.probe_activity.minimum() == driver.window.probe_activity.maximum() == 0
-    assert "Testing connections" in driver.window.page_progress.text()
+    assert "Testing source" in driver.window.page_progress.text()
     assert "tls" not in driver.window.page_progress.text()
     driver.until(lambda: driver.state.connected or driver.state.connect_error)
     driver.idle()
@@ -1217,8 +1248,10 @@ def test_failed_job_does_not_keep_groups_from_an_earlier_failure(driver, monkeyp
 
 def test_simulator_version_failure_keeps_both_versions_visible(driver):
     page = driver.pages["connections"]
-    page.sim_source_version.setText("10.0.0")
-    page.sim_destination_version.setText("9.0.2")
+    data = json.loads(driver.fixture.read_text())
+    data["source"]["version"] = "10.0.0"
+    data["destination"]["version"] = "9.0.2"
+    driver.fixture.write_text(json.dumps(data))
     driver.connect()
     assert not driver.state.connected
     assert "10.0.0" in page.source_badge.text()

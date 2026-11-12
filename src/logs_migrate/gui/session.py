@@ -69,13 +69,6 @@ class Session:
                 raise
             except Exception:
                 raise MigrationError(Code.SCHEMA) from None
-            env.configure_versions(
-                self.connection.get("sim_source_version", ""),
-                self.connection.get("sim_destination_version", ""),
-                self.connection.get("sim_source_nodes", ""),
-                self.connection.get("sim_destination_nodes", ""),
-                self.connection.get("sim_migration_api", ""),
-            )
             clock = SimulatedClock()
         else:
             env = self._open_live()

@@ -689,33 +689,39 @@ class LiveEnvironment:
         unknown: list[Identity] = []
         tls_source = (connection.source_host, connection.source_api_port)
         tls_destination = connection.destination_endpoint
+
         # `stage` names the probe in flight so a failure can say which host, without any
         # remote text.
-        self.notes["stage"] = f"tls {tls_source[0]}:{tls_source[1]}"
+        def contact(stage, probe, key=False):
+            self.notes["stage"] = stage
+            if self.on_progress:
+                self.on_progress(f"Contacting {stage}")
+            result = probe()
+            identity, line = result if key else (result, None)
+            self._check(identity, line, unknown)
+
         if self.on_progress:
-            self.on_progress(f"Contacting {self.notes['stage']}")
-        self._check(probe_tls(*tls_source), None, unknown)
-        self.notes["stage"] = f"tls {tls_destination[0]}:{tls_destination[1]}"
+            self.on_progress("Testing source…")
+        contact(f"tls {tls_source[0]}:{tls_source[1]}", lambda: probe_tls(*tls_source))
+        contact(
+            f"ssh {connection.source_host}:{connection.ssh_port}",
+            lambda: probe_ssh(connection.source_host, connection.ssh_port),
+            key=True,
+        )
         if self.on_progress:
-            self.on_progress(f"Contacting {self.notes['stage']}")
-        self._check(probe_tls(*tls_destination), None, unknown)
+            self.on_progress("Testing destination…")
+        contact(
+            f"tls {tls_destination[0]}:{tls_destination[1]}", lambda: probe_tls(*tls_destination)
+        )
         if connection.preview:
             ops = connection.ops_endpoint
-            self.notes["stage"] = f"tls {ops[0]}:{ops[1]}"
-            if self.on_progress:
-                self.on_progress(f"Contacting {self.notes['stage']}")
-            self._check(probe_tls(*ops), None, unknown)
-        self.notes["stage"] = f"ssh {connection.source_host}:{connection.ssh_port}"
-        if self.on_progress:
-            self.on_progress(f"Contacting {self.notes['stage']}")
-        identity, line = probe_ssh(connection.source_host, connection.ssh_port)
-        self._check(identity, line, unknown)
+            contact(f"tls {ops[0]}:{ops[1]}", lambda: probe_tls(*ops))
         if not connection.preview and connection.destination_ssh_user.strip():
-            self.notes["stage"] = f"ssh {tls_destination[0]}:{connection.ssh_port}"
-            if self.on_progress:
-                self.on_progress(f"Contacting {self.notes['stage']}")
-            identity, line = probe_ssh(tls_destination[0], connection.ssh_port)
-            self._check(identity, line, unknown)
+            contact(
+                f"ssh {tls_destination[0]}:{connection.ssh_port}",
+                lambda: probe_ssh(tls_destination[0], connection.ssh_port),
+                key=True,
+            )
         if unknown:
             raise TrustRequired(unknown)
 

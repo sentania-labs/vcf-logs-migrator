@@ -105,8 +105,8 @@ class PlanPage(Page):
             edit.dateChanged.connect(self._dates_changed)
         window_layout.addWidget(
             columns(
-                field(f"Start date ({self.app.state.settings.timezone})", self.start_date),
-                field(f"End date, inclusive ({self.app.state.settings.timezone})", self.end_date),
+                field("Start date (UTC)", self.start_date),
+                field("End date, inclusive (UTC)", self.end_date),
             )
         )
         window_layout.addWidget(self.date_hint)
@@ -163,7 +163,7 @@ class PlanPage(Page):
         groups_card, groups_layout = card("Stored log groups in these dates")
         self.groups_title = label("", "subhead")
         groups_layout.addWidget(self.groups_title)
-        self.groups = Table(["Stored logs", "Local dates", "Size / events", "Action"])
+        self.groups = Table(["Stored logs", "Dates UTC", "Size / events", "Action"])
         groups_layout.addWidget(self.groups)
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -347,7 +347,7 @@ class PlanPage(Page):
             if self.app.state.discovered
             else None
         )
-        days = vm.preset_days(name, extent, self.app.state.settings.timezone)
+        days = vm.preset_days(name, extent)
         if days is None:
             return
         self._set_dates(days)
@@ -367,7 +367,7 @@ class PlanPage(Page):
         if self.date_message:
             self.refresh()
             return
-        window = vm.window_from_days(start, end, state.settings.timezone)
+        window = vm.window_from_days(start, end)
         self.previewed = (start, end)
         self.blocked_dismissed = False
         state.acknowledged = False
@@ -402,7 +402,7 @@ class PlanPage(Page):
             if self.app.state.discovered
             else None
         )
-        days = vm.preset_days("All history", extent, self.app.state.settings.timezone)
+        days = vm.preset_days("All history", extent)
         if days:
             self._set_dates(days)
 
@@ -414,7 +414,7 @@ class PlanPage(Page):
         if state.plan_run is None or "plan" in self.app.worker.pending:
             return False
         window = state.plan_run["plan"]["window"]
-        current = vm.window_from_days(*self.current_dates(), zone=state.settings.timezone)
+        current = vm.window_from_days(*self.current_dates())
         return current is not None and (current.start, current.end) == (
             window["start"],
             window["end"],
@@ -422,11 +422,7 @@ class PlanPage(Page):
 
     def _update_actions(self) -> None:
         state = self.app.state
-        view = (
-            vm.plan_view(state.plan_run, state.discovered, state.settings.timezone)
-            if state.plan_run
-            else None
-        )
+        view = vm.plan_view(state.plan_run, state.discovered) if state.plan_run else None
         # Started in this session, or recorded by the engine at copy time in the journal.
         started = bool(state.plan_run) and (
             state.started_run_id == state.plan_run["id"] or "source_by_bucket" in state.plan_run
@@ -482,7 +478,7 @@ class PlanPage(Page):
             detail = vm.plan_error_text(
                 state.plan_error,
                 discovered,
-                vm.window_from_days(*self.current_dates(), zone=state.settings.timezone),
+                vm.window_from_days(*self.current_dates()),
             )
             set_banner(
                 self.blocked_banner,
@@ -546,7 +542,7 @@ class PlanPage(Page):
                 vm.plan_error_text(
                     state.plan_error,
                     discovered,
-                    vm.window_from_days(*self.current_dates(), zone=state.settings.timezone),
+                    vm.window_from_days(*self.current_dates()),
                 )
                 + " Adjust the dates or refresh the preview.",
                 "bad",
@@ -568,7 +564,7 @@ class PlanPage(Page):
             )
             self.error.show()
         elif state.plan_error:
-            window = vm.window_from_days(*self.current_dates(), zone=state.settings.timezone)
+            window = vm.window_from_days(*self.current_dates())
             kind = vm.plan_error_kind(state.plan_error, discovered, window)
             set_banner(
                 self.error,
@@ -588,16 +584,12 @@ class PlanPage(Page):
                 else "Connect both environments to preview history",
             )
             extent = vm.history_extent(discovered["source"]) if discovered else None
-            for widget, text in zip(
-                self.axis_labels, vm.axis_labels(extent, state.settings.timezone), strict=True
-            ):
+            for widget, text in zip(self.axis_labels, vm.axis_labels(extent), strict=True):
                 widget.setText(text)
             self.bars["Source history"].set_span(
                 extent,
                 extent,
-                vm.format_day_range(*extent, suffix="", zone=state.settings.timezone)
-                if extent
-                else "Not connected",
+                vm.format_day_range(*extent, suffix="") if extent else "Not connected",
                 "solid",
             )
             for caption in (
@@ -629,7 +621,7 @@ class PlanPage(Page):
             self.ack.setVisible(False)
             self._update_actions()
             return
-        view = vm.plan_view(state.plan_run, discovered, state.settings.timezone)
+        view = vm.plan_view(state.plan_run, discovered)
         self.set_heading(
             "Discovery & Plan",
             view["subtitle"]
@@ -637,14 +629,12 @@ class PlanPage(Page):
             else "Ready · latest-data exclusion acknowledged",
         )
         extent = view["extent"] or view["coverage"]
-        for widget, text in zip(
-            self.axis_labels, vm.axis_labels(extent, state.settings.timezone), strict=True
-        ):
+        for widget, text in zip(self.axis_labels, vm.axis_labels(extent), strict=True):
             widget.setText(text)
         self.bars["Source history"].set_span(
             extent,
             extent,
-            vm.format_day_range(*extent, suffix="", zone=state.settings.timezone),
+            vm.format_day_range(*extent, suffix=""),
             "solid",
         )
         self.bars["Requested dates"].set_span(

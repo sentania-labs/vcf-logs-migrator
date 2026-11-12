@@ -680,12 +680,3 @@ def test_verification_view_names_what_timed_out():
     assert "destination count query from 2026-03-01 timed out" in " ".join(
         str(part) for part in view["banner"]
     )
-
-
-def test_local_day_selection_respects_daylight_saving_time():
-    from datetime import date
-
-    from logs_migrate.gui.viewmodel import window_from_days
-
-    window = window_from_days(date(2026, 3, 8), date(2026, 3, 8), "America/Chicago")
-    assert window.end - window.start == 23 * 60 * 60 * 1000

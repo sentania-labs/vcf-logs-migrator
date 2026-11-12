@@ -132,43 +132,6 @@ class SimulatedEnvironment:
                 self._persist()
                 self.locked = False
 
-    def configure_versions(
-        self, source="", destination="", source_nodes="", destination_nodes="", api=""
-    ):
-        from ..versions import parts
-
-        for side, version, nodes in (
-            ("source", source, source_nodes),
-            ("destination", destination, destination_nodes),
-        ):
-            if version:
-                parts(version)
-                self.data[side]["version"] = version
-                self.data[side].pop("node_versions", None)
-            if nodes:
-                mapping = {}
-                for item in nodes.split(","):
-                    name, sep, value = item.strip().partition("=")
-                    require(
-                        bool(sep and name and value),
-                        Code.INVALID_INPUT,
-                        "Enter node versions as node=version, separated by commas.",
-                    )
-                    parts(value)
-                    mapping[name] = value
-                expected = {node["id"] for node in self.data[side]["nodes"]}
-                require(
-                    set(mapping) == expected,
-                    Code.INVALID_INPUT,
-                    "Provide a version for every simulator node.",
-                )
-                self.data[side]["node_versions"] = mapping
-        if api:
-            require(api in {"present", "absent", "unchecked"}, Code.INVALID_INPUT)
-            self.data["destination"]["migration_api"] = api
-        if any((source, destination, source_nodes, destination_nodes, api)):
-            self._persist()
-
     def version_check(self):
         from ..versions import evaluate
 

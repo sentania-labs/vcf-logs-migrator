@@ -458,8 +458,3 @@ to a mapping of node names to versions to simulate mixed nodes, and set destinat
 `migration_api` to `present`, `absent`, or `unchecked`. Use a fresh simulator state file
 when changing a fixture. The same fixture works in the CLI and desktop Settings.
 
-You can also set simulator versions without changing a fixture with `--sim-source-version`,
-`--sim-destination-version`, `--sim-source-nodes`, `--sim-destination-nodes`, and
-`--sim-migration-api`. Node overrides use `node=version` pairs separated by commas and
-must name every node on that side. The Connections page exposes the same controls when a
-simulator fixture is selected.

@@ -2940,3 +2940,16 @@ def test_selftest_records_a_failing_version_read_as_a_failed_step(rigged):
     env = _version_rig(rigged, source="garbage")
     report = selftest.run(env)
     assert [(s.name, s.status) for s in report.steps] == [("Version compatibility", "fail")]
+
+
+def test_probe_reports_source_then_destination_stages_in_order(rigged):
+    env = rigged[0]
+    messages = []
+    env.on_progress = messages.append
+    with pytest.raises(TrustRequired):
+        env.probe_endpoints()
+    stages = [m for m in messages if not m.startswith("Contacting ")]
+    assert stages == ["Testing source…", "Testing destination…"]
+    source_end = messages.index("Testing destination…")
+    assert all("src.lab" in m for m in messages[1:source_end])
+    assert all("dst.lab" in m for m in messages[source_end + 1 :])

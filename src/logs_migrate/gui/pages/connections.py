@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QLineEdit
+from PySide6.QtWidgets import QLineEdit
 
 from .. import viewmodel as vm
 from ..widgets import (
@@ -123,35 +123,6 @@ class ConnectionsPage(Page):
             edit.returnPressed.connect(self.connect)
             edit.textChanged.connect(lambda _text: self.refresh())
 
-        simulator, simulator_layout = card("Simulator versions")
-        self.sim_source_version = QLineEdit()
-        self.sim_destination_version = QLineEdit()
-        self.sim_source_nodes = QLineEdit()
-        self.sim_destination_nodes = QLineEdit()
-        self.sim_source_nodes.setPlaceholderText("Optional: node=version, node=version")
-        self.sim_destination_nodes.setPlaceholderText("Optional: node=version, node=version")
-        self.sim_api = QComboBox()
-        self.sim_api.addItem("Use fixture setting", "")
-        self.sim_api.addItem("Migration API available", "present")
-        self.sim_api.addItem("Migration API missing", "absent")
-        self.sim_api.addItem("Migration API cannot be checked", "unchecked")
-        simulator_layout.addWidget(
-            columns(
-                field("Source version", self.sim_source_version),
-                field("Destination version", self.sim_destination_version),
-            )
-        )
-        simulator_layout.addWidget(
-            columns(
-                field("Source node versions", self.sim_source_nodes),
-                field("Destination node versions", self.sim_destination_nodes),
-            )
-        )
-        simulator_layout.addWidget(field("Migration API", self.sim_api))
-        self.simulator_card = simulator
-        simulator.setVisible(bool(settings.fixture_path))
-        self.body.addWidget(simulator)
-
         checks, checks_layout = card("Connection checks")
         self.checks = Table(["Check", "Result"], wrap=True)
         checks_layout.addWidget(self.checks)
@@ -259,7 +230,6 @@ class ConnectionsPage(Page):
     def refresh(self) -> None:
         state = self.app.state
         discovered = state.discovered
-        self.simulator_card.setVisible(bool(state.settings.fixture_path))
         if self.validation:
             set_banner(self.error, "Required fields are empty", self.validation, "bad")
             self.error.show()

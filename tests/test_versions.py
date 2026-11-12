@@ -62,7 +62,7 @@ def test_plan_checks_before_inventory_and_records_evidence(rig):
         ("8.18.7", "10.0.0", "unchecked", False),
     ],
 )
-def test_simulator_overrides_in_cli_and_desktop(
+def test_simulator_versions_in_cli_and_desktop(
     tmp_path, fixture, source, destination, api, expected
 ):
     import json
@@ -70,6 +70,9 @@ def test_simulator_overrides_in_cli_and_desktop(
     from logs_migrate.cli import main
     from logs_migrate.gui.session import Session
 
+    fixture["source"]["version"] = source
+    fixture["destination"]["version"] = destination
+    fixture["destination"]["migration_api"] = api
     path = tmp_path / "fixture.json"
     path.write_text(json.dumps(fixture))
     result = main(
@@ -78,12 +81,6 @@ def test_simulator_overrides_in_cli_and_desktop(
             str(path),
             "--journal",
             str(tmp_path / "cli.sqlite"),
-            "--sim-source-version",
-            source,
-            "--sim-destination-version",
-            destination,
-            "--sim-migration-api",
-            api,
             "discover",
         ]
     )
@@ -91,14 +88,7 @@ def test_simulator_overrides_in_cli_and_desktop(
     session = Session()
     try:
         response = session.connect(
-            fixture=str(path),
-            journal=str(tmp_path / "desktop.sqlite"),
-            credentials={},
-            connection={
-                "sim_source_version": source,
-                "sim_destination_version": destination,
-                "sim_migration_api": api,
-            },
+            fixture=str(path), journal=str(tmp_path / "desktop.sqlite"), credentials={}
         )
         assert (response["compatible"] is None) is expected
     finally:
@@ -111,20 +101,18 @@ def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, fixture, cap
     from logs_migrate.cli import main
     from logs_migrate.gui.session import Session
 
+    fixture["source"]["node_versions"] = {
+        node["id"]: "8.18.7" if index == 0 else "8.18.8"
+        for index, node in enumerate(fixture["source"]["nodes"])
+    }
     path = tmp_path / "fixture.json"
     path.write_text(json.dumps(fixture))
-    nodes = ",".join(
-        f"{node['id']}={'8.18.7' if index == 0 else '8.18.8'}"
-        for index, node in enumerate(fixture["source"]["nodes"])
-    )
     result = main(
         [
             "--fixture",
             str(path),
             "--journal",
             str(tmp_path / "cli.sqlite"),
-            "--sim-source-nodes",
-            nodes,
             "discover",
         ]
     )
@@ -133,10 +121,7 @@ def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, fixture, cap
     session = Session()
     try:
         response = session.connect(
-            fixture=str(path),
-            journal=str(tmp_path / "desktop.sqlite"),
-            credentials={},
-            connection={"sim_source_nodes": nodes},
+            fixture=str(path), journal=str(tmp_path / "desktop.sqlite"), credentials={}
         )
         assert "different versions" in response["compatible"]
     finally:
