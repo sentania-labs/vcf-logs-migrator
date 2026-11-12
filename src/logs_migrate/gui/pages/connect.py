@@ -149,6 +149,12 @@ class ConnectPage(Page):
             self.destination_ssh_password,
         ]
 
+    def server_user(self) -> str:
+        """The destination server user. An empty box means root once a server password has
+        been typed: a password someone typed is never dropped without a word."""
+        typed = self.destination_ssh_user.text().strip()
+        return typed or ("root" if self.destination_ssh_password.text() else "")
+
     def values(self) -> dict[str, str]:
         return {
             "source_host": self.source_host.text(),
@@ -156,7 +162,7 @@ class ConnectPage(Page):
             "ssh_password": self.ssh_password.text(),
             "destination_host": self.destination_host.text(),
             "destination_password": self.destination_password.text(),
-            "destination_ssh_user": self.destination_ssh_user.text(),
+            "destination_ssh_user": self.server_user(),
             "destination_ssh_password": self.destination_ssh_password.text(),
             "ops_url": self.ops_url.text(),
             "ops_token": self.ops_token.text(),
@@ -169,7 +175,7 @@ class ConnectPage(Page):
             "source_api": self.source_password.text(),
             "destination_api": "" if token else self.destination_password.text(),
             "destination_ssh": ""
-            if token or not self.destination_ssh_user.text().strip()
+            if token or not self.server_user()
             else self.destination_ssh_password.text(),
             "ops_token": self.ops_token.text() if token else "",
         }
@@ -197,7 +203,9 @@ class ConnectPage(Page):
         settings.source_api_user = self.source_user.text().strip() or "admin"
         settings.destination_host = self.destination_host.text().strip()
         settings.destination_api_user = self.destination_user.text().strip() or "admin"
-        settings.destination_ssh_user = self.destination_ssh_user.text().strip()
+        settings.destination_ssh_user = self.server_user()
+        if settings.destination_ssh_user and not self.destination_ssh_user.text().strip():
+            self.destination_ssh_user.setText(settings.destination_ssh_user)  # Say what is used.
         settings.ops_url = self.ops_url.text().strip()
         self.app.save_settings()
 
@@ -516,9 +524,9 @@ class ConnectPage(Page):
             "Server user (needed to continue the copy)" if needed else "Server user (recommended)"
         )
         self.destination_ssh_user.setAccessibleName(self.server_user_caption.text())
-        self.destination_ssh_user.setPlaceholderText("root" if needed else "root, or leave empty")
+        self.destination_ssh_user.setPlaceholderText("root")
         if needed and not busy:
-            if not self.destination_ssh_user.text().strip():
+            if not self.server_user():
                 set_status(self.destination_ssh_user, "bad")
             if not self.destination_ssh_password.text():
                 set_status(self.destination_ssh_password, "bad")

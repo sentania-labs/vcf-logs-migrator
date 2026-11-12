@@ -263,12 +263,7 @@ def plan_view(
                 "Skipped",
                 f"<b>{vm.format_ranges(day_ranges(skipped))}.</b> The destination holds broken "
                 f"copies of {'this day' if len(skipped) == 1 else f'these {len(skipped)} days'}.",
-                (
-                    f"The copy runs as {len(copy['parts'])} parts back to back around them. "
-                    "Keep this window open until the last part has started."
-                    if len(copy["parts"]) > 1
-                    else ""
-                )
+                ("The copy goes around them." if len(copy["parts"]) > 1 else "")
                 + (
                     " Some source servers store part of these days together with the days "
                     "beside them; those logs are copied with their neighbours."
@@ -747,6 +742,42 @@ def format_finish(moment: datetime, now: datetime) -> str:
     return f"{vm.format_day(moment.date(), False)} at {clock}"
 
 
+def sittings(copy: dict) -> int:
+    """How many times this copy was set going by a person: once, plus once for every
+    continue after a stop or a failure. Going around left-out days is not counted; the
+    result says that in its own sentence."""
+    stretches = sum(1 for part in copy["parts"] if part["started"])
+    return max(1, copy["segments"] - max(0, stretches - 1))
+
+
+def later_stretch(copy: dict) -> bool:
+    """A copy that goes around left-out days and has days after them still to send."""
+    return any(part["state"] == "planned" for part in copy["parts"])
+
+
+def server_so_far(copy: dict, status: dict | None) -> dict[str, int] | None:
+    """For a copy that goes around left-out days: what each destination server had taken
+    before the stretch that is running now. The destination decides where each stretch's
+    logs go only when it is asked for them, so a server's total for the whole copy is not
+    known ahead; its row therefore counts what has arrived on it so far, across the whole
+    copy, and never starts again part-way. None for a copy in one stretch, or when an
+    earlier stretch's figures were not recorded."""
+    if len(copy["parts"]) < 2:
+        return None
+    current = (status or {}).get("run_id")
+    before: dict[str, int] = {}
+    for part in copy["parts"]:
+        for run in part["started"]:
+            finished = run.get("finished")
+            if run["id"] == current or not finished:
+                continue
+            if finished.get("node_bytes") is None:
+                return None
+            for node, size in finished["node_bytes"].items():
+                before[node] = before.get(node, 0) + (size or 0)
+    return before
+
+
 def progress_view(
     copy: dict,
     status: dict | None,
@@ -762,7 +793,15 @@ def progress_view(
     total = copy["total_bytes"] or 0
     running = bool(status) and status["status"] == "running"
     current = (status or {}).get("bytes_transferred") or 0
-    done = min(total, copy["done_bytes"] + (current if running else 0)) if total else 0
+    # What the destination last reported counts until the record holds how that task
+    # ended; otherwise the figure would drop for a moment each time a task finishes.
+    recorded = any(
+        run["id"] == (status or {}).get("run_id") and run.get("finished")
+        for part in copy["parts"]
+        for run in part["started"]
+    )
+    live = bool(status) and (running or (status.get("run_id") and not recorded))
+    done = min(total, copy["done_bytes"] + (current if live else 0)) if total else 0
     fraction = done / total if total else 0.0
     mode = "lost" if lost_at else "quiet" if quiet_minutes >= QUIET_MINUTES and running else "live"
     eta = (status or {}).get("eta_seconds") if running else None
@@ -800,9 +839,13 @@ def progress_view(
             ),
         ]
     servers = []
+    around = server_so_far(copy, status)
     for node in (status or {}).get("nodes", []):
         node_done, node_total = node.get("bytes_transferred"), node.get("total_bytes")
-        if node_total:
+        if around is not None:
+            part = None
+            text = vm.format_bytes(around.get(node["node"], 0) + (node_done or 0)) + " so far"
+        elif node_total:
             part = min(1.0, (node_done or 0) / node_total)
             text = f"{vm.format_bytes(node_done or 0)} of {vm.format_bytes(node_total)}"
         elif node.get("progress") is not None:
@@ -1070,7 +1113,7 @@ def left_out(copy: dict) -> str:
             f"{'was' if len(skipped) == 1 else 'were'} skipped, because the destination holds "
             f"broken copies of {'that day' if len(skipped) == 1 else 'those days'}."
             + (
-                f" The copy ran as {len(copy['parts'])} parts back to back around them."
+                f" To go around them it ran as {len(copy['parts'])} copies back to back."
                 if len(copy["parts"]) > 1
                 else ""
             )
@@ -1240,7 +1283,7 @@ def check_view(
         (
             "Copy ran for" if unfinished else "Copy took",
             vm.format_duration(copy["elapsed_seconds"])
-            + (f" (in {copy['segments']} parts)" if copy["segments"] > 1 else ""),
+            + (f" (in {sittings(copy)} parts)" if sittings(copy) > 1 else ""),
         ),
     ]
     save = ("Save report again" if saved else "Save report", "save", "")
@@ -1562,7 +1605,7 @@ def report_markdown(
         f"- Size: {vm.format_bytes(copy['total_bytes'])}",
         f"- Arrived: {vm.format_bytes(copy['done_bytes'])}",
         f"- Time spent copying: {vm.format_duration(copy['elapsed_seconds'])}"
-        + (f", in {copy['segments']} parts" if copy["segments"] > 1 else ""),
+        + (f", in {sittings(copy)} parts" if sittings(copy) > 1 else ""),
     ]
     if result["checked_at"]:
         lines.append(f"- Checked: {vm.format_when(result['checked_at'], zone)}")

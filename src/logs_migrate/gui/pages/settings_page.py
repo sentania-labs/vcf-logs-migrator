@@ -6,11 +6,20 @@ from dataclasses import fields
 from pathlib import Path
 from zoneinfo import available_timezones
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QLineEdit, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .. import viewmodel as vm
 from ..settings import RESETTABLE, Settings, local_timezone
-from ..widgets import Page, button, card, label, link, rich, row, set_prop, set_status
+from ..widgets import Page, PathLabel, button, card, label, link, rich, row, set_prop, set_status
 
 COMMON_ZONES = (
     "America/Chicago",
@@ -49,7 +58,7 @@ class SettingsPage(Page):
         self.timezone.addItems([f"{zones[0]} (detected)"] + zones[1:])
         self.timezone.activated.connect(self._zone_chosen)
         self._line(grid, 1, "Show clock times in", "timezone", self.timezone)
-        self.folder = label("", "path")
+        self.folder = PathLabel()
         self._line(
             grid,
             2,
@@ -62,12 +71,17 @@ class SettingsPage(Page):
 
         help_card, layout = card("Help with problems")
         grid = self._grid(layout)
-        self.debug = QCheckBox(
-            "Keep a detailed log of what the app does. Never includes passwords."
-        )
+        self.debug = QCheckBox("Keep a detailed log of what the app does")
         self.debug.setAccessibleName("Keep a detailed log")
         self.debug.toggled.connect(self._debug_toggled)
-        self._line(grid, 0, "Detailed log", "debug_logging", self.debug)
+        self._line(
+            grid,
+            0,
+            "Detailed log",
+            "debug_logging",
+            self.debug,
+            under="It never includes passwords.",
+        )
         self.trouble_note = rich("", "saved", lambda _href: self.open_folder())
         self._line(
             grid,
@@ -75,7 +89,7 @@ class SettingsPage(Page):
             "Troubleshooting file",
             "trouble",
             button("Save troubleshooting file…", "", self.app.save_troubleshooting),
-            label("One file to send to whoever is helping you.", "subtle"),
+            under="One file to send to whoever is helping you.",
         )
 
         tuning, layout = card("Fine tuning", ("", "Rarely needed"))
@@ -101,7 +115,7 @@ class SettingsPage(Page):
             "verify_budget_minutes",
             self.give_up,
             label("minutes at most", "text"),
-            label("A busy destination can take a while to give a steady count.", "subtle"),
+            under="A busy destination can take a while to give a steady count.",
         )
         self.numbers = {
             "refresh_seconds": (self.refresh_seconds, vm.REFRESH_RANGE),
@@ -110,7 +124,7 @@ class SettingsPage(Page):
         for name, (edit, _range) in self.numbers.items():
             edit.textEdited.connect(lambda text, n=name: self._number_typed(n, text))
             edit.editingFinished.connect(lambda n=name: self._number_left(n))
-        self.record = label("", "path")
+        self.record = PathLabel()
         self._line(
             grid,
             2,
@@ -133,12 +147,35 @@ class SettingsPage(Page):
         layout.addWidget(holder)
         return grid
 
-    def _line(self, grid, index: int, caption: str, name: str, *widgets) -> None:
-        grid.addWidget(label(caption, "soft"), index, 0)
+    def _line(self, grid, index: int, caption: str, name: str, *widgets, under: str = "") -> None:
+        """One setting: its caption, its controls, and beside them the note that says
+        "Saved" or why a value cannot be used. The note takes whatever room is left on the
+        line and wraps, so it is never cut short. `under` is a line of explanation, which
+        goes below the controls so that it does not compete with the note for room."""
+        head = label(caption, "soft")
+        grid.addWidget(head, index, 0, Qt.AlignmentFlag.AlignTop)
         note = rich("", "saved", lambda _href: self.open_folder())
-        note.setWordWrap(False)
+        note.setMinimumWidth(76)
         self.notes[name] = note
-        grid.addWidget(row(*widgets, note), index, 1)
+        holder = QWidget()
+        line = QHBoxLayout(holder)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(8)
+        for widget in widgets:
+            line.addWidget(widget)
+        line.addWidget(note, 1)
+        if under:
+            both = QWidget()
+            box = QVBoxLayout(both)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(2)
+            box.addWidget(holder)
+            box.addWidget(label(under, "subtle", wrap=True))
+            holder = both
+        head.setMinimumHeight(
+            max(head.sizeHint().height(), *(widget.sizeHint().height() for widget in widgets))
+        )
+        grid.addWidget(holder, index, 1)
 
     # Saving ------------------------------------------------------------------------------
 
@@ -257,8 +294,8 @@ class SettingsPage(Page):
         zone = vm.zone_name(settings.timezone)
         if zone in self.zones:
             self.timezone.setCurrentIndex(self.zones.index(zone))
-        self.folder.setText(settings.export_folder)
-        self.record.setText(str(Path(settings.journal_path).parent))
+        self.folder.set_path(settings.export_folder)
+        self.record.set_path(str(Path(settings.journal_path).parent))
         self.debug.blockSignals(True)
         self.debug.setChecked(settings.debug_logging)
         self.debug.blockSignals(False)

@@ -22,6 +22,12 @@ BANNED = re.compile(
 )
 
 
+def vm_bytes(text: str) -> float:
+    """`35.2 GB` as a number of bytes, for comparing amounts shown on screen."""
+    number, unit = text.split()
+    return float(number.replace(",", "")) * 1024 ** ("B", "KB", "MB", "GB", "TB").index(unit)
+
+
 def plain(driver: Driver) -> str:
     """The current screen's words, checked for anything a non-expert should not meet."""
     text = driver.texts()
@@ -215,6 +221,30 @@ def test_a_server_whose_code_changed_stops_the_test_and_is_sent_no_password(hand
     finally:
         first.close()
     assert home is not None
+
+
+def test_a_server_password_typed_without_a_user_is_used_as_root_not_dropped(driver, handed):
+    page = driver.page
+    driver.fill(
+        source_host=SOURCE,
+        source_password="letmein",
+        ssh_password="letmein",
+        destination_host=DESTINATION,
+        destination_password="letmein",
+        destination_ssh_password="letmein",
+    )
+    assert page.destination_ssh_user.text() == "" and "Ready." in page.hint.text()
+    driver.click("Test connections")
+    driver.confirm()
+    assert driver.state.connected and driver.state.server_sign_in
+    assert ("destination_ssh", "logs-new-1") in handed, "the typed password was used"
+    assert driver.state.settings.destination_ssh_user == "root"
+    text = plain(driver)
+    assert "913 GB free across its 3 servers." in text
+    assert "no server sign-in was given" not in text
+    driver.click("Sign out of both")
+    driver.click("Sign out")
+    assert driver.page.destination_ssh_user.text() == "root"  # The box says what was used.
 
 
 def test_identity_codes_list_both_addresses_and_every_server(driver):
@@ -508,8 +538,13 @@ def test_the_oldest_days_are_flagged_only_when_the_source_is_about_to_delete_the
 # Job 4 -------------------------------------------------------------------------------------
 
 
+# A copy around left-out days is several requests underneath. No screen may say so in
+# these words, or tell the person to keep the window open (approved decision 8).
+PARTS = re.compile(r"\b\d+ parts\b|\bpart \d|next part|keep this window open", re.IGNORECASE)
+
+
 def test_broken_copies_are_shown_as_dates_and_the_plan_leaves_them_out():
-    driver = ready("broken")
+    driver = ready("broken", speed=3000)
     try:
         driver.choose("Last 6 months")
         text = plain(driver)
@@ -527,16 +562,50 @@ def test_broken_copies_are_shown_as_dates_and_the_plan_leaves_them_out():
         driver.idle()
         text = plain(driver)
         assert "except 8 days" in text and "Skipped" in text
+        assert "The copy goes around them." in text and not PARTS.search(text)
+        # At the smallest window the long sentence to tick is whole, on two lines.
+        driver.resize(1024, 700)
+        assert "\n" in driver.page.ack.text() and driver.clipped() == []
+        assert driver.overflow() == 0
+        driver.resize(1280, 800)
+        assert "\n" not in driver.page.ack.text()
         assert "the 8 skipped days and the newest logs" in driver.page.ack.text()
         assert len(driver.state.plan["parts"]) == 3
         driver.start()
-        driver.finish(120000)
+        # It reads as one copy from start to finish: every screen on the way is kept.
+        seen, amounts = [], {}
+
+        def finished() -> bool:
+            seen.append(plain(driver))
+            view = driver.page.progress.server_rows if driver.page.progress.isVisible() else {}
+            for name, (_bar, amount, _state) in view.items():
+                amounts.setdefault(name, []).append(amount.text())
+            return driver.window.copy_phase() in {"done", "missing"}
+
+        driver.until(finished, 180000, "the copy to finish")
         assert driver.window.copy_phase() == "done"
+        everything = " ".join(seen)
+        assert not PARTS.search(everything), PARTS.search(everything).group(0)
+        assert (
+            "You can close this window. If you do, the copy pauses when it reaches the skipped "
+            "days; open the app again and press Continue copying" in everything
+        )
+        assert "Carrying on after the skipped days." in everything
+        assert "Continued at" not in everything, "nobody stopped this copy"
+        # A server's amount counts the whole copy: it never starts again part-way.
+        assert amounts and all(
+            text.endswith("so far") for texts in amounts.values() for text in texts
+        )
+        for texts in amounts.values():
+            sizes = [vm_bytes(text.removesuffix(" so far")) for text in texts]
+            assert sizes == sorted(sizes), f"a server's amount went down: {texts}"
         driver.click("Check what arrived →")
         driver.idle()
         text = plain(driver)
         assert "Everything arrived" in text and "All 176 days match." in text
-        assert "(in 3 parts)" in text and "The copy ran as 3 parts back to back" in text
+        # The result still says how many copies ran, in its own sentence.
+        assert "To go around them it ran as 3 copies back to back." in text
+        assert not PARTS.search(text)
     finally:
         driver.close()
 
@@ -549,6 +618,11 @@ def test_dates_already_being_copied_offer_the_copy_and_the_free_dates():
         driver.progress(0.05)
         driver.step("dates")
         assert "Running now ·" in driver.window.steps["copy"].sub.text()
+        # The step list is narrower in the smallest window, and its line still fits.
+        driver.resize(1024, 700)
+        assert driver.window.steps["copy"].sub.text().startswith("Running · ")
+        assert driver.clipped() == []
+        driver.resize(1280, 800)
         driver.click("Last 6 months")
         driver.click("Check these dates")
         driver.idle()
@@ -615,10 +689,108 @@ def test_a_source_server_that_does_not_answer_stops_the_check_with_try_again():
         driver.choose("Last 6 months")
         text = plain(driver)
         assert "Could not read the list of logs from the source" in text
+        # The whole message is there to read, with the step that failed: the source's.
+        assert "check that every source server is running and reachable, then press Try" in text
+        assert "✕ Listing the stored logs on the source" in text
+        assert driver.clipped() == []
+        panel = driver.page.activity
+        assert panel.height() >= panel.heightForWidth(panel.width())
+        driver.resize(1024, 700)
+        assert driver.clipped() == [] and driver.overflow() == 0
+        driver.resize(1280, 800)
         assert driver.buttons() == ["Try again"]
         driver.click("Try again")
         driver.idle()
         assert driver.state.plan is not None
+    finally:
+        driver.close()
+
+
+def test_a_panel_put_back_on_a_screen_takes_the_height_its_new_words_need():
+    """The staged-progress panel is reused: taken off a screen and put back. When it then
+    has more to say, as when a step fails, it must grow to hold it."""
+    from PySide6.QtWidgets import QLabel
+
+    from logs_migrate.gui.widgets import Activity, Slot
+
+    driver = Driver("plain", delay=0)
+    try:
+        slot, panel = Slot(), Activity()
+        slot.setParent(driver.window)
+        slot.setGeometry(40, 40, 620, 500)
+        slot.show()
+        panel.start(["One step"])
+        slot.set(panel)
+        driver.wait(60)
+        slot.set(QLabel("something else"))
+        driver.wait(60)
+        slot.set(panel)  # Back on the screen, still with little to say.
+        driver.wait(60)
+        short = slot.heightForWidth(620)
+        panel.start(["First step", "Second step", "Third step", "Fourth step", "Fifth step"])
+        panel.fail("It stopped", "A sentence that says what happened. " * 6)
+        driver.wait(60)
+        assert slot.heightForWidth(620) > short
+        assert slot.heightForWidth(620) >= panel.heightForWidth(620)
+        slot.hide()
+    finally:
+        driver.close()
+
+
+def test_the_legend_under_the_date_bar_is_drawn_once():
+    from PySide6.QtWidgets import QLabel
+
+    driver = ready("broken")
+    try:
+        driver.choose("Last 6 months")
+
+        def legends() -> list:
+            return [
+                widget
+                for widget in driver.page.findChildren(QLabel)
+                if "Your dates" in widget.text() and widget.isVisibleTo(driver.page)
+            ]
+
+        assert len(legends()) == 1 and "Broken copies on the destination" in legends()[0].text()
+        # Redrawn, the old line is gone at once: it is never left under the new one.
+        before = legends()[0]
+        driver.page.refresh()
+        assert not before.isVisible() and before.parent() is None
+        driver.wait(60)
+        assert len(legends()) == 1
+        driver.click("Plan without these 8 days")
+        driver.idle()
+        assert len(legends()) == 1
+    finally:
+        driver.close()
+
+
+def test_a_list_that_fits_its_box_shows_every_row_and_no_scroll_strip():
+    from logs_migrate.gui.widgets import ScrollBox
+
+    def box() -> ScrollBox:
+        (found,) = driver.window.modal.findChildren(ScrollBox)
+        return found
+
+    driver = ready(speed=50000)
+    try:
+        driver.choose("Last 6 months")
+        driver.link("list")
+        driver.wait(80)
+        assert "Nov 10, 2026 onward" in driver.texts()
+        assert box().hidden() == 0 and box().cue.isHidden(), "the last month is under the strip"
+        driver.click("Close")
+        driver.start()
+        driver.finish(120000)
+        driver.click("Check what arrived →")
+        driver.idle()
+        driver.link("all-days")
+        driver.wait(80)
+        assert "Match" in driver.texts()
+        assert box().hidden() == 0 and box().cue.isHidden(), "the one row is under the strip"
+        table = box().area.widget()
+        assert box().area.height() >= table.sizeHint().height()
+        driver.click("Close")
     finally:
         driver.close()
 
@@ -817,6 +989,18 @@ def test_losing_contact_keeps_the_last_figures_and_offers_reconnect():
         assert driver.buttons() == ["Reconnect"]
         assert "out of touch since" in driver.window.chip_texts[-1]
         driver.click("Reconnect")
+        # Pressing it is answered at once: a notice, and the button says it is working.
+        assert "Reconnecting…" in driver.window.toasts
+        if driver.window.busy("reconnect"):
+            assert driver.buttons() == ["Reconnecting…"]
+            assert not driver.button("Reconnecting…").isEnabled()
+            assert "Trying to reach the destination again." in driver.page.hint.text()
+        # Each thing that follows is said too, so there is never a silent minute.
+        driver.until(lambda: not driver.window.busy("reconnect"), 30000, "the sign-in to come back")
+        assert any(
+            toast.startswith(("Signed in again.", "Still out of touch.", "Reconnected."))
+            for toast in driver.window.toasts
+        )
         # Signing in again is not word from the copy; the screen says "reconnected" only
         # once the destination has answered, and then shows live figures again.
         driver.until(
@@ -1045,6 +1229,11 @@ def test_settings_save_as_they_change_and_a_bad_number_keeps_the_old_one(driver)
         "Enter a whole number from 2 to 60. Still using 9." in page.notes["refresh_seconds"].text()
     )
     assert edit.property("status") == "bad" and driver.state.settings.refresh_seconds == 9
+    # The whole sentence is on the screen, at the smallest window too.
+    assert driver.clipped() == []
+    driver.resize(1024, 700)
+    assert driver.clipped() == [] and driver.overflow() == 0
+    driver.resize(1280, 800)
     page.debug.setFocus()
     driver.wait(40)
     assert edit.text() == "9" and edit.property("status") != "bad"
@@ -1054,9 +1243,17 @@ def test_settings_save_as_they_change_and_a_bad_number_keeps_the_old_one(driver)
     QTest.keyClicks(edit, "7")
     assert driver.state.settings.refresh_seconds == 7
     assert page.notes["refresh_seconds"].text() == "✓ Saved"
-    driver.window.choose_folder = lambda title, start: str(driver.home / "elsewhere")
+    assert driver.clipped() == []
+    # A long folder path is shortened in the middle, and can be read in full on hover.
+    deep = driver.home / ("a-long-folder-name-" * 6) / "elsewhere"
+    driver.window.choose_folder = lambda title, start: str(deep)
     driver.click("Change…")
     assert driver.state.settings.export_folder.endswith("elsewhere")
+    driver.resize(1024, 700)
+    assert page.folder.shortened() and "…" in page.folder.text()
+    assert page.folder.toolTip() == str(deep) and page.folder.path() == str(deep)
+    assert driver.button("Change…").isVisible() and driver.clipped() == []
+    driver.resize(1280, 800)
     driver.click("Put all settings back to how they came")
     assert "does not touch past runs" in driver.texts()
     driver.click("Reset settings")
@@ -1082,6 +1279,7 @@ def test_every_screen_fits_three_window_sizes_and_has_one_main_button_last():
             for size in ((1440, 900), (1280, 800), (1024, 700)):
                 driver.resize(*size)
                 assert driver.overflow() == 0, f"{name} needs page scrolling at {size}"
+                assert driver.clipped() == [], f"{name} cuts words off at {size}"
             driver.resize(1280, 800)
             primary = [
                 text
@@ -1109,6 +1307,10 @@ def test_every_screen_fits_three_window_sizes_and_has_one_main_button_last():
         driver.click("Settings")
         check("settings")
         assert len(visited) == 7
+        # The window cannot be made smaller than the smallest size the screens fit.
+        driver.resize(600, 400)
+        size = driver.window.size()
+        assert (size.width(), size.height()) == (1024, 700)
     finally:
         driver.close()
 

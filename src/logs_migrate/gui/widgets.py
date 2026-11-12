@@ -10,6 +10,7 @@ from html import escape
 from PySide6.QtCore import QElapsedTimer, QEvent, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFrame,
     QGridLayout,
@@ -30,6 +31,45 @@ def repolish(widget: QWidget) -> None:
     widget.style().unpolish(widget)
     widget.style().polish(widget)
     widget.update()
+
+
+def clear(layout, keep: Sequence[QWidget] = ()) -> None:
+    """Empty a layout.
+
+    A widget that is leaving is taken off the screen at once. Its deletion is deferred, and
+    until then a widget that had only left its layout would still be drawn where it stood,
+    over whatever replaced it. Widgets in `keep`, and those marked `persistent`, are set
+    aside instead of deleted.
+
+    Widgets are removed with `removeWidget`, which destroys the layout item. An item that
+    is merely taken out stays alive, the widget's size cache stays pointed at it, and the
+    item that replaces it never hears that the widget's size changed: a panel put back
+    into a layout would keep a height it had earlier and cut off its own text."""
+    kept = {id(widget) for widget in keep}
+    for index in reversed(range(layout.count())):
+        item = layout.itemAt(index)
+        widget = item.widget()
+        if widget is not None:
+            layout.removeWidget(widget)
+            if id(widget) in kept:
+                continue
+            # Hiding the widget that holds the keyboard would pass it to whatever comes
+            # next in line. Let go of it instead, so the screen can give it to its main
+            # action once it is redrawn.
+            focus = QApplication.focusWidget()
+            if focus is not None and (focus is widget or widget.isAncestorOf(focus)):
+                focus.clearFocus()
+            widget.hide()
+            widget.setParent(None)
+            if not getattr(widget, "persistent", False):
+                widget.deleteLater()
+        elif item.layout() is not None:
+            child = item.layout()
+            clear(child)
+            layout.removeItem(child)
+            child.deleteLater()
+        else:
+            layout.takeAt(index)
 
 
 def set_prop(widget: QWidget, name: str, value) -> None:
@@ -69,6 +109,115 @@ def rich(text: str, kind: str = "text", on_link=None, status: str = "") -> QLabe
         widget.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         widget.linkActivated.connect(on_link)
     return widget
+
+
+class PathLabel(QLabel):
+    """A folder path on one line. When the line is too short for it the middle is left
+    out, and the whole path is in the tooltip, so it can always be read."""
+
+    shortens = True
+
+    def __init__(self):
+        super().__init__()
+        self.setProperty("lattice", "path")
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.full = ""
+
+    def set_path(self, text: str) -> None:
+        if text != self.full:
+            self.full = text
+            self.setToolTip(text)
+            self.setAccessibleName(text)
+            self.updateGeometry()
+        self._fit()
+
+    def path(self) -> str:
+        return self.full
+
+    def shortened(self) -> bool:
+        return self.text() != self.full
+
+    def sizeHint(self):  # noqa: N802 (Qt override)
+        self.ensurePolished()
+        hint = super().sizeHint()
+        around = hint.width() - self.fontMetrics().horizontalAdvance(self.text())
+        hint.setWidth(self.fontMetrics().horizontalAdvance(self.full) + around)
+        return hint
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt override)
+        hint = super().minimumSizeHint()
+        hint.setWidth(140)
+        return hint
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self) -> None:
+        self.ensurePolished()
+        metrics = self.fontMetrics()
+        around = super().sizeHint().width() - metrics.horizontalAdvance(self.text())
+        room = max(40, self.width() - around)
+        text = metrics.elidedText(self.full, Qt.TextElideMode.ElideMiddle, room)
+        if text != self.text():
+            self.setText(text)
+
+
+class Chip(QLabel):
+    """One system in the header: `✓ Source: address · version`. When the header is too
+    narrow for both systems, the address is shortened in the middle; the state and the
+    version stay whole, and the full line is in the tooltip."""
+
+    shortens = True
+
+    def __init__(self, text: str, status: str = ""):
+        super().__init__(text)
+        self.setProperty("lattice", "chip")
+        if status:
+            self.setProperty("status", status)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.full = text
+        lead, colon, rest = text.partition(": ")
+        address, dot, tail = rest.partition(" · ")
+        self.parts = (lead + colon, address, dot + tail) if colon and dot else None
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def shortened(self) -> bool:
+        return self.text() != self.full
+
+    def _width(self, text: str) -> int:
+        """The width the chip needs to show `text`, with its padding as styled."""
+        self.ensurePolished()
+        metrics = self.fontMetrics()
+        around = super().sizeHint().width() - metrics.horizontalAdvance(self.text())
+        return metrics.horizontalAdvance(text) + around
+
+    def sizeHint(self):  # noqa: N802 (Qt override)
+        hint = super().sizeHint()
+        hint.setWidth(self._width(self.full))
+        return hint
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt override)
+        hint = super().minimumSizeHint()
+        if self.parts is None:
+            hint.setWidth(self._width(self.full))
+        else:
+            lead, address, tail = self.parts
+            hint.setWidth(min(self._width(self.full), self._width(lead + address[:6] + "…" + tail)))
+        return hint
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        text = self.full
+        if self.parts is not None and self.width() < self._width(self.full):
+            lead, address, tail = self.parts
+            metrics = self.fontMetrics()
+            room = self.width() - self._width(lead + tail)
+            text = lead + metrics.elidedText(address, Qt.TextElideMode.ElideMiddle, room) + tail
+        if text != self.text():
+            self.setText(text)
+        self.setToolTip(self.full if text != self.full else "")
 
 
 def set_status(widget: QWidget, status: str) -> None:
@@ -279,17 +428,7 @@ class Slot(QWidget):
 
     def set(self, *widgets: QWidget | None, fill: bool = False) -> None:
         """Without `fill` the content sits at the top."""
-        keep = {id(widget) for widget in widgets if widget is not None}
-        while self.box.count():
-            item = self.box.takeAt(0)
-            widget = item.widget()
-            if widget is None:
-                continue
-            if id(widget) in keep:
-                continue
-            widget.setParent(None)
-            if not getattr(widget, "persistent", False):
-                widget.deleteLater()
+        clear(self.box, keep=[widget for widget in widgets if widget is not None])
         for widget in widgets:
             if widget is not None:
                 self.box.addWidget(widget)
@@ -366,12 +505,7 @@ class GridTable(QWidget):
         return side | Qt.AlignmentFlag.AlignTop
 
     def set_rows(self, rows: Sequence[Sequence]) -> None:
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        clear(self.grid)
         for column, text in enumerate(self.headers):
             head = label(text.upper(), "th")
             head.setAlignment(self._align(column))
@@ -405,6 +539,11 @@ class GridTable(QWidget):
                 if column in self.right:
                     widget.setProperty("num", "true")
                 self.grid.addWidget(widget, index, column)
+                if column in self.nowrap:
+                    # A cell that does not wrap keeps the width of its words, so a narrow
+                    # table squeezes the columns that can wrap instead of cutting this one.
+                    widget.ensurePolished()
+                    widget.setMinimumWidth(widget.sizeHint().width())
                 texts.append(plain)
             self._texts.append(tuple(texts))
 
@@ -478,7 +617,12 @@ class ScrollBox(QWidget):
 
     def _update(self) -> None:
         bar = self.area.verticalScrollBar()
-        more = bar.maximum() - bar.value() > 4
+        # The strip takes its room from the list. What counts is whether the list fits the
+        # box without the strip: asking the list as it stands would keep a strip, once
+        # shown, over the last row of a list that fits.
+        inner = self.area.widget()
+        fits = inner is None or inner.height() <= self.height() + 4
+        more = not fits and bar.maximum() - bar.value() > 4
         if more != (not self.cue.isHidden()):
             self.cue.setVisible(more)
             self._place()
@@ -591,10 +735,7 @@ class Activity(QFrame):
         )
 
     def _render(self, failed: bool = False) -> None:
-        while self.stages.count():
-            item = self.stages.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        clear(self.stages)
         if not failed:
             self.title.setText(self.labels[self.index] + "…")
             self._tick()
@@ -803,10 +944,7 @@ class ProgressCard(QFrame):
             value.setText(text)
         names = [server["name"] for server in view["servers"]]
         if names != list(self.server_rows):
-            while self.servers.count():
-                item = self.servers.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
+            clear(self.servers)
             self.server_rows = {}
             for index, name in enumerate(names):
                 bar = QProgressBar()
@@ -825,6 +963,8 @@ class ProgressCard(QFrame):
         self.server_area.setFixedHeight(min(6, len(names)) * 27)
         for server in view["servers"]:
             bar, amount, state = self.server_rows[server["name"]]
+            # No bar where a share cannot be told: an empty one would read as "nothing yet".
+            bar.setVisible(server["fraction"] is not None)
             bar.setValue(int((server["fraction"] or 0) * 1000))
             set_prop(bar, "still", "false" if view["mode"] == "live" else "true")
             amount.setText(server["text"])
@@ -907,6 +1047,7 @@ class Page(QWidget):
         self.body.box.setSpacing(8 if small else 10)
         self.foot.setContentsMargins(side, 7 if small else 9, side, 7 if small else 9)
         self.compact(small)
+        self._fit_extra()
 
     def compact(self, small: bool) -> None:
         """A screen may rearrange itself for a small window."""
@@ -920,12 +1061,7 @@ class Page(QWidget):
         self.hint.setText(hint)
         signature = tuple((action[0], action[2] if len(action) > 2 else "") for action in actions)
         if signature != self._signature:
-            while self.action_row.count():
-                item = self.action_row.takeAt(0)
-                widget = item.widget()
-                if widget is not None:
-                    widget.setParent(None)
-                    widget.deleteLater()
+            clear(self.action_row)
             self.buttons = {}
             self.primary_button = None
             for action in actions:
@@ -940,25 +1076,53 @@ class Page(QWidget):
             self._signature = signature
         for action in actions:
             self.buttons[action[0]].setEnabled(action[3] if len(action) > 3 else True)
+        self._fit_extra()
 
     def set_extra(self, widget: QWidget | None) -> None:
         """Something that belongs beside the main button, such as the tick box it waits on."""
-        while self.extra.count():
-            old = self.extra.takeAt(0).widget()
-            if old is not None and old is not widget:
-                old.setParent(None)
-                old.deleteLater()
+        clear(self.extra, keep=[widget] if widget is not None else ())
         if widget is not None:
             self.extra.addWidget(widget)
             self.hint.setVisible(bool(self.hint.text()))
         else:
             self.hint.setVisible(True)
+        self._fit_extra()
+
+    def _fit_extra(self) -> None:
+        """Give the widget beside the main button the room the footer has left for it."""
+        item = self.extra.itemAt(0)
+        widget = item.widget() if item is not None else None
+        if widget is None or not hasattr(widget, "fit"):
+            return
+        margins = self.foot.contentsMargins()
+        taken = sum(
+            self.action_row.itemAt(i).widget().sizeHint().width() + self.action_row.spacing()
+            for i in range(self.action_row.count())
+            if self.action_row.itemAt(i).widget() is not None
+        )
+        if self.hint.isVisible() and self.hint.text():
+            taken += 200  # A hint keeps room for a few words a line.
+        room = self.width() - margins.left() - margins.right() - taken - 2 * self.foot.spacing()
+        widget.fit(room)
 
     def focus_primary(self) -> None:
         """Keyboard users land on the screen's main action, or its first input."""
         target = self.primary_button
         if target is None or not target.isEnabled() or not target.isVisible():
-            target = self.body.nextInFocusChain()
+            # The first thing on this screen that takes the keyboard, if there is one.
+            target, candidate = None, self.body.nextInFocusChain()
+            for _ in range(400):
+                if candidate is None or candidate is self.body:
+                    break
+                if (
+                    self.isAncestorOf(candidate)
+                    and candidate.isVisible()
+                    and candidate.isEnabled()
+                    and candidate.focusPolicy() & Qt.FocusPolicy.TabFocus
+                ):
+                    target = candidate
+                    break
+                candidate = candidate.nextInFocusChain()
         if target is not None:
             target.setFocus(Qt.FocusReason.OtherFocusReason)
 
@@ -1030,19 +1194,7 @@ class Overlay(QWidget):
             focus.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def clear(self) -> None:
-        while self.inner.count():
-            item = self.inner.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-            elif item.layout():
-                while item.layout().count():
-                    child = item.layout().takeAt(0)
-                    inner = child.widget()
-                    if inner is not None:
-                        inner.setParent(None)
-                        inner.deleteLater()
+        clear(self.inner)
         self.buttons = {}
         self.escape = None
 
@@ -1063,10 +1215,29 @@ class Overlay(QWidget):
 
 
 class Ack(QCheckBox):
-    """The tick box beside the button it unlocks."""
+    """The tick box beside the button it unlocks. A tick box cannot wrap its own words, so
+    the screen tells it how much room there is and it breaks the sentence into lines."""
 
     def __init__(self, text: str):
         super().__init__(text)
         self.setProperty("lattice", "ack")
         self.setAccessibleName(text)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sentence = text
+
+    def fit(self, room: int) -> None:
+        """Break the sentence so no line is wider than `room` pixels."""
+        metrics = self.fontMetrics()
+        room = max(160, room - 52)  # The box itself, its gap and the padding around both.
+        lines, line = [], ""
+        for word in self.sentence.split():
+            longer = f"{line} {word}".strip()
+            if line and metrics.horizontalAdvance(longer) > room:
+                lines.append(line)
+                line = word
+            else:
+                line = longer
+        text = "\n".join([*lines, line])
+        if text != self.text():
+            self.setText(text)
+            self.updateGeometry()

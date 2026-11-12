@@ -36,7 +36,7 @@ from .pages.runs import RunsPage
 from .pages.settings_page import SettingsPage
 from .settings import Settings
 from .state import AppState
-from .widgets import GridTable, Overlay, button, label, rich, scrolling, set_prop
+from .widgets import Chip, GridTable, Overlay, button, clear, label, rich, scrolling, set_prop
 from .worker import EngineWorker
 
 STAGES = {
@@ -219,7 +219,9 @@ class MainWindow(QMainWindow):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{number}"), self)
             shortcut.activated.connect(lambda name=key: self.go(name))
         self.resize(1440, 900)
-        self.setMinimumSize(900, 600)
+        # The smallest size every screen was laid out and checked for. Below it some
+        # screens would have to scroll or cut their text.
+        self.setMinimumSize(1024, 700)
         self.submit("record", "open_record", journal=settings.journal_path)
         self.show_page("connect")
 
@@ -273,7 +275,11 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):  # noqa: N802 (Qt override)
         super().resizeEvent(event)
-        self.rail.setFixedWidth(168 if self.width() < 1100 else 200)
+        width = 168 if self.width() < 1100 else 200
+        if width != self.rail.width():
+            self.rail.setFixedWidth(width)
+            if hasattr(self, "pages"):
+                self.update_frame()  # The step list words its lines for the room it has.
         if self.modal.isVisible():
             self.modal.setGeometry(self.centralWidget().rect())
         self._place_toast()
@@ -402,7 +408,9 @@ class MainWindow(QMainWindow):
             if key == "copy" and current != "copy" and not locked:
                 percent = self.live_percent()
                 if percent is not None:
-                    text, live = f"Running now · {percent}%", True
+                    # The step list is narrower in a small window; the short form fits it.
+                    words = "Running" if self.rail.width() < 200 else "Running now"
+                    text, live = f"{words} · {percent}%", True
             self.steps[key].show_state(
                 current=current == key,
                 locked=locked,
@@ -414,10 +422,7 @@ class MainWindow(QMainWindow):
             current=current == "runs", locked=False, mark="", sub="Results, reports", live=False
         )
         set_prop(self.settings_button, "seg", "on" if current == "settings" else "off")
-        while self.chips.count():
-            item = self.chips.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        clear(self.chips)
         frame = {
             "connected": state.connected,
             "refused": state.refused,
@@ -432,8 +437,7 @@ class MainWindow(QMainWindow):
         for index, item in enumerate(chips):
             if index == 1 and (state.connected or state.refused):
                 self.chips.addWidget(label("→", "subtle"))
-            widget = label(item["text"], "chip", item["kind"])
-            self.chips.addWidget(widget)
+            self.chips.addWidget(Chip(item["text"], item["kind"]))
         self.chip_texts = [item["text"] for item in chips]
 
     def live_percent(self) -> int | None:
@@ -493,7 +497,13 @@ class MainWindow(QMainWindow):
         if self.modal.isVisible() or not self.isVisible():
             return
         focus = QApplication.focusWidget()
-        if focus is None or not focus.isVisible() or not self.isAncestorOf(focus):
+        if (
+            focus is None
+            or not focus.isVisible()
+            or not self.isAncestorOf(focus)
+            # A frame or a line of text is nowhere for the keyboard to be.
+            or focus.focusPolicy() == Qt.FocusPolicy.NoFocus
+        ):
             self.pages[self.current_page()].focus_primary()
 
     def leave_settings(self) -> None:
@@ -918,9 +928,10 @@ class MainWindow(QMainWindow):
 
     def reconnect(self) -> None:
         settings = self.state.settings
-        self.submit(
+        if self.submit(
             "reconnect", "reconnect", fixture=settings.fixture_path, journal=settings.journal_path
-        )
+        ):
+            self.toast("Reconnecting…")
         self.refresh_all()
 
     # Rules -------------------------------------------------------------------------------
@@ -1076,10 +1087,10 @@ class MainWindow(QMainWindow):
                 preview=root["id"],
             )
             labels = (
-                "Checking the dates of the next part",
+                "Checking the days after the skipped ones",
                 "Checking the plan and free space once more",
                 "Counting both sides, so the result can be checked later",
-                "Starting the copy",
+                "Carrying on with the copy",
             )
         else:
             run = copies.current_run(copy)
@@ -1259,6 +1270,10 @@ class MainWindow(QMainWindow):
                     self.submit("compare", "config_compare")
                     self.list_source()
                     self.submit("record", "record")
+                if job == "reconnect" and state.lost_at:
+                    # Say what the press did: signed in, and now waiting on the copy.
+                    self.context["reconnect"] = True
+                    self.toast("Signed in again. Asking the destination about the copy…")
                 if state.run_id:
                     self._watch()
         elif job == "compare":
@@ -1297,7 +1312,9 @@ class MainWindow(QMainWindow):
                 state.status_at = vm.now_iso()
                 state.latest, state.arrived_seen = None, set()
                 state.quiet_since = state.bytes_seen = None
-                if context["missing"]:
+                if context["missing"] or context["was"] not in {"stopped", "failed"}:
+                    # Going around skipped days is the same copy carrying on, not a
+                    # continue after a stop.
                     state.continued_note = ""
                 else:
                     after = "the failure" if context["was"] == "failed" else "the stop"
@@ -1364,6 +1381,7 @@ class MainWindow(QMainWindow):
         state = self.state
         copy = state.copy()
         previous = state.status["status"] if state.status else None
+        self.context.pop("reconnect", None)
         if state.lost_at:
             self.toast("Reconnected. The copy carried on while this window was out of touch.")
         state.status = result
@@ -1448,13 +1466,21 @@ class MainWindow(QMainWindow):
             state.plan_refusal = data.get("refusal")
             if (data.get("refusal") or {}).get("kind") == "listfail" and activity is not None:
                 self.owners.pop(job, None)
-                what, todo = vm.plain_error(code)
-                activity.fail(
-                    "Could not read the list of logs from the source",
-                    "A source server did not answer. <b>What to do:</b> check that every "
-                    "source server is running and reachable, then press Try again. Nothing was "
-                    "changed.",
-                )
+                # The first two steps read the source; the ones after them, the destination.
+                if activity.index < 2:
+                    activity.fail(
+                        "Could not read the list of logs from the source",
+                        "A source server did not answer. <b>What to do:</b> check that every "
+                        "source server is running and reachable, then press Try again. Nothing "
+                        "was changed.",
+                    )
+                else:
+                    activity.fail(
+                        "Could not finish checking the destination",
+                        "The destination did not answer. <b>What to do:</b> check that the "
+                        "destination and its servers are running and reachable, then press "
+                        "Try again. Nothing was changed.",
+                    )
                 self.refresh_all()
                 return
         elif job == "start":
@@ -1499,6 +1525,8 @@ class MainWindow(QMainWindow):
             if running:
                 # Out of touch with a copy that was running when last seen.
                 state.lost_at = state.lost_at or state.status_at or vm.now_iso()
+            if self.context.pop("reconnect", None):
+                self.toast("The destination still does not answer. Try again in a minute.")
         elif job == "stop":
             state.status_error = code
             self.toast("The destination did not confirm the stop. Checking how the copy stands.")

@@ -17,6 +17,13 @@ CLOSE_NOTE = (
     "You can close this window. The copy runs on the destination and carries on without it. "
     "Open the app again any time to see how it is going."
 )
+# A copy that goes around left-out days: the destination takes one unbroken range of dates
+# at a time, so the days after them are asked for once the days before them have arrived.
+AROUND_NOTE = (
+    "You can close this window. If you do, the copy pauses when it reaches the skipped days; "
+    "open the app again and press Continue copying, and it carries on from there. With the "
+    "window open it carries on by itself."
+)
 
 
 class CopyPage(Page):
@@ -121,15 +128,13 @@ class CopyPage(Page):
         sign_in = state.server_sign_in
         frame, layout = card()
         if copy["state"] == "between":
-            part = copies.next_part(copy)
             layout.addWidget(
                 verdict(
                     "info",
                     "❙❙",
-                    "This copy is waiting to send its next part",
-                    f"Part {part['index'] + 1} of {len(copy['parts'])} has not been sent yet. "
-                    "What arrived stays on the destination. Continue whenever you like; only "
-                    "what is missing gets sent.",
+                    "This copy paused at the skipped days",
+                    "The days after them have not been sent yet. What arrived stays on the "
+                    "destination. Continue whenever you like; only what is missing gets sent.",
                 )
             )
         elif phase == "stopped":
@@ -232,13 +237,19 @@ class CopyPage(Page):
             # only when their names change.
             "long" if quiet >= 30 else int(quiet) if quiet >= copyview.QUIET_MINUTES else 0,
             tuple(item["node"] for item in (state.status or {}).get("capacity_warning") or []),
+            # Reconnect says that it is working, so pressing it is never met with silence.
+            self.app.busy("reconnect"),
         )
         if phase in {"preparing", "continuing", "stopping"}:
             self._drawn = None
             self.set_body(self.activity)
+            around = phase == "continuing" and copy is not None and copy["state"] == "between"
             self.set_footer(
                 "Stopping. What has arrived stays on the destination."
                 if phase == "stopping"
+                else "Carrying on after the skipped days. What has arrived stays on the "
+                "destination."
+                if around
                 else "Getting ready. The copy has not started yet."
             )
             return
@@ -305,9 +316,16 @@ class CopyPage(Page):
                     "being updated. <b>Do not start the copy again.</b> Reconnect to see where "
                     "it has got to.",
                 )
-                hint = "This window lost touch. The copy does not depend on it."
+                trying = self.app.busy("reconnect")
+                hint = (
+                    "Trying to reach the destination again. This can take up to a minute."
+                    if trying
+                    else "This window lost touch. The copy does not depend on it."
+                )
                 actions = [
-                    ("Reconnect", self.app.reconnect, "primary", not self.app.busy("reconnect"))
+                    ("Reconnecting…", None, "primary", False)
+                    if trying
+                    else ("Reconnect", self.app.reconnect, "primary")
                 ]
             elif view["mode"] == "quiet":
                 if quiet >= 30:
@@ -332,16 +350,7 @@ class CopyPage(Page):
                 hint = WAIT_NOTE
                 actions = [("Stop the copy…", self.app.stop_copy)]
             else:
-                waiting = [part for part in copy["parts"] if part["state"] == "planned"]
-                note = CLOSE_NOTE
-                if waiting:
-                    now = len(copy["parts"]) - len(waiting)
-                    note = (
-                        f"This copy runs in {len(copy['parts'])} parts, and this is part {now}. "
-                        "<b>Keep this window open</b>: the app starts each part when the one "
-                        "before finishes. If you close it, the part that is running carries on, "
-                        "and you continue the rest when you open the app again."
-                    )
+                note = AROUND_NOTE if copyview.later_stretch(copy) else CLOSE_NOTE
                 top = banner(
                     "info",
                     "Copying what was missing."

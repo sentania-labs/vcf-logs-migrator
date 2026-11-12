@@ -301,6 +301,55 @@ class Driver:
         self.wait(30)
         return self.page.overflow()
 
+    def clipped(self) -> list[str]:
+        """Words on the current screen (or the open question) that are cut off: a label,
+        button or tick box with less room than its words need, or lying partly outside
+        the area that shows it. Must be empty. Lists that scroll by nature are left out.
+        A figure that has just changed is given a moment to be laid out again: only what
+        is still cut off after it counts."""
+        found = self._cut()
+        if found:
+            self.wait(150)
+            still = self._cut()
+            found = {key: words for key, words in still.items() if key in found}
+        return list(found.values())
+
+    def _cut(self) -> dict[int, str]:
+        from PySide6.QtWidgets import QAbstractButton, QLabel, QWidget
+
+        from logs_migrate.gui.widgets import ScrollBox
+
+        self.wait(30)
+        root = self.window.modal if self.window.modal.isVisible() else self.window
+        found = {}
+        for widget in root.findChildren(QWidget):
+            if not isinstance(widget, (QLabel, QAbstractButton)):
+                continue
+            if not widget.isVisibleTo(root) or not widget.text():
+                continue
+            parent, listed = widget.parentWidget(), False
+            while parent is not None and not listed:
+                listed = isinstance(parent, ScrollBox)
+                parent = parent.parentWidget()
+            if listed:
+                continue
+            if isinstance(widget, QLabel) and widget.wordWrap():
+                short = widget.height() < widget.heightForWidth(widget.width()) - 2
+            elif getattr(widget, "shortens", False):
+                # Shortened on purpose, with the whole of it in the tooltip: what it shows
+                # now must still fit, and the tooltip must hold what was left out.
+                short = widget.width() < QLabel.sizeHint(widget).width() - 2 or (
+                    widget.shortened() and widget.toolTip() != widget.full
+                )
+            else:
+                short = widget.width() < widget.sizeHint().width() - 2
+            shown = widget.visibleRegion().boundingRect()
+            cut = shown.width() < widget.width() - 2 or shown.height() < widget.height() - 2
+            if short or cut:
+                words = " ".join(widget.text().split())[:60]
+                found[id(widget)] = f"{words!r} ({'too little room' if short else 'partly hidden'})"
+        return found
+
     def grab(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.wait(60)

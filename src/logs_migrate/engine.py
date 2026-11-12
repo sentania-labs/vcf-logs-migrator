@@ -1684,6 +1684,10 @@ class Engine:
             "total_bytes": result.get("total_bytes"),
             "elapsed_seconds": task.elapsed_seconds,
             "failed_nodes": sorted(n.node for n in task.nodes if n.status == "failed"),
+            # What each destination server had taken when the task ended.
+            "node_bytes": {
+                node["node"]: node.get("bytes_transferred") for node in result.get("nodes") or []
+            },
         }
         previous = run.get("finished") or {}
         if {k: previous.get(k) for k in seen} != seen:

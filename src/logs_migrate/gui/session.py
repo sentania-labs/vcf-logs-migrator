@@ -808,8 +808,10 @@ class Session:
                 "windows": [{"start": a, "end": z} for a, z in windows],
             }
         if self.mode != "live":
-            for index in range(4):
-                self.stage(index)
+            # The stand-ins answer at once and report no progress of their own. The steps
+            # are walked once the answer is in, so a check that fails stops at its first
+            # step, the listing, instead of at whichever step the walk had reached.
+            self.stage(0)
         runs = []
         empty = None
         for index, (a, z) in enumerate(windows):
@@ -827,6 +829,9 @@ class Session:
                 raise failed from None
         if not runs:
             raise self._fail(empty or MigrationError(Code.INCOMPLETE))
+        if self.mode != "live":
+            for index in range(1, 4):
+                self.stage(index)
         self.stage(4)
         return {"parts": [display_run(run) for run in runs], "excluded": exclude or []}
 

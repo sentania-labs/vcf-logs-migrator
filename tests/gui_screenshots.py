@@ -28,14 +28,17 @@ class Shots:
         self.overflows: list[str] = []
 
     def take(self, driver: Driver, name: str, sizes: bool = True) -> None:
-        if sizes:
-            for width, height in SIZES:
-                driver.resize(width, height)
-                driver.wait(40)
-                extra = driver.overflow()
-                if extra:
-                    self.overflows.append(f"{name} at {width}x{height}: {extra}px do not fit")
-            driver.resize(1280, 800)
+        """Every screen is checked at each size for page scrolling and for cut-off words;
+        a question (`sizes=False`) is checked where it stands and at the smallest size."""
+        for width, height in SIZES if sizes else (SIZES[-1],):
+            driver.resize(width, height)
+            driver.wait(40)
+            extra = driver.overflow() if sizes else 0
+            if extra:
+                self.overflows.append(f"{name} at {width}x{height}: {extra}px do not fit")
+            for words in driver.clipped():
+                self.overflows.append(f"{name} at {width}x{height}: cut off: {words}")
+        driver.resize(1280, 800)
         path = self.output / f"{name}.png"
         driver.grab(path)
         self.saved.append(path)

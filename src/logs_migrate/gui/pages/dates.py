@@ -19,6 +19,7 @@ from ..widgets import (
     Timeline,
     button,
     card,
+    clear,
     columns,
     empty,
     field,
@@ -408,10 +409,7 @@ class DatesPage(Page):
                     f"Newest logs, still being written ({vm.format_day(extent['newest'])} onward)",
                 )
             )
-        while self.legend_box.count():
-            item = self.legend_box.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        clear(self.legend_box)
         self.legend_box.addWidget(legend(keys))
         self.set_extra(None)
         self.ack = None

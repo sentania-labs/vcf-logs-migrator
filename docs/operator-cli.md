@@ -425,8 +425,15 @@ Three things differ from the command line:
   cannot see what arrived. It says so on Connect, in the plan and in the Stop question.
 - **Leaving days out.** When the destination holds a broken copy of some days, the window
   offers a plan without them. The destination takes one unbroken date range per request,
-  so such a copy runs as several runs back to back; the window starts each one when the
-  one before finishes, and the result and the saved report say how many parts there were.
+  so such a copy is several runs back to back underneath. The window shows it as one copy
+  and starts each run when the one before finishes. If the window is closed, the run in
+  hand carries on at the destination and the copy pauses at the left-out days; opening
+  the app and pressing Continue copying sends the rest. The result and the saved report
+  say how many copies ran.
+- **Destination server user.** An empty server user with a server password typed means
+  `root`.
+- **Window size.** The smallest window is 1024 by 700, the smallest size at which every
+  screen fits without scrolling or cut text.
 
 ### Stand-in systems for development
 

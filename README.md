@@ -121,7 +121,7 @@ The example report counts whole selected groups on the source, but only the requ
 
 ## Use the window
 
-Open the download as shown above. The window is five steps down the left side, done in order: **Connect, Copy rules, Choose dates, Copy logs, Check result.** A step you can't do yet is greyed out and says why. Every screen has one main button, bottom right, with a sentence beside it saying what happens next. These pictures come from stand-in systems, not a real environment.
+Open the download as shown above. The window is five steps down the left side, done in order: **Connect, Copy rules, Choose dates, Copy logs, Check result.** A step you can't do yet is greyed out and says why. Every screen has one main button, bottom right, with a sentence beside it saying what happens next. The window can be made as small as 1024 by 700; no screen scrolls or cuts its text at that size. These pictures come from stand-in systems, not a real environment.
 
 1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant. It shows each certificate's fingerprint and the identity code of the server at each address, for comparing. If a system has several servers, one more question lists the others, and none of them is sent a password until you have confirmed it. You then see whether these two systems can migrate, and if not, which one has to change.
 
