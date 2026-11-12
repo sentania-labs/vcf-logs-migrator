@@ -720,9 +720,7 @@ class LiveEnvironment:
 
         try:
             return parse_version(
-                self._https(self.connection.destination_endpoint).request(
-                    "GET", "/api/v1/version"
-                )
+                self._https(self.connection.destination_endpoint).request("GET", "/api/v1/version")
             )
         except MigrationError:
             return None

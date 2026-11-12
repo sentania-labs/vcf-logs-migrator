@@ -9,6 +9,17 @@ from pathlib import Path
 
 APP_DIR = "vcf-logs-migrator"
 THEMES = ("light", "dark")
+UNSAVED = {"fixture_path"}
+# What "Put all settings back to how they came" resets. Addresses, user names and where
+# past runs are stored are not settings in that sense and are left alone.
+RESETTABLE = (
+    "debug_logging",
+    "theme",
+    "timezone",
+    "refresh_seconds",
+    "verify_budget_minutes",
+    "export_folder",
+)
 
 
 def config_dir() -> Path:
@@ -56,7 +67,12 @@ def _etc_localtime() -> str | None:
 
 @dataclass
 class Settings:
-    """Everything the operator can change from the Settings page."""
+    """What the Settings screen changes, plus the addresses and user names Connect remembers.
+
+    `fixture_path` names stand-in systems for developers. It comes from the command line
+    only: it is never shown in the window and never written to the settings file, so an
+    ordinary launch can never end up talking to a stand-in.
+    """
 
     debug_logging: bool = False
     theme: str = "light"
@@ -74,12 +90,16 @@ class Settings:
     destination_api_user: str = "admin"
     destination_ssh_user: str = ""
     ops_url: str = ""
+    # The destination signs in with an access token (version 9.1) instead of a password.
+    destination_token: bool = False
+    # The pair of addresses the person confirmed as their systems, as `source|destination`.
+    confirmed_pair: str = ""
 
     def __post_init__(self):
         if self.theme not in THEMES:
             self.theme = "light"
-        self.refresh_seconds = _clamp(self.refresh_seconds, 1, 3600)
-        self.verify_budget_minutes = _clamp(self.verify_budget_minutes, 1, 1440)
+        self.refresh_seconds = _clamp(self.refresh_seconds, 2, 60)
+        self.verify_budget_minutes = _clamp(self.verify_budget_minutes, 1, 60)
         self.count_poll_seconds = _clamp(self.count_poll_seconds, 0, 3600)
         if not self.export_folder:
             self.export_folder = default_export_folder()
@@ -106,7 +126,7 @@ class Settings:
             return cls(timezone=local_timezone())
         section = parser["client"] if parser.has_section("client") else {}
         for field in fields(cls):
-            if field.name not in section:
+            if field.name not in section or field.name in UNSAVED:
                 continue
             raw = section[field.name]
             if field.type == "bool":
@@ -125,7 +145,9 @@ class Settings:
         path = path or config_dir() / "settings.ini"
         path.parent.mkdir(parents=True, exist_ok=True)
         parser = configparser.ConfigParser(interpolation=None)
-        parser["client"] = {key: str(value) for key, value in asdict(self).items()}
+        parser["client"] = {
+            key: str(value) for key, value in asdict(self).items() if key not in UNSAVED
+        }
         with open(path, "w", encoding="utf-8") as handle:
             parser.write(handle)
         return path

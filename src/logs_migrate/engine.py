@@ -286,7 +286,16 @@ class Engine:
             environment.inventory_journal = journal
         self.clock = clock or SystemClock()
         self.on_event = on_event
+        # A presentation observer told which named step of a long call has begun.
+        self.on_step = None
         self._samples = {}
+
+    def _step(self, name):
+        if self.on_step:
+            try:
+                self.on_step(name)
+            except Exception:
+                pass  # Presentation observers cannot interrupt an engine call.
 
     @property
     def attribution(self) -> bool:
@@ -985,6 +994,7 @@ class Engine:
                 Code.TOPOLOGY,
                 "The destination topology changed while checking the remainder.",
             )
+        self._step("arrived")
         rows = self.journal.transfers(destination.id)
         root_row = next((r for r in rows if r["run"] == root["id"]), None)
         require(
@@ -1101,6 +1111,7 @@ class Engine:
         with self._exclusive():
             previous = self.journal.load(run_id)
             root = self.journal.load(previous.get("resume_root", run_id))
+            self._step("resume")
             _, _, plan = self._resume_plan(root)
             run = {
                 "schema_version": 2,
@@ -1180,6 +1191,7 @@ class Engine:
             if invalidate is not None:
                 invalidate()
             window = Window(**run["plan"]["window"])
+            self._step("recheck")
             if run.get("resume_root"):
                 source, destination, fresh = self._resume_plan(
                     self.journal.load(run["resume_root"])
@@ -1208,10 +1220,12 @@ class Engine:
             policy = Policy(**run["query_policy"])
             coverage = Window(**run["plan"]["coverage"])
             keys = tuple(b["node"] + "/" + b["id"] for b in run["plan"]["selected"])
+            self._step("count_source")
             if self.attribution:
                 run["source_by_bucket"] = {
                     key: asdict(self._counts(policy, "source", coverage, (key,))) for key in keys
                 }
+                self._step("count_destination")
                 run["baseline"] = asdict(self._counts(policy, "baseline", EVERYTHING, ()))
             else:
                 # Live counts are per day for the whole cluster, so the evidence is the
@@ -1220,6 +1234,7 @@ class Engine:
                 run["count_window"] = asdict(days)
                 run["source_by_bucket"] = {}
                 run["source_counts"] = asdict(self._counts(policy, "source", days, keys))
+                self._step("count_destination")
                 try:
                     run["baseline"] = asdict(self._counts(policy, "baseline", days, ()))
                 except MigrationError as error:
@@ -1242,6 +1257,7 @@ class Engine:
                 Code.STATE,
                 "Cancelled before the copy was requested.",
             )
+            self._step("start")
             run["active_ack"] = active_ack == ACTIVE_ACK
             run["capacity_at_start"] = fresh["capacity"]
             self._audit(run, "transfer_authorized")
@@ -1678,11 +1694,14 @@ class Engine:
     def stop(self, task_id):
         """Explicit API cancellation, including tasks whose POST acknowledgment was lost."""
         with self._exclusive():
+            self._step("stop_ask")
             task = self.env.transfer()
             require(task.id == task_id, Code.UNCERTAIN)
             if task.status == "running":
                 self.env.cancel()
+                self._step("stop_confirm")
                 task = self.env.transfer()
+            self._step("stop_record")
             self._record(task, task.destination)
             return self._progress(task)
 
@@ -1698,6 +1717,7 @@ class Engine:
                     self.env.destination_topology() == (planned["id"], planned["identity"]),
                     Code.TOPOLOGY,
                 )
+                self._step("verify_ended")
                 task = self._settle(planned["id"])
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
@@ -1848,8 +1868,10 @@ class Engine:
         )
         baseline = Counts.from_dict(runs[rows[0]["run"]]["baseline"])
         policy = Policy(**run["query_policy"])
+        self._step("verify_count")
         actual = self._counts(policy, "destination", EVERYTHING, ())
         ingest = self._ingest(policy, baseline)
+        self._step("verify_recount")
         require(
             actual == self._counts(policy, "destination", EVERYTHING, ())
             and ingest == self._ingest(policy, baseline),
@@ -1857,6 +1879,7 @@ class Engine:
             "Destination counts changed between two observations, so they are not stable. "
             "Retry once ingestion settles.",
         )
+        self._step("verify_compare")
         result = reconcile(source, baseline, actual, ingest)
         result["expected_count"] = source.total
         result["actual_count"] = actual.total - baseline.total - ingest.total
@@ -1912,7 +1935,9 @@ class Engine:
             if "count_window" in run
             else day_window(Window(**run["plan"]["coverage"]))
         )
+        self._step("verify_count")
         actual = self._counts(policy, "destination", days, ())
+        self._step("verify_recount")
         require(
             actual == self._counts(policy, "destination", days, ()),
             Code.INCOMPLETE,
@@ -1920,6 +1945,7 @@ class Engine:
             "stable. Retry once ingestion settles.",
         )
         ingest = Counts(True, (), (), "ingest")
+        self._step("verify_compare")
         result = reconcile(source, baseline, actual, ingest)
         # Bucket metadata supplies the selected total; daily queries cover only the
         # recorded baseline window and cannot attribute arrivals to individual groups.

@@ -8,6 +8,12 @@ MINIMUM_DESTINATION = "9.0.0"
 EXERCISED = ((9, 0), (9, 1, 1))
 
 
+def _refuse(code, message, reason):
+    error = MigrationError(code, message)
+    error.reason = reason
+    return error
+
+
 def parts(value):
     if not re.fullmatch(r"\d+(?:\.\d+){1,3}", value):
         raise MigrationError(
@@ -30,16 +36,19 @@ def evaluate(source, destination, api, evidence):
     try:
         for side, versions in (("Source", source), ("Destination", destination)):
             if not versions:
-                raise MigrationError(
-                    Code.INCOMPLETE, f"{side} version could not be read. Check access and retry."
+                raise _refuse(
+                    Code.INCOMPLETE,
+                    f"{side} version could not be read. Check access and retry.",
+                    f"{side.lower()}_unread",
                 )
             parsed = {parts(v) for v in versions.values()}
             if len(parsed) != 1:
                 names = ", ".join(f"{node}: {v}" for node, v in versions.items())
-                raise MigrationError(
+                raise _refuse(
                     Code.UNSUPPORTED,
                     f"{side} nodes have different versions: {names}. "
                     "Finish upgrading the cluster and retry.",
+                    f"{side.lower()}_mixed",
                 )
         sv, dv = next(iter(source.values())), next(iter(destination.values()))
         source_parts, destination_parts = parts(sv), parts(dv)
@@ -47,24 +56,27 @@ def evaluate(source, destination, api, evidence):
             source_parts, destination_parts = source_parts[:2], destination_parts[:2]
             result["warnings"].append("Only major and minor versions could be compared.")
         if source_parts > destination_parts:
-            raise MigrationError(
+            raise _refuse(
                 Code.UNSUPPORTED,
                 f"Source version {sv} is newer than destination version {dv}. "
                 "Upgrade the destination and retry.",
+                "source_newer",
             )
         if api != "present":
             if api == "absent":
-                raise MigrationError(
+                raise _refuse(
                     Code.UNSUPPORTED,
                     f"Destination version {dv} does not answer the migration API. "
                     f"The lowest destination version known to work is {MINIMUM_DESTINATION}. "
                     "Upgrade or check the destination and retry.",
+                    "destination_old",
                 )
-            raise MigrationError(
+            raise _refuse(
                 Code.INCOMPLETE,
                 f"The migration API on destination {dv} could not be checked. "
                 "Check access and retry; the lowest destination version known to work "
                 f"is {MINIMUM_DESTINATION}.",
+                "destination_unchecked",
             )
         if not any(parts(dv)[: len(prefix)] == prefix for prefix in EXERCISED):
             result["warnings"].append(
@@ -76,6 +88,8 @@ def evaluate(source, destination, api, evidence):
     except MigrationError as error:
         result["message"] = error.message
         result["code"] = error.code.value
+        # Which of the fixed refusals this is, for a client that words it itself.
+        result["reason"] = getattr(error, "reason", "unreadable")
     return result
 
 
