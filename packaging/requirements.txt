@@ -1,7 +1,7 @@
 # Pinned build tools for the standalone downloads (packaging/build.py). The package
 # itself is installed alongside with the ssh extra. PySide6 6.12.0 is excluded for the
-# same reason as the gui extra; its Essentials wheel holds the three Qt modules the
-# GUI imports, without the Addons.
+# same reason as the gui extra; its Essentials wheel holds the Qt modules the GUI
+# imports (QtCore, QtGui, QtWidgets, QtSvg), without the Addons.
 setuptools-scm>=8
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.9

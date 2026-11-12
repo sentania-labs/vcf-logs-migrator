@@ -23,6 +23,8 @@ ICON_SIZES = (16, 24, 32, 48, 64, 128, 256, 512)
 def app_icon() -> QIcon:
     """The app icon, drawn from the SVG at each size so it needs no Qt icon plugin."""
     renderer = QSvgRenderer(str(ICON_SVG))
+    if not renderer.isValid():
+        raise RuntimeError(f"app icon is missing or unreadable: {ICON_SVG}")
     icon = QIcon()
     for size in ICON_SIZES:
         pixmap = QPixmap(size, size)

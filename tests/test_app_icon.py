@@ -14,9 +14,22 @@ def test_window_carries_the_app_icon():
 
     application, window = app.create(argv=["test"])
     assert not application.windowIcon().isNull()
-    assert not application.windowIcon().pixmap(32, 32).isNull()
     assert not window.windowIcon().isNull()
+    image = application.windowIcon().pixmap(64, 64).toImage()
+    assert not image.isNull()
+    assert image.pixelColor(0, 0).alpha() == 0
+    assert any(
+        image.pixelColor(x, y).alpha() > 0 for x in range(image.width()) for y in range(image.height())
+    )
     window.close()
+
+
+def test_missing_icon_fails_loudly(tmp_path, monkeypatch):
+    from logs_migrate.gui import app
+
+    monkeypatch.setattr(app, "ICON_SVG", tmp_path / "missing.svg")
+    with pytest.raises(RuntimeError):
+        app.app_icon()
 
 
 def test_ico_holds_every_size(tmp_path):
