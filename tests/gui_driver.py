@@ -78,9 +78,17 @@ class Driver:
         return self.window.pages[self.window.current_page()]
 
     def wait(self, milliseconds: int = 50) -> None:
-        from PySide6.QtTest import QTest
+        """Let the window run for a while. The engine thread needs the interpreter too, and
+        one long Qt wait would hold it, so the wait is taken in short slices."""
+        from PySide6.QtCore import QCoreApplication, QEvent
 
-        QTest.qWait(milliseconds)
+        deadline = time.monotonic() + milliseconds / 1000
+        while True:
+            QCoreApplication.processEvents()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.004)
 
     def until(self, predicate, timeout_ms: int = 20000, what: str = "") -> None:
         started = time.monotonic()

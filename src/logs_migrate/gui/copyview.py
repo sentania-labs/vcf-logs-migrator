@@ -1304,13 +1304,14 @@ def check_view(
             all_days=True,
         )
         if short:
+            gap = sum(issue["difference"] for issue in short)  # Across every short day.
             view["note"] = (
                 "<b>About a day that arrived short:</b> the app can tell that entries are "
                 "missing but not which ones or why. If every entry matters to you, keep the "
                 "source until you have looked into it (run the same search for that day on "
-                f"both systems and compare); otherwise the gap is {short[0]['difference']:,} "
-                f"entries in {vm.format_big(result['source_total'])}. The saved report records "
-                "the exact numbers."
+                f"both systems and compare); otherwise the gap is {gap:,} entries in "
+                f"{vm.format_big(result['source_total'])}. The saved report records the exact "
+                "numbers."
             )
         if unfinished:
             view.update(

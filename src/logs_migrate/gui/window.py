@@ -1148,7 +1148,10 @@ class MainWindow(QMainWindow):
             state.connected = result["passed"]
             state.failure = None
             state.token_notice = False
-            state.lost_at = state.status_error = None
+            if job == "signin":
+                state.lost_at = state.status_error = None
+            # Signing in again is not yet word from the copy: the screen stays "lost
+            # contact" until the destination answers a reading.
             if state.connected:
                 if job == "signin":
                     state.server_needed = False
@@ -1158,10 +1161,6 @@ class MainWindow(QMainWindow):
                     self.submit("compare", "config_compare")
                     self.list_source()
                     self.submit("record", "record")
-                else:
-                    self.toast(
-                        "Reconnected. The copy carried on while this window was out of touch."
-                    )
                 if state.run_id:
                     self._watch()
         elif job == "compare":
@@ -1267,6 +1266,8 @@ class MainWindow(QMainWindow):
         state = self.state
         copy = state.copy()
         previous = state.status["status"] if state.status else None
+        if state.lost_at:
+            self.toast("Reconnected. The copy carried on while this window was out of touch.")
         state.status = result
         state.status_at = vm.now_iso()
         state.status_error = state.lost_at = None
@@ -1325,6 +1326,7 @@ class MainWindow(QMainWindow):
             self.pages["connect"].activity.stop()
         elif job == "reconnect":
             state.status_error = code
+            self.toast("Still out of touch. " + vm.plain_error(code)[0])
         elif job == "compare":
             state.comparison = None
             state.comparison_error = code

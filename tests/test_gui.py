@@ -635,6 +635,23 @@ def test_a_copy_that_fails_by_itself_says_what_happened_and_continues():
         driver.close()
 
 
+def test_a_failed_copy_without_the_server_sign_in_does_not_say_to_continue():
+    driver = Driver("fail", delay=0, speed=3000)
+    try:
+        driver.sign_in(server=False)
+        driver.copy_rules()
+        driver.choose("Last 3 months")
+        driver.start()
+        driver.finish()
+        text = plain(driver)
+        assert "The copy stopped by itself" in text
+        assert "add the destination’s server sign-in on Connect, then continue" in text
+        assert "Continuing first checks" not in text
+        assert driver.buttons()[-1] == "Add the destination server sign-in"
+    finally:
+        driver.close()
+
+
 def test_a_copy_that_cannot_start_says_why_and_keeps_the_plan():
     driver = ready("notstarted")
     try:
@@ -679,7 +696,7 @@ def test_an_unanswered_start_is_never_offered_again_and_locks_the_dates():
 def test_losing_contact_keeps_the_last_figures_and_offers_reconnect():
     driver = ready("offline", speed=300)
     try:
-        driver.knob(offline={"at_fraction": 0.03, "seconds": 4})
+        driver.knob(offline={"at_fraction": 0.03, "seconds": 6})
         driver.choose("Last 3 months")
         driver.start()
         driver.until(lambda: driver.state.lost_at is not None, 60000, "contact to be lost")
@@ -688,25 +705,34 @@ def test_losing_contact_keeps_the_last_figures_and_offers_reconnect():
         assert "Do not start the copy again." in text and "not known right now" in text
         assert driver.buttons() == ["Reconnect"]
         assert "out of touch since" in driver.window.chip_texts[-1]
-        driver.wait(4200)
         driver.click("Reconnect")
-        driver.until(lambda: driver.state.lost_at is None, 30000, "reconnecting")
-        driver.idle()
+        # Signing in again is not word from the copy; the screen says "reconnected" only
+        # once the destination has answered, and then shows live figures again.
+        driver.until(
+            lambda: any("Reconnected." in toast for toast in driver.window.toasts),
+            60000,
+            "the destination to answer",
+        )
+        assert driver.state.lost_at is None
         assert driver.window.copy_phase() in {"running", "done"}
-        assert any("Reconnected." in toast for toast in driver.window.toasts)
     finally:
         driver.close()
 
 
 def test_a_quiet_spell_is_named_as_quiet_not_as_failure():
-    driver = ready("stall", speed=400)
+    driver = ready("stall", speed=150)
     try:
         driver.choose("Last 3 months")
         driver.start()
         driver.until(lambda: driver.window.quiet_minutes() >= 6, 90000, "a quiet spell")
         driver.wait(2200)
         text = plain(driver)
-        assert re.search(r"No new logs have arrived for \d+ minutes\.", text)
+        first = re.search(r"No new logs have arrived for (\d+) minutes\.", text)
+        assert first
+        # The banner keeps counting with the badges beside it; it does not freeze.
+        driver.wait(2600)
+        later = re.search(r"No new logs have arrived for (\d+) minutes\.", driver.texts())
+        assert later and int(later.group(1)) > int(first.group(1))
         assert "The destination still answers, so the copy has not failed." in text
         assert "NOTHING NEW FOR" in text
         assert driver.window.step_mark("copy") == "warn"

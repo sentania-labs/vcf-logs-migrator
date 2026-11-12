@@ -151,12 +151,19 @@ class CopyPage(Page):
                     "it reported."
                 )
                 check = ""
+            todo = (
+                "continue the copy. Continuing first checks that every destination server is "
+                f"up again{check}. What arrived is kept and only what is missing gets sent. If "
+                'it stops again, <a href="trouble">save a troubleshooting file</a>: it records '
+                "exactly where each attempt stopped, for whoever helps you."
+                if sign_in
+                else "add the destination’s server sign-in on Connect, then continue the copy "
+                "from here. What arrived is kept. For whoever helps you, "
+                '<a href="trouble">save a troubleshooting file</a>: it records exactly where '
+                "the copy stopped."
+            )
             body = rich(
-                f"<b>What happened:</b> {happened}<br><b>What to do:</b> continue the copy. "
-                "Continuing first checks that every destination server is up again"
-                f"{check}. What arrived is kept and only what is missing gets sent. If it stops "
-                'again, <a href="trouble">save a troubleshooting file</a>: it records exactly '
-                "where each attempt stopped, for whoever helps you.",
+                f"<b>What happened:</b> {happened}<br><b>What to do:</b> {todo}",
                 "soft",
                 self._link,
             )
@@ -212,7 +219,11 @@ class CopyPage(Page):
             state.copy_id,
             state.run_id,
             bool(state.status),
-            "long" if quiet >= 30 else quiet >= copyview.QUIET_MINUTES,
+            # The banner counts the quiet minutes and names servers short of room, so it
+            # is redrawn when either changes. The footer buttons are not: they are rebuilt
+            # only when their names change.
+            "long" if quiet >= 30 else int(quiet) if quiet >= copyview.QUIET_MINUTES else 0,
+            tuple(item["node"] for item in (state.status or {}).get("capacity_warning") or []),
         )
         if phase in {"preparing", "continuing", "stopping"}:
             self._drawn = None
@@ -273,7 +284,7 @@ class CopyPage(Page):
                 view["latest"] += " " + state.continued_note
             elif state.continued_note:
                 view["latest"] = state.continued_note
-            self.progress.show_view(view, fresh=not state.lost_at)
+            self.progress.show_view(view, state.status_at)
             if self._drawn == key:
                 return  # Same state: the figures changed in place and the buttons are untouched.
             self._drawn = key

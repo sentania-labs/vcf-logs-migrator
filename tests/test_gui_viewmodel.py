@@ -783,3 +783,36 @@ def test_a_part_whose_logs_are_gone_is_skipped_once_and_never_asked_for_again(
         assert copies.next_part(copy) is None and copy["gone"]
     finally:
         session.close()
+
+
+def test_the_gap_quoted_for_short_days_is_the_total_across_them(rig):
+    engine, env, journal = rig
+    run = engine.plan(MARCH, Policy(poll_seconds=0))
+    execute(engine, run)
+    engine.status(run["id"])
+    engine.verify(run["id"])
+    (copy,) = recorded(journal)
+    result = copies.check(copy)
+    day = copy["days"][0]
+    result["phase"] = "diff"
+    result["issues"] = [
+        {
+            "kind": "short",
+            "first": day,
+            "last": day,
+            "difference": 123,
+            "source": 500,
+            "arrived": 377,
+        },
+        {
+            "kind": "short",
+            "first": day,
+            "last": day,
+            "difference": 400,
+            "source": 900,
+            "arrived": 500,
+        },
+    ]
+    result["differing_days"] = 1
+    note = copyview.check_view(copy, result)["note"]
+    assert "the gap is 523 entries" in note

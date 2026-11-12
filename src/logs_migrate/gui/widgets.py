@@ -4,7 +4,7 @@ the timeline and the page scaffold with its one-sentence footer."""
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from html import escape
 
 from PySide6.QtCore import QElapsedTimer, QEvent, QRectF, Qt, QTimer, Signal
@@ -778,15 +778,22 @@ class ProgressCard(QFrame):
         self.server_rows: dict[str, tuple[QProgressBar, QLabel, QLabel]] = {}
         self.latest = label("", "subtle", wrap=True)
         layout.addWidget(self.latest)
-        self.updated = QElapsedTimer()
+        self.read_at: datetime | None = None
+        self.lost_at = ""
         self.mode = "live"
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
 
-    def show_view(self, view: dict, fresh: bool = True) -> None:
+    def show_view(self, view: dict, read_at: str | None = None) -> None:
+        """`read_at` is when these figures were read from the destination; the "last update"
+        counter runs from then, not from when the card was last drawn."""
         self.mode = view["mode"]
+        try:
+            self.read_at = datetime.fromisoformat(read_at) if read_at else None
+        except ValueError:
+            self.read_at = None
         self.percent.setText(f"{view['percent']}%")
         self.amount.setText(view["size"])
         self.bar.setValue(int(view["fraction"] * 1000))
@@ -826,12 +833,11 @@ class ProgressCard(QFrame):
         self.latest.setText(view["latest"])
         self.latest.setVisible(bool(view["latest"]))
         self.lost_at = view.get("lost_at", "")
-        if fresh:
-            self.updated.start()
         self._tick()
 
     def _tick(self) -> None:
-        seconds = self.updated.elapsed() // 1000 if self.updated.isValid() else 0
+        age = (datetime.now(UTC) - self.read_at).total_seconds() if self.read_at else 0
+        seconds = max(0, int(age))
         colours = theme.TOKENS[theme.current_theme()]
         if self.mode == "live":
             self.live.setText(
