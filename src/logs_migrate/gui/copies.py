@@ -228,12 +228,17 @@ def next_part(copy: dict) -> dict | None:
 
 
 def _latest_check(part: dict) -> dict | None:
+    """The newest count of this part, unless more was copied after it was taken."""
     checked = [
         run["verification"]
         for run in part["started"]
         if run["verification"].get("outcome") != "verification_pending"
     ]
-    return max(checked, key=lambda v: v.get("at", "")) if checked else None
+    if not checked:
+        return None
+    latest = max(checked, key=lambda v: v.get("at", ""))
+    ended = max((run.get("finished") or {}).get("at") or "" for run in part["started"])
+    return latest if latest.get("at", "") >= ended else None
 
 
 def check(copy: dict) -> dict:

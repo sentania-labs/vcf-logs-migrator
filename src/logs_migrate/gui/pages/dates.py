@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 from html import escape
 
 from PySide6.QtCore import QDate
-from PySide6.QtWidgets import QDateEdit, QHBoxLayout, QPushButton, QWidget
+from PySide6.QtWidgets import QDateEdit, QGridLayout, QHBoxLayout, QPushButton, QWidget
 
 from .. import copies, copyview
 from .. import viewmodel as vm
@@ -48,21 +48,20 @@ class DatesPage(Page):
         self.right = Slot(spacing=10)
         self.left = self._left()
         self.left.persistent = True
-        self.holder = columns(self.left, self.right, stretch=[5, 6], top=True)
+        self.holder = columns(self.left, self.right, stretch=[5, 6], top=True, exact=True)
         self.holder.persistent = True
         self.set_body(self.holder, fill=True)
 
     def _left(self):
         frame, layout = card("How far back?")
         self.presets: dict[str, QPushButton] = {}
-        row = QHBoxLayout()
-        row.setSpacing(6)
+        self.preset_grid = QGridLayout()
+        self.preset_grid.setSpacing(6)
         for name, _months in vm.PRESETS:
-            widget = button(name, "", lambda n=name: self.apply_preset(n))
-            self.presets[name] = widget
-            row.addWidget(widget)
-        row.addStretch(1)
-        layout.addLayout(row)
+            self.presets[name] = button(name, "", lambda n=name: self.apply_preset(n))
+        layout.addLayout(self.preset_grid)
+        self._wide = None
+        self.compact(False)
         self.start_date = QDateEdit()
         self.end_date = QDateEdit()
         for edit in (self.start_date, self.end_date):
@@ -74,8 +73,8 @@ class DatesPage(Page):
                 field("From", self.start_date)[0], field("To (last day copied)", self.end_date)[0]
             )
         )
-        self.hint = rich("", "hint", self._link)
-        layout.addWidget(self.hint)
+        self.date_hint = rich("", "hint", self._link)
+        layout.addWidget(self.date_hint)
         self.timeline = Timeline()
         layout.addSpacing(4)
         layout.addWidget(self.timeline)
@@ -91,6 +90,21 @@ class DatesPage(Page):
         layout.addWidget(self.legend)
         layout.addStretch(1)
         return frame
+
+    def compact(self, small: bool) -> None:
+        """Four choices in a row, or two rows of two when the window is small."""
+        if not hasattr(self, "preset_grid"):
+            return
+        small = self.width() < 1200  # The left column is under half of the screen.
+        if self._wide == (not small):
+            return
+        self._wide = not small
+        for index, widget in enumerate(self.presets.values()):
+            self.preset_grid.removeWidget(widget)
+            if small:
+                self.preset_grid.addWidget(widget, index // 2, index % 2)
+            else:
+                self.preset_grid.addWidget(widget, 0, index)
 
     # Dates -------------------------------------------------------------------------------
 
@@ -350,21 +364,21 @@ class DatesPage(Page):
                 if extent and end > extent["last"]
                 else ""
             )
-            self.hint.setText(escape(problem) + use)
+            self.date_hint.setText(escape(problem) + use)
         elif view and view["phase"] == "ready" and view["extra_start"]:
-            self.hint.setText(
+            self.date_hint.setText(
                 f"<b>The copy starts {vm.format_day(view['first'], False)}, "
                 f"{vm.plural(view['extra_start'], 'day')} before your From date.</b> The plan on "
                 "the right says why."
             )
         elif extent and extent["newest"]:
-            self.hint.setText(
+            self.date_hint.setText(
                 "Days run midnight to midnight UTC. The latest day you can pick is "
                 f"{vm.format_day(extent['last'])}: the source is still writing the days after it."
             )
         else:
-            self.hint.setText("Days run midnight to midnight UTC.")
-        set_prop(self.hint, "status", "bad" if problem else "")
+            self.date_hint.setText("Days run midnight to midnight UTC.")
+        set_prop(self.date_hint, "status", "bad" if problem else "")
         had, broken, had_text = [], [], "Already on the destination"
         selected = (start, end) if extent and not problem else None
         if view:

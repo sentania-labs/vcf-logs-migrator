@@ -327,7 +327,7 @@ def build(
     elif scenario == "fail":
         data["fail_at"] = {"fraction": 0.31, "node": "logs-new-2", "once": True}
     elif scenario == "stall":
-        data["stall"] = {"at_fraction": 0.2, "seconds": 2400}
+        data["stall"] = {"at_fraction": 0.2, "seconds": 3000}
     elif scenario == "offline":
         data["offline"] = {"at_fraction": 0.2, "seconds": 20}
     elif scenario == "notstarted":

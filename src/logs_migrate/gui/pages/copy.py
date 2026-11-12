@@ -203,6 +203,7 @@ class CopyPage(Page):
             phase,
             state.copy_id,
             state.run_id,
+            bool(state.status),
             "long" if quiet >= 30 else quiet >= copyview.QUIET_MINUTES,
         )
         if phase in {"preparing", "continuing", "stopping"}:
@@ -322,7 +323,8 @@ class CopyPage(Page):
                     note,
                 )
                 hint = WAIT_NOTE
-                actions = [("Stop the copy…", self.app.stop_copy)] if phase == "running" else []
+                live = phase == "running" and bool(state.status)
+                actions = [("Stop the copy…", self.app.stop_copy)] if live else []
             warning = (state.status or {}).get("capacity_warning") or []
             extra = None
             if warning and phase == "running":

@@ -867,8 +867,10 @@ class MainWindow(QMainWindow):
     def adopt(self, copy: dict) -> None:
         """Make a recorded copy the one this window is working on, and ask how it stands."""
         state = self.state
-        state.clear_copy()
-        state.copy_id = copy["id"]
+        if state.copy_id != copy["id"]:
+            state.clear_copy()
+            state.copy_id = copy["id"]
+        state.start_failure = None
         run = copies.current_run(copy)
         state.run_id = run["id"] if run else None
         self._watch()

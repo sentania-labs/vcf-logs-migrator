@@ -177,7 +177,8 @@ QFrame[lattice="card"][edge="warn"] { border-left: 3px solid @warn; }
 QFrame[lattice="card"][edge="info"] { border-left: 3px solid @accent; }
 QFrame[lattice="sunken"] { background: @surface-sunken; border-radius: 6px; }
 QFrame[lattice="rule"] { background: @line-soft; max-height: 1px; min-height: 1px; border: none; }
-QFrame[lattice="more"] { background: @accent-soft; border-radius: 6px; }
+QLabel[lattice="more"] { background: @accent-soft; color: @accent-ink; font-size: 12.5px;
+  font-weight: 600; padding: 4px 10px; border-radius: 6px; }
 QPushButton[lattice="step"] { text-align: left; border: none; border-left: 3px solid transparent;
   border-radius: 0px; background: transparent; padding: 0px; }
 QPushButton[lattice="step"]:hover { background: @surface-sunken; }

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from datetime import date
 from html import escape
 
-from PySide6.QtCore import QElapsedTimer, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -187,13 +187,22 @@ def facts(items: Sequence[tuple[str, str]]) -> QWidget:
     return holder
 
 
-def columns(*widgets: QWidget, stretch: Sequence[int] | None = None, top: bool = False) -> QWidget:
+def columns(
+    *widgets: QWidget,
+    stretch: Sequence[int] | None = None,
+    top: bool = False,
+    exact: bool = False,
+) -> QWidget:
+    """Side by side. `exact` holds the widths to the stretch ratio whatever is inside, so a
+    narrow window squeezes both columns instead of starving one."""
     holder = QWidget()
     layout = QHBoxLayout(holder)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(12)
     for index, widget in enumerate(widgets):
         factor = (stretch or [1] * len(widgets))[index]
+        if exact:
+            widget.setSizePolicy(QSizePolicy.Policy.Ignored, widget.sizePolicy().verticalPolicy())
         if top:
             layout.addWidget(widget, factor, Qt.AlignmentFlag.AlignTop)
         else:
@@ -287,6 +296,43 @@ class Slot(QWidget):
                 widget.show()
         if not fill:
             self.box.addStretch(1)
+        self.box.invalidate()
+
+
+class FitArea(QScrollArea):
+    """The body of a screen. It is given the height of the window, and its content is asked
+    to fit: lists that are long by nature shrink and scroll inside their own box. Only when
+    the content cannot shrink any further does the body itself scroll."""
+
+    def __init__(self, content: QWidget):
+        super().__init__()
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWidgetResizable(False)
+        self.content = content
+        self.setWidget(content)
+        content.installEventFilter(self)
+
+    def fit(self) -> None:
+        width = self.viewport().width()
+        layout = self.content.layout()
+        need = (
+            layout.minimumHeightForWidth(width)
+            if layout.hasHeightForWidth()
+            else layout.minimumSize().height()
+        )
+        height = max(self.viewport().height(), need)
+        if self.content.width() != width or self.content.height() != height:
+            self.content.resize(width, height)
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self.fit()
+
+    def eventFilter(self, watched, event):  # noqa: N802 (Qt override)
+        if watched is self.content and event.type() == QEvent.Type.LayoutRequest:
+            self.fit()
+        return super().eventFilter(watched, event)
 
 
 class GridTable(QWidget):
@@ -367,16 +413,84 @@ class GridTable(QWidget):
         return list(self._texts)
 
 
-def scrolling(widget: QWidget, max_height: int) -> QScrollArea:
-    """A list that is long by nature scrolls inside its own box; the page never does."""
-    area = QScrollArea()
-    area.setWidgetResizable(True)
-    area.setFrameShape(QFrame.Shape.NoFrame)
-    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    area.setWidget(widget)
-    area.setMaximumHeight(max_height)
-    area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-    return area
+class ScrollBox(QWidget):
+    """A list that is long by nature scrolls inside its own box; the page never does. While
+    part of it is out of sight, a strip under the box says so.
+
+    The box asks for the height of its whole list and gives it up when the page is short.
+    It places its two children itself: a widget with a layout is sized by that layout, and
+    a scroll area's layout would always ask for the list's full height.
+    """
+
+    def __init__(self, widget: QWidget, max_height: int = 16777215, what: str = "More"):
+        super().__init__()
+        self.area = QScrollArea(self)
+        self.area.setWidgetResizable(True)
+        self.area.setFrameShape(QFrame.Shape.NoFrame)
+        self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.area.setWidget(widget)
+        self.cue = label(f"↓ {what} below. Scroll the list to see the rest.", "more")
+        self.cue.setParent(self)
+        self.cue.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cue.hide()
+        bar = self.area.verticalScrollBar()
+        bar.rangeChanged.connect(lambda *_: self._update())
+        bar.valueChanged.connect(lambda *_: self._update())
+        self.limit = max_height
+        self._hinted = -1
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # noqa: N802 (Qt override)
+        if event.type() == QEvent.Type.LayoutRequest:
+            self.updateGeometry()  # The list grew or shrank; ask for the new height.
+        return super().eventFilter(watched, event)
+
+    def natural(self, width: int) -> int:
+        """The height of the whole list at this width."""
+        inner = self.area.widget()
+        height = inner.heightForWidth(width) if width > 0 and inner.hasHeightForWidth() else -1
+        if height < 0:
+            height = inner.sizeHint().height()
+        return min(self.limit, height + 2)
+
+    def sizeHint(self):  # noqa: N802 (Qt override)
+        hint = self.area.widget().sizeHint()
+        self._hinted = self.natural(self.width())
+        hint.setHeight(self._hinted)
+        return hint
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt override)
+        hint = self.area.widget().minimumSizeHint()
+        hint.setHeight(min(96, self.natural(self.width())))
+        return hint
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._place()
+        if self.natural(self.width()) != self._hinted:
+            self.updateGeometry()  # Text wraps differently at this width.
+
+    def _place(self) -> None:
+        strip = self.cue.sizeHint().height() if not self.cue.isHidden() else 0
+        self.area.setGeometry(0, 0, self.width(), max(0, self.height() - strip))
+        self.cue.setGeometry(0, self.height() - strip, self.width(), strip)
+
+    def _update(self) -> None:
+        bar = self.area.verticalScrollBar()
+        more = bar.maximum() - bar.value() > 4
+        if more != (not self.cue.isHidden()):
+            self.cue.setVisible(more)
+            self._place()
+
+    def hidden(self) -> int:
+        """How many pixels of the list are out of sight below."""
+        bar = self.area.verticalScrollBar()
+        return bar.maximum() - bar.value()
+
+
+def scrolling(widget: QWidget, max_height: int = 16777215, what: str = "More") -> ScrollBox:
+    return ScrollBox(widget, max_height, what)
 
 
 class Activity(QFrame):
@@ -619,11 +733,11 @@ class ProgressCard(QFrame):
         head = QHBoxLayout()
         head.setSpacing(12)
         self.percent = label("0%", "huge")
-        self.size = label("", "text", rich=True)
+        self.amount = label("", "text", rich=True)
         self.live = label("", "subtle", rich=True)
         self.live.setAccessibleName("How fresh these figures are")
         head.addWidget(self.percent, 0, Qt.AlignmentFlag.AlignBaseline)
-        head.addWidget(self.size, 0, Qt.AlignmentFlag.AlignBaseline)
+        head.addWidget(self.amount, 0, Qt.AlignmentFlag.AlignBaseline)
         head.addStretch(1)
         head.addWidget(self.live, 0, Qt.AlignmentFlag.AlignBaseline)
         layout.addLayout(head)
@@ -655,7 +769,11 @@ class ProgressCard(QFrame):
         holder = QWidget()
         holder.setLayout(self.servers)
         # More servers than fit scroll inside the card, never the page.
-        self.server_area = scrolling(holder, 150)
+        self.server_area = QScrollArea()
+        self.server_area.setWidgetResizable(True)
+        self.server_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.server_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.server_area.setWidget(holder)
         layout.addWidget(self.server_area)
         self.server_rows: dict[str, tuple[QProgressBar, QLabel, QLabel]] = {}
         self.latest = label("", "subtle", wrap=True)
@@ -670,7 +788,7 @@ class ProgressCard(QFrame):
     def show_view(self, view: dict, fresh: bool = True) -> None:
         self.mode = view["mode"]
         self.percent.setText(f"{view['percent']}%")
-        self.size.setText(view["size"])
+        self.amount.setText(view["size"])
         self.bar.setValue(int(view["fraction"] * 1000))
         set_prop(self.bar, "still", "false" if view["mode"] == "live" else "true")
         for (key, value), (name, text) in zip(self.fact_values, view["facts"], strict=True):
@@ -697,6 +815,7 @@ class ProgressCard(QFrame):
                 self.servers.addWidget(state, index, 3)
                 self.server_rows[name] = (bar, amount, state)
         self.server_area.setVisible(bool(names))
+        self.server_area.setFixedHeight(min(6, len(names)) * 27)
         for server in view["servers"]:
             bar, amount, state = self.server_rows[server["name"]]
             bar.setValue(int((server["fraction"] or 0) * 1000))
@@ -737,6 +856,7 @@ class Page(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         head = QVBoxLayout()
+        self.head = head
         head.setContentsMargins(22, 14, 22, 0)
         head.setSpacing(2)
         self.title = label(title, "page-title")
@@ -744,12 +864,8 @@ class Page(QWidget):
         head.addWidget(self.title)
         head.addWidget(self.subtitle)
         outer.addLayout(head)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body = Slot((22, 12, 22, 12), 10)
-        self.scroll.setWidget(self.body)
+        self.scroll = FitArea(self.body)
         outer.addWidget(self.scroll, 1)
         self.activity = Activity()
         self.footer = QFrame()
@@ -763,9 +879,9 @@ class Page(QWidget):
         self.foot.addWidget(self.hint, 1)
         self.extra = QHBoxLayout()
         self.foot.addLayout(self.extra)
-        self.actions = QHBoxLayout()
-        self.actions.setSpacing(8)
-        self.foot.addLayout(self.actions)
+        self.action_row = QHBoxLayout()
+        self.action_row.setSpacing(8)
+        self.foot.addLayout(self.action_row)
         outer.addWidget(self.footer)
         self.buttons: dict[str, QPushButton] = {}
         self._signature: tuple = ()
@@ -774,6 +890,20 @@ class Page(QWidget):
     def set_heading(self, title: str, subtitle: str) -> None:
         self.title.setText(title)
         self.subtitle.setText(subtitle)
+
+    def resizeEvent(self, event):  # noqa: N802 (Qt override)
+        """A small window gets tighter margins, so every screen still fits without scrolling."""
+        super().resizeEvent(event)
+        small = self.width() < 900
+        side = 16 if small else 22
+        self.head.setContentsMargins(side, 9 if small else 14, side, 0)
+        self.body.box.setContentsMargins(side, 8 if small else 12, side, 8 if small else 12)
+        self.body.box.setSpacing(8 if small else 10)
+        self.foot.setContentsMargins(side, 7 if small else 9, side, 7 if small else 9)
+        self.compact(small)
+
+    def compact(self, small: bool) -> None:
+        """A screen may rearrange itself for a small window."""
 
     def set_body(self, *widgets: QWidget | None, fill: bool = False) -> None:
         self.body.set(*widgets, fill=fill)
@@ -784,8 +914,8 @@ class Page(QWidget):
         self.hint.setText(hint)
         signature = tuple((action[0], action[2] if len(action) > 2 else "") for action in actions)
         if signature != self._signature:
-            while self.actions.count():
-                item = self.actions.takeAt(0)
+            while self.action_row.count():
+                item = self.action_row.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
                     widget.setParent(None)
@@ -797,7 +927,7 @@ class Page(QWidget):
                 variant = action[2] if len(action) > 2 else ""
                 widget = button(text, variant, slot)
                 widget.setProperty("lattice", "foot")
-                self.actions.addWidget(widget)
+                self.action_row.addWidget(widget)
                 self.buttons[text] = widget
                 if variant == "primary":
                     self.primary_button = widget
@@ -828,7 +958,8 @@ class Page(QWidget):
 
     def overflow(self) -> int:
         """How many pixels of body do not fit, for the no-scrolling check."""
-        return self.scroll.verticalScrollBar().maximum()
+        self.scroll.fit()
+        return max(0, self.body.height() - self.scroll.viewport().height())
 
     def refresh(self) -> None:  # pragma: no cover - every screen overrides this
         raise NotImplementedError

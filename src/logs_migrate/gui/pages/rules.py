@@ -212,7 +212,7 @@ class RulesPage(Page):
                         (index % 2) * 2 + 1,
                     )
             # A long list scrolls inside its own box and says so; the page never scrolls.
-            layout.addWidget(scrolling(inner, 16777215))
+            layout.addWidget(scrolling(inner, what="More rules"), 1)
             links = (
                 '<a href="all">Tick all</a> · <a href="needed">Untick all but the needed '
                 "ones</a> · "
@@ -247,7 +247,7 @@ class RulesPage(Page):
                 )
             table.set_rows(cells)
             self.table = table
-            layout.addWidget(table)
+            layout.addWidget(scrolling(table, what="More rules"), 1)
             links = ""
         tail = vm.rules_tail(summary)
         if links or tail:
@@ -267,7 +267,7 @@ class RulesPage(Page):
             [(escape(row["name"]), ("badge", *row["badge"], escape(row["text"]))) for row in rows]
         )
         self.results = table
-        layout.addWidget(scrolling(table, 16777215) if len(rows) > LONG else table)
+        layout.addWidget(scrolling(table, what="More rules"), 1)
         return frame
 
     def refresh(self) -> None:
@@ -343,9 +343,7 @@ class RulesPage(Page):
             if self._drawn != key:
                 self._drawn = key
                 title, text = vm.rules_banner(rows)
-                self.set_body(
-                    banner("info", title, text), self._difference(rows), fill=len(rows) > LONG
-                )
+                self.set_body(banner("info", title, text), self._difference(rows), fill=False)
             self._footer()
             return
         self._drawn = None
@@ -381,7 +379,7 @@ class RulesPage(Page):
                     "logs can be copied straight away." + restart,
                 ),
                 self._results(rows),
-                fill=len(rows) > LONG,
+                fill=False,
             )
             self.set_footer(
                 "Rules are done. Next, choose how far back to copy logs.",
@@ -415,7 +413,7 @@ class RulesPage(Page):
                 ),
             ),
             self._results(rows),
-            fill=len(rows) > LONG,
+            fill=False,
         )
         retry = "Try that rule again" if len(failed) == 1 else "Try those rules again"
         if outstanding:

@@ -98,9 +98,9 @@ class Driver:
 
     def texts(self) -> str:
         """Every piece of text on the current screen (and an open question), for assertions."""
-        from PySide6.QtWidgets import QAbstractButton, QLabel, QLineEdit
-
         import re
+
+        from PySide6.QtWidgets import QAbstractButton, QLabel, QLineEdit
 
         roots = [self.page]
         if self.window.modal.isVisible():
@@ -141,6 +141,7 @@ class Driver:
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
 
+        self.wait(30)  # Let a screen that was just redrawn show its new buttons.
         widget = self.button(text)
         if not widget.isEnabled():
             raise LookupError(f"Button {text!r} is disabled")
@@ -151,6 +152,7 @@ class Driver:
         """Follow a link in the text of the current screen or question."""
         from PySide6.QtWidgets import QLabel
 
+        self.wait(30)
         root = self.window.modal if self.window.modal.isVisible() else self.page
         for widget in root.findChildren(QLabel):
             if widget.isVisibleTo(root) and f'href="{href}"' in widget.text():
