@@ -19,7 +19,9 @@ def test_window_carries_the_app_icon():
     assert not image.isNull()
     assert image.pixelColor(0, 0).alpha() == 0
     assert any(
-        image.pixelColor(x, y).alpha() > 0 for x in range(image.width()) for y in range(image.height())
+        image.pixelColor(x, y).alpha() > 0
+        for x in range(image.width())
+        for y in range(image.height())
     )
     window.close()
 
