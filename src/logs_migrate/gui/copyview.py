@@ -263,10 +263,18 @@ def plan_view(
                 "Skipped",
                 f"<b>{vm.format_ranges(day_ranges(skipped))}.</b> The destination holds broken "
                 f"copies of {'this day' if len(skipped) == 1 else f'these {len(skipped)} days'}.",
-                f"The copy runs as {len(copy['parts'])} parts back to back around them. Keep "
-                "this window open until the last part has started."
-                if len(copy["parts"]) > 1
-                else "",
+                (
+                    f"The copy runs as {len(copy['parts'])} parts back to back around them. "
+                    "Keep this window open until the last part has started."
+                    if len(copy["parts"]) > 1
+                    else ""
+                )
+                + (
+                    " Some source servers store part of these days together with the days "
+                    "beside them; those logs are copied with their neighbours."
+                    if set(skipped) & set(days)
+                    else ""
+                ),
             )
         )
     if copy["active_skipped"]:
@@ -1052,6 +1060,14 @@ def left_out(copy: dict) -> str:
                 else ""
             )
         )
+    if copy["gone"]:
+        gone = copy["gone"]
+        parts.append(
+            f"{vm.format_ranges(day_ranges(gone))} "
+            f"{'was' if len(gone) == 1 else 'were'} no longer on the source when "
+            f"{'its' if len(gone) == 1 else 'their'} turn came, so "
+            f"{'it was' if len(gone) == 1 else 'they were'} not copied."
+        )
     return " ".join(parts)
 
 
@@ -1189,11 +1205,8 @@ def check_view(
 ) -> dict:
     """One verdict in large type, then only the days that differ."""
     total_days = result["days"]
-    phase = (
-        "incomplete"
-        if error and result["phase"] in {"unchecked", "incomplete"}
-        else result["phase"]
-    )
+    # A check that was asked for and failed is never answered with an older result.
+    phase = "incomplete" if error else result["phase"]
     unfinished = result["unfinished"]
     labels = copy["labels"]
     facts = [
@@ -1380,15 +1393,21 @@ def check_view(
         )
     else:
         done, total = copy["done_bytes"], copy["total_bytes"]
-        if copy["state"] in {"stopped", "failed", "between"}:
-            verb = "failed" if copy["state"] == "failed" else "was stopped"
+        if copy["state"] in {"stopped", "failed", "between", "unsettled"}:
+            verb = ended_verb(copy)
+            arrived = (
+                f"{vm.format_bytes(done)} of {vm.format_bytes(total)} arrived and is safe on "
+                f"the destination. {vm.format_bytes(max(0, total - done))} was not sent."
+                if copy["settled"]
+                else f"The destination last reported {vm.format_bytes(done)} of "
+                f"{vm.format_bytes(total)} arrived, and could not say exactly what."
+            )
             verdict = (
                 "info",
                 "■",
                 f"This copy {verb} at {percent}% and never finished",
-                f"{vm.format_bytes(done)} of {vm.format_bytes(total)} arrived and is safe on "
-                f"the destination. {vm.format_bytes(max(0, total - done))} was not sent. What "
-                "arrived has not been checked.",
+                f"{arrived} What arrived has not been checked"
+                + (" since." if result["checked_at"] else "."),
             )
             hint = "To finish this copy, connect to both systems first."
             action = ("Connect and continue this copy", "fix-past", "", "primary")
@@ -1421,6 +1440,15 @@ def check_view(
 # Past runs --------------------------------------------------------------------------------
 
 
+def ended_verb(copy: dict) -> str:
+    """How an unfinished copy came to be unfinished, as far as the record knows."""
+    if copy["state"] == "failed":
+        return "failed"
+    if copy["state"] == "stopped" and copy["ended"] == "cancelled":
+        return "was stopped"
+    return "ended"
+
+
 def run_result(copy: dict, result: dict) -> tuple[str, str]:
     """The result of a run as one coloured word or two."""
     percent = int(100 * copy["done_bytes"] / copy["total_bytes"]) if copy["total_bytes"] else 0
@@ -1428,10 +1456,9 @@ def run_result(copy: dict, result: dict) -> tuple[str, str]:
         return ("accent", "In progress")
     if copy["state"] == "unsure":
         return ("warn", "Not sure it started")
-    if copy["state"] in {"stopped", "between"}:
-        return ("warn", f"Stopped at {percent}%, not finished")
-    if copy["state"] == "failed":
-        return ("warn", f"Failed at {percent}%, not finished")
+    if copy["state"] in {"stopped", "between", "failed", "unsettled"}:
+        word = {"was stopped": "Stopped", "failed": "Failed"}.get(ended_verb(copy), "Unfinished")
+        return ("warn", f"{word} at {percent}%, not finished")
     phase = result["phase"]
     if phase == "ok":
         return ("ok", "Everything arrived")
@@ -1470,7 +1497,7 @@ def run_rows(found: list[dict], zone: str) -> list[dict]:
 def unfinished(found: list[dict]) -> dict | None:
     """The newest copy that still has something to do, for the welcome-back hand-off."""
     for copy in reversed(found):
-        if copy["state"] in {"running", "unsure", "stopped", "failed", "between"}:
+        if copy["state"] in {"running", "unsure", "stopped", "failed", "between", "unsettled"}:
             return copy
     return None
 

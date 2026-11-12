@@ -70,8 +70,9 @@ def build(runs: list[dict], rows: dict[str, dict]) -> list[dict]:
             order.append(key)
         held = groups[key].get(index)
         # A part previewed again before its turn replaces the earlier preview; a started
-        # part is never replaced by a later preview.
-        if held is None or (not held["started"]) or started:
+        # part, or one recorded as having nothing left to send, is never replaced.
+        over = held is not None and (plan_series(held["root"]) or {}).get("skipped")
+        if held is None or started or not (held["started"] or over):
             groups[key][index] = part
     copies = []
     for key in order:
@@ -99,6 +100,7 @@ def preview(parts_runs: list[dict], excluded: list[dict] | None = None) -> dict:
 def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
     seen: dict[str, dict] = {}
     already: dict[str, dict] = {}
+    vanished: list[dict] = []  # Planned, then no longer on the source when their turn came.
     for part in parts:
         plan = part["root"]["plan"]
         for group in plan["selected"]:
@@ -116,16 +118,31 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
                 open_row = row
         last = part["started"][-1] if part["started"] else None
         finished = (last or {}).get("finished")
+        gone = (plan_series(part["root"]) or {}).get("skipped")
         if not part["started"]:
-            state = "planned"
+            # Nothing left to send when its turn came: already there, or gone from the
+            # source. Either way this part is over and is never asked for again.
+            state = "done" if gone or not ids else "planned"
         elif open_row is not None and not finished:
             state = "running" if open_row.get("acknowledged") else "unsure"
+        elif open_row is not None:
+            # The task ended but the destination could not say what arrived.
+            state = {"cancelled": "stopped", "failed": "failed"}.get(
+                finished.get("status"), "unsettled"
+            )
         elif ids <= received:
             state = "done"
         else:
             state = {"cancelled": "stopped", "failed": "failed", "completed": "missing"}.get(
                 (finished or {}).get("status"), "stopped"
             )
+        if gone and not part["started"]:
+            lost = set((plan_series(part["root"]) or {}).get("gone_ids") or [])
+            for group in plan["selected"]:
+                if group["id"] in lost:
+                    vanished.append(group)
+                else:
+                    already.setdefault(group["id"], group)
         part.update(
             {
                 "ids": ids,
@@ -137,7 +154,7 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
                 "settled": open_row is None,
             }
         )
-    for group_id in already:
+    for group_id in [*already, *(group["id"] for group in vanished)]:
         seen.pop(group_id, None)
     groups = list(seen.values())
     sizes = {group["id"]: group["size"] for group in groups}
@@ -149,6 +166,8 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
         current = states.index(state)
     elif current is None:
         state = "finished"
+    elif "unsettled" in states:
+        state = "unsettled"
     elif parts[current]["state"] == "planned":
         # A multi-part copy whose next part has not been asked for yet.
         state = "between" if current else "planned"
@@ -157,10 +176,11 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
     done = 0
     known = True
     for part in parts:
-        if part["settled"]:
-            done += sum(sizes.get(i, 0) for i in part["received"])
-        elif part["finished"] and part["finished"].get("bytes_transferred") is not None:
-            done += part["finished"]["bytes_transferred"]
+        # What earlier runs of the part delivered always counts; a run whose task ended
+        # without an account of what arrived adds the last figure the destination gave.
+        done += sum(sizes.get(i, 0) for i in part["received"])
+        if not part["settled"] and part["finished"]:
+            done += part["finished"].get("bytes_transferred") or 0
             known = False
     first = parts[0]["root"]
     client = first.get("client") or {}
@@ -190,6 +210,10 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
         "labels": client.get("labels") or {},
         "requested": (series or {}).get("requested") or first["plan"]["window"],
         "excluded": (series or {}).get("excluded") or [],
+        "gone": sorted({day for group in vanished for day in group_days(group)}),
+        "ended": next(
+            (part["finished"]["status"] for part in reversed(parts) if part["finished"]), None
+        ),
         "series": series,
         "started_at": started_at,
         "elapsed_seconds": elapsed,
@@ -200,6 +224,10 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
         "active_skipped": bool(first["plan"]["active_skipped"]),
         "acknowledged": any(run.get("active_ack") for part in parts for run in part["started"]),
     }
+
+
+def plan_series(run: dict) -> dict | None:
+    return (run.get("client") or {}).get("series")
 
 
 def remaining_groups(copy: dict) -> list[dict]:
@@ -244,7 +272,15 @@ def check(copy: dict) -> dict:
     days that differ: `missing` (a source server's logs for those days never arrived) and
     `short`/`extra` (a day's count is lower or higher on the destination).
     """
-    unfinished = copy["state"] in {"stopped", "failed", "between", "running", "unsure"}
+    unfinished = copy["state"] in {
+        "stopped",
+        "failed",
+        "between",
+        "running",
+        "unsure",
+        "unsettled",
+    }
+    unchecked_parts = 0
     days_all = set(copy["days"])
     issues: list[dict] = []
     missing_days: set[date] = set()
@@ -261,6 +297,7 @@ def check(copy: dict) -> dict:
             continue
         result = _latest_check(part)
         if result is None:
+            unchecked_parts += 1  # Copied, and not counted since.
             continue
         checked_any = True
         checked_at = max(checked_at, result.get("at", ""))
@@ -358,10 +395,12 @@ def check(copy: dict) -> dict:
     remaining = {day for group in remaining_groups(copy) for day in group_days(group)}
     got = days_all - remaining if copy["settled"] else set(arrived)
     short = [issue for issue in issues if issue["kind"] != "missing"]
-    if not checked_any:
+    if not checked_any or unchecked_parts:
+        # One part counted says nothing about a part that was not.
         phase = "unchecked"
     elif unfinished:
-        phase = "diff" if short else "partial"
+        # "What arrived matches" needs counts; a check that could not count says so.
+        phase = "incomplete" if reasons and not issues else "diff" if short else "partial"
     elif reasons and not issues:
         phase = "incomplete"
     elif issues:

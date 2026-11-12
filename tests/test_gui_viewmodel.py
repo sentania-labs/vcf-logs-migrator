@@ -597,3 +597,189 @@ def test_a_result_the_engine_did_not_verify_is_never_shown_as_everything_arrived
     assert (
         view["verdict"][2] == "Could not finish checking" and "still running" in view["verdict"][3]
     )
+
+
+# Found by the self-review -----------------------------------------------------------------
+
+
+def _two_part_copy(journal, engine):
+    """One copy made of two runs around a left-out stretch, both finished."""
+    series = {
+        "id": "series-1",
+        "count": 2,
+        "requested": {"start": MARCH.start, "end": MARCH.end},
+        "excluded": [{"first": "2026-03-02", "last": "2026-03-02"}],
+    }
+    first = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z"))
+    second = Window(parse_time("2026-03-03T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    runs = []
+    for index, window in enumerate((first, second)):
+        run = engine.plan(window, Policy(poll_seconds=0), {"series": {**series, "index": index}})
+        execute(engine, run)
+        engine.status(run["id"])
+        runs.append(run)
+    return runs
+
+
+def test_one_part_checked_says_nothing_about_a_part_that_was_not(rig):
+    engine, env, journal = rig
+    first, second = _two_part_copy(journal, engine)
+    engine.verify(first["id"])
+    (copy,) = recorded(journal)
+    assert len(copy["parts"]) == 2 and copy["state"] == "finished"
+    result = copies.check(copy)
+    assert result["phase"] == "unchecked"
+    assert copyview.run_result(copy, result) == ("", "Finished, not checked")
+    engine.verify(second["id"])
+    (copy,) = recorded(journal)
+    assert copies.check(copy)["phase"] == "ok"
+    # A check that was asked for and failed is not answered with the older result.
+    view = copyview.check_view(copy, copies.check(copy), error=Code.BUSY.value)
+    assert view["verdict"][2] == "Could not finish checking"
+
+
+def test_a_stopped_copy_that_could_not_be_counted_is_not_called_so_far_so_good(fixture, tmp_path):
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.engine import Engine
+    from logs_migrate.journal import Journal
+
+    fixture["cancel_after"] = 1
+    clock = SimulatedClock()
+    journal = Journal(tmp_path / "journal.sqlite", clock)
+    engine = Engine(SimulatedEnvironment(fixture), journal, clock)
+    run = engine.plan(MARCH, Policy(poll_seconds=0))
+    execute(engine, run)
+    engine.status(run["id"])
+    stored = journal.load(run["id"])
+    stored["verification"] = {
+        "outcome": "incomplete_verification",
+        "complete": False,
+        "reason": "connection_failed",
+        "at": clock.now(),
+    }
+    journal.save(stored, "test")
+    (copy,) = recorded(journal)
+    result = copies.check(copy)
+    assert result["phase"] == "incomplete"
+    view = copyview.check_view(copy, result)
+    assert "So far so good" not in str(view) and view["verdict"][2] == "Could not finish checking"
+    journal.close()
+
+
+def test_what_earlier_runs_delivered_still_counts_while_the_copy_runs_again(fixture, tmp_path):
+    from logs_migrate.adapters.simulated import SimulatedClock, SimulatedEnvironment
+    from logs_migrate.engine import Engine
+    from logs_migrate.journal import Journal
+
+    fixture["cancel_after"] = 1
+    fixture["complete_after_polls"] = 1
+    clock = SimulatedClock()
+    journal = Journal(tmp_path / "journal.sqlite", clock)
+    engine = Engine(SimulatedEnvironment(fixture), journal, clock)
+    run = engine.plan(MARCH, Policy(poll_seconds=0))
+    execute(engine, run)
+    engine.status(run["id"])
+    (stopped,) = recorded(journal)
+    del engine.env.data["cancel_after"]
+    engine.env.data["complete_after_polls"] = 50
+    resumed = engine.resume(run["id"])
+    execute(engine, resumed)
+    (running,) = recorded(journal)
+    assert running["state"] == "running"
+    assert running["done_bytes"] == stopped["done_bytes"] > 0
+    journal.close()
+
+
+def test_a_part_with_nothing_left_to_send_is_over_and_its_days_are_named(rig):
+    engine, env, journal = rig
+    series = {
+        "id": "s",
+        "count": 2,
+        "requested": {"start": MARCH.start, "end": MARCH.end},
+        "excluded": [],
+    }
+    first = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-03-02T00:00:00Z"))
+    second = Window(parse_time("2026-03-02T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))
+    one = engine.plan(first, Policy(poll_seconds=0), {"series": {**series, "index": 0}})
+    two = engine.plan(second, Policy(poll_seconds=0), {"series": {**series, "index": 1}})
+    execute(engine, one)
+    engine.status(one["id"])
+    (copy,) = recorded(journal)
+    assert copy["state"] == "between" and copies.next_part(copy)["index"] == 1
+    stored = journal.load(two["id"])
+    stored["client"]["series"]["skipped"] = "gone"
+    stored["client"]["series"]["gone_ids"] = [g["id"] for g in stored["plan"]["selected"]]
+    journal.save(stored, "part_skipped")
+    (copy,) = recorded(journal)
+    assert copy["state"] == "finished" and copies.next_part(copy) is None
+    assert copy["gone"] and "no longer on the source" in copyview.left_out(copy)
+    assert copy["total_bytes"] == copy["done_bytes"]
+
+
+def test_a_part_whose_logs_are_gone_is_skipped_once_and_never_asked_for_again(
+    tmp_path, monkeypatch
+):
+    import json
+
+    import standin
+
+    from logs_migrate.gui.session import Session
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fixture = standin.write(tmp_path, "plain", speed=50000, delay=0)
+    journal = str(tmp_path / "journal.sqlite")
+    names = {"source_host": "logs-old.example.com", "destination": "logs-new.example.com"}
+    session = Session()
+    try:
+        session.open_record(journal=journal)
+        session.connect(
+            fixture=str(fixture),
+            journal=journal,
+            credentials={"destination_ssh": "x"},
+            connection={**names, "destination_ssh_user": "root"},
+        )
+        session.config_apply(selection=["partitions:Firewall"])
+        extent = vm.history(session.discover()["source"])
+        start, end = vm.window_ms(*vm.preset_days(3, extent))
+        hole = vm.preset_days(3, extent)[0].replace(day=28)
+        plan = session.plan(
+            start=start,
+            end=end,
+            attempts=2,
+            poll_seconds=0,
+            exclude=[{"first": hole.isoformat(), "last": hole.isoformat()}],
+        )
+        first, second = plan["parts"]
+        series = {k: v for k, v in first["client"]["series"].items() if k != "index"}
+        session.start(run_id=first["id"], acknowledged=True)
+        import time
+
+        for _ in range(200):
+            if session.status(run_id=first["id"])["status"] != "running":
+                break
+            time.sleep(0.02)
+        # The source deletes everything the second part would have copied.
+        state = tmp_path / "journal.simulated-state"
+        data = json.loads(state.read_text())
+        window = series["windows"][1]
+        data["source"]["buckets"] = [
+            b
+            for b in data["source"]["buckets"]
+            if b["status"] == "active" or b["start"] < window["start"]
+        ]
+        state.write_text(json.dumps(data))
+        result = session.start_part(
+            series=series,
+            index=1,
+            attempts=2,
+            poll_seconds=0,
+            client={},
+            acknowledged=True,
+            preview=second["id"],
+        )
+        assert result == {"skipped": True, "index": 1}
+        record = session.record()
+        (copy,) = copies.build(record["runs"], record["rows"])
+        assert copies.next_part(copy) is None and copy["gone"]
+    finally:
+        session.close()

@@ -319,6 +319,7 @@ class MainWindow(QMainWindow):
             "missing": "missing",
             "stopped": "stopped",
             "between": "stopped",
+            "unsettled": "unsettled",
             "failed": "failed",
         }.get(copy["state"], "idle")
 
@@ -338,6 +339,7 @@ class MainWindow(QMainWindow):
             "missing",
             "stopped",
             "failed",
+            "unsettled",
             "cantcontinue",
         }
 
@@ -367,7 +369,16 @@ class MainWindow(QMainWindow):
                 "warn"
                 if quiet
                 or phase
-                in {"missing", "stopped", "failed", "lost", "notstarted", "cantcontinue", "unsure"}
+                in {
+                    "missing",
+                    "stopped",
+                    "failed",
+                    "unsettled",
+                    "lost",
+                    "notstarted",
+                    "cantcontinue",
+                    "unsure",
+                }
                 else ""
             )
         if step == "check":
@@ -648,7 +659,7 @@ class MainWindow(QMainWindow):
             else:
                 self.refresh_all()
         else:
-            self.worker.request_cancel()
+            self.worker.request_cancel(f"{job}#{self.active.get(job)}")
             self.pages[self.owners[job]].activity.cancelling()
 
     def _progress(self, job_id: str, message: str) -> None:
@@ -690,7 +701,9 @@ class MainWindow(QMainWindow):
 
     def pair(self) -> str:
         settings = self.state.settings
-        return f"{settings.source_host.strip().lower()}|{settings.destination_host.strip().lower()}"
+        pair = f"{settings.source_host.strip().lower()}|{settings.destination_host.strip().lower()}"
+        # A pair confirmed against stand-in systems says nothing about real ones.
+        return f"stand-in:{pair}" if settings.fixture_path else pair
 
     def test_connections(self, credentials: dict[str, str]) -> None:
         """One test for both systems. Nothing is sent until their identities are confirmed."""
@@ -973,6 +986,7 @@ class MainWindow(QMainWindow):
                 poll_seconds=float(settings.count_poll_seconds),
                 client=client,
                 acknowledged=True,
+                preview=root["id"],
             )
             labels = (
                 "Checking the dates of the next part",
@@ -1349,12 +1363,15 @@ class MainWindow(QMainWindow):
                 if data.get("stage") == "cancelled":
                     state.start_failure = None
                     self.toast("Cancelled. Nothing was started.")
-                    self.owners.pop(job, None)
+                    self.pages[self.owners.pop(job, "copy")].activity.stop()
                     self.show_page("dates")
                     return
         elif job == "continue":
             self.context.pop("continue", None)
             if data.get("sent"):
+                # Watch the run that was asked for, not the one that had stopped.
+                state.run_id = data.get("run_id") or state.run_id
+                state.status = None
                 state.unsure = True
                 self.submit("record", "record")
                 self._watch()

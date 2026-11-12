@@ -865,8 +865,8 @@ class Page(QWidget):
         head.addWidget(self.subtitle)
         outer.addLayout(head)
         self.body = Slot((22, 12, 22, 12), 10)
-        self.scroll = FitArea(self.body)
-        outer.addWidget(self.scroll, 1)
+        self.fit_area = FitArea(self.body)
+        outer.addWidget(self.fit_area, 1)
         self.activity = Activity()
         self.footer = QFrame()
         self.footer.setProperty("lattice", "footer")
@@ -958,8 +958,8 @@ class Page(QWidget):
 
     def overflow(self) -> int:
         """How many pixels of body do not fit, for the no-scrolling check."""
-        self.scroll.fit()
-        return max(0, self.body.height() - self.scroll.viewport().height())
+        self.fit_area.fit()
+        return max(0, self.body.height() - self.fit_area.viewport().height())
 
     def refresh(self) -> None:  # pragma: no cover - every screen overrides this
         raise NotImplementedError

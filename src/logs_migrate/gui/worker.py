@@ -29,8 +29,11 @@ class EngineWorker(QObject):
         super().__init__()
         self.session = Session()
         self.session.on_progress = self._progress
-        self._cancel = threading.Event()
-        self.session.cancelled = self._cancel.is_set
+        # The job the person asked to cancel. Named, so a cancel pressed while that job is
+        # still waiting its turn is not lost when the job before it finishes.
+        self._lock = threading.Lock()
+        self._cancelled = ""
+        self.session.cancelled = self._is_cancelled
         self.thread = QThread()
         self.thread.setObjectName("engine")
         self.moveToThread(self.thread)
@@ -56,17 +59,22 @@ class EngineWorker(QObject):
         self._queued.emit(job, method, dict(kwargs))
         return True
 
-    def request_cancel(self) -> None:
-        """Ask the job in flight to stop before it asks either system to change anything."""
-        self._cancel.set()
+    def request_cancel(self, job: str) -> None:
+        """Ask this job to stop before it asks either system to change anything."""
+        with self._lock:
+            self._cancelled = job
+
+    def _is_cancelled(self) -> bool:
+        with self._lock:
+            return bool(self._job) and self._cancelled == self._job
 
     def _progress(self, message: str) -> None:
         self.progress.emit(self._job, message)
 
     @Slot(str, str, dict)
     def _run(self, job: str, method: str, kwargs: dict) -> None:
-        self._job = job
-        self._cancel.clear()
+        with self._lock:
+            self._job = job
         try:
             result = getattr(self.session, method)(**kwargs)
         except Failure as failure:

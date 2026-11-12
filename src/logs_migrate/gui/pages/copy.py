@@ -195,7 +195,15 @@ class CopyPage(Page):
         if phase == "continuing":
             self.missing_job = bool(self.app.context.get("continue", {}).get("missing"))
             missing = self.missing_job
-        elif phase in {"preparing", "idle", "notstarted", "stopped", "failed", "cantcontinue"}:
+        elif phase in {
+            "preparing",
+            "idle",
+            "notstarted",
+            "stopped",
+            "failed",
+            "unsettled",
+            "cantcontinue",
+        }:
             self.missing_job = missing = False
         self._heading(copy, missing and phase in {"continuing", "running", "lost", "done"})
         quiet = self.app.quiet_minutes()
@@ -468,6 +476,51 @@ class CopyPage(Page):
                         ("Add the destination server sign-in", self.app.add_sign_in, "primary"),
                     ],
                 )
+            return
+        if phase == "unsettled":
+            sign_in = state.server_sign_in
+            frame, layout = card()
+            layout.addWidget(
+                verdict(
+                    "warn",
+                    "?",
+                    "The copy ended, but the destination could not say what arrived",
+                    "<b>What happened:</b> the destination reported the copy as ended without "
+                    "an account of which logs arrived"
+                    + (
+                        "."
+                        if sign_in
+                        else ", and no destination server sign-in was given, so the app cannot "
+                        "look for itself."
+                    )
+                    + "<br><b>What to do:</b> "
+                    + (
+                        "ask the destination again in a minute or two."
+                        if sign_in
+                        else "add the destination’s server sign-in on Connect and test, then "
+                        "come back here with the button it gives you."
+                    )
+                    + " Until the app can see what arrived it treats nothing as certain, and it "
+                    "will not send these dates again.",
+                )
+            )
+            self.set_body(
+                frame,
+                facts(
+                    copyview.remainder_facts(
+                        copy, server_sign_in=sign_in, failed=False, blocked=True
+                    )
+                ),
+            )
+            self.set_footer(
+                "Nothing more was sent.",
+                [
+                    ("Check what arrived so far", self.app.check_result),
+                    ("Ask the destination again", self.app._watch, "primary")
+                    if sign_in
+                    else ("Add the destination server sign-in", self.app.add_sign_in, "primary"),
+                ],
+            )
             return
         if phase in {"stopped", "failed"}:
             widgets, hint, actions = self._stopped(copy, phase)

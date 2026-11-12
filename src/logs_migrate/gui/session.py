@@ -224,6 +224,15 @@ class Session:
         self.delay = 0.0
         return env
 
+    def _store(self, fixture: str) -> TrustStore:
+        """Stand-in systems keep their made-up identities apart from real ones."""
+        from .settings import config_dir
+
+        wanted = config_dir() / "stand-in" if fixture else config_dir()
+        if self.store is None or self.store.directory != wanted:
+            self.store = TrustStore(wanted)
+        return self.store
+
     def _roles(self) -> dict[str, str]:
         """Each role's `host:port` as the trust store names it."""
         from ..adapters.rest import split_endpoint
@@ -245,7 +254,7 @@ class Session:
         self.job = "connect"
         self.connection = dict(connection)
         self.credentials = Credentials({}, interactive=False)
-        self.store = self.store or TrustStore()
+        self.store = self._store(fixture)
         self.stage(0)
         found: list[tuple[str, Identity, str]] = []
         try:
@@ -322,7 +331,7 @@ class Session:
     def trust(self, *, identities: list[dict], replace: bool = False) -> list[str]:
         """Record the identities the person confirmed, by the fingerprint they were shown.
         A changed identity is replaced only when the person said so explicitly."""
-        self.store = self.store or TrustStore()
+        require(self.store is not None, Code.STATE)
         enrolled = []
         for shown in identities:
             identity = self.pending.get(shown["name"])
@@ -353,7 +362,7 @@ class Session:
         self.connection = dict(connection)
         secrets = {key: value for key, value in credentials.items() if value}
         self.credentials = Credentials(secrets, interactive=False)
-        self.store = self.store or TrustStore()
+        self.store = self._store(fixture)
         token = bool(connection.get("ops_url"))
         self.server_sign_in = bool(
             not token and connection.get("destination_ssh_user") and secrets.get("destination_ssh")
@@ -559,8 +568,7 @@ class Session:
 
     def identity_codes(self) -> dict:
         """The recorded identity of each address and of each server behind them."""
-        require(self.env is not None, Code.STATE)
-        self.store = self.store or TrustStore()
+        require(self.env is not None and self.store is not None, Code.STATE)
         names = self._roles()
         known = {(kind, name): digest for kind, name, digest in self.store.entries()}
         addresses = [
@@ -732,7 +740,11 @@ class Session:
                         else "mover"
                     )
             raise self._fail(
-                error, sent=sent, stage=stage, rejected=isinstance(error, Rejection)
+                error,
+                sent=sent,
+                stage=stage,
+                run_id=run_id,
+                rejected=isinstance(error, Rejection),
             ) from None
         result["run"] = display_run(self.journal.load(run_id))
         return result
@@ -751,9 +763,10 @@ class Session:
         poll_seconds: float,
         client: dict,
         acknowledged: bool,
+        preview: str,
     ) -> dict:
         """Plan the next part of a multi-part copy afresh and start it. A part with nothing
-        left to send is skipped."""
+        left to send is skipped, and the record says so, so it is never asked for again."""
         self.job = "continue"
         window = series["windows"][index]
         note = {**client, "series": {**series, "index": index}}
@@ -764,12 +777,23 @@ class Session:
             )
         except MigrationError as error:
             if getattr(error, "message", "").startswith("No dated sealed groups overlap"):
+                self._skip_part(preview, set())
                 return {"skipped": True, "index": index}
             raise self._fail(error, sent=False) from None
         if not run["plan"]["selected"]:
+            self._skip_part(preview, {g["id"] for g in run["plan"].get("already_received", [])})
             return {"skipped": True, "index": index}
         self.stage(1)
         return self._start(run["id"], acknowledged)
+
+    def _skip_part(self, preview: str, there: set[str]) -> None:
+        """Record that a planned part has nothing left to send: what it would have copied
+        is on the destination already, or is no longer on the source."""
+        earlier = self.journal.load(preview)
+        series = earlier.setdefault("client", {}).setdefault("series", {})
+        series["gone_ids"] = [g["id"] for g in earlier["plan"]["selected"] if g["id"] not in there]
+        series["skipped"] = "gone" if series["gone_ids"] else "there"
+        self.journal.save(earlier, "part_skipped")
 
     def continue_copy(self, *, run_id: str, acknowledged: bool) -> dict:
         """Work out what is left of a stopped copy and send only that."""
