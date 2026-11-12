@@ -153,6 +153,35 @@ def test_gui_sign_in_points_an_ssh_failure_at_a_box_and_keeps_the_diagnostic(sta
     assert error.message in caught.value.code and error.message in session.errors[-1]
 
 
+@pytest.mark.parametrize(
+    ("role", "stage", "typed_source", "expected"),
+    [
+        ("destination", "ssh 10.0.0.50:22", "10.0.0.5", "destination"),
+        ("source", "ssh logs-02.example:22", "10.0.0.5", "source"),
+    ],
+)
+def test_gui_sign_in_marks_the_box_of_the_probe_in_flight_not_a_host_name_match(
+    role, stage, typed_source, expected
+):
+    from logs_migrate.adapters.ssh_errors import SSHFailure
+    from logs_migrate.gui.session import Failure, Session
+
+    class Environment:
+        notes = {"stage": stage, "stage_role": role}
+        connection = SimpleNamespace(source_host=typed_source)
+
+        def destination_version_hint(self):
+            return None
+
+        def open(self):
+            raise SSHFailure("tcp")
+
+    with pytest.raises(Failure) as caught:
+        Session()._sign_in_live(Environment(), False)
+    assert caught.value.data["side"] == expected
+    assert caught.value.data["servers"] is True
+
+
 def test_trust_probe_reports_a_closed_port_as_tcp():
     pytest.importorskip("paramiko")
     import socket
