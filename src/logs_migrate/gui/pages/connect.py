@@ -484,8 +484,9 @@ class ConnectPage(Page):
         servers = (failure or {}).get("servers")
         hint(
             self.source_host_hint,
-            "This address answers, but its servers do not accept the secure shell connection "
-            "(port 22) that the app and the destination need. Ask whoever runs the network."
+            "This address answers, but this computer cannot reach its servers directly, and "
+            "the destination must be able to as well. Ask whoever runs the network. "
+            "Settings has a troubleshooting file with the details."
             if servers and failure["side"] == "source"
             else vm.field_hint(failure, "source", "address"),
             "Any one server in the cluster. The app finds the others.",

@@ -15,7 +15,7 @@ from logs_migrate.versions import evaluate
 
 BANNED = re.compile(
     r"\b(bucket|buckets|group id|sealed|active tail|api task|ingest|reconciliation|journal|"
-    r"fixture|node|nodes|ssh)\b",
+    r"fixture|node|nodes|ssh|secure shell|port 22)\b",
     re.IGNORECASE,
 )
 MARCH = Window(parse_time("2026-03-01T00:00:00Z"), parse_time("2026-04-01T00:00:00Z"))

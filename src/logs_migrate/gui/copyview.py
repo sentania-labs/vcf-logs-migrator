@@ -882,7 +882,7 @@ START_FAILURE = {
         "a copy the destination fetches the files from the source directly, so its servers must "
         "be able to reach the source’s servers too.",
         "ask whoever runs your network to let the destination’s servers reach the source’s "
-        "servers (secure shell, port 22), and check the source server password on Connect. "
+        "servers directly, and check the source server password on Connect. "
         "Then press Start again. Your dates and plan are kept.",
     ),
     "source_sign_in": (

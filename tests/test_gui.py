@@ -17,7 +17,7 @@ from gui_driver import DESTINATION, SOURCE, Driver  # noqa: E402
 # Words that belong in the troubleshooting file and saved detail files, never on a screen.
 BANNED = re.compile(
     r"\b(bucket|buckets|group id|sealed|active tail|api task|ingest|reconciliation|journal|"
-    r"fixture|node|nodes|ssh)\b",
+    r"fixture|node|nodes|ssh|secure shell|port 22)\b",
     re.IGNORECASE,
 )
 
