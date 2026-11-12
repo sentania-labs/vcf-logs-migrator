@@ -61,16 +61,6 @@ class EngineWorker(QObject):
         """Queue a call unless the same job is already in flight."""
         if job in self.pending:
             return False
-        if job.split(":")[0] in {
-            "probe",
-            "connect",
-            "selftest",
-            "plan",
-            "verify",
-            "discover",
-            "resume",
-        }:
-            self.cancel_requested.clear()
         self.pending.add(job)
         self._queued.emit(job, method, dict(kwargs))
         return True
@@ -78,18 +68,9 @@ class EngineWorker(QObject):
     @Slot(str, str, dict)
     def _run(self, job: str, method: str, kwargs: dict) -> None:
         self.affected.pop(job, None)
+        self.cancel_requested.clear()
         try:
             result = getattr(self.session, method)(**kwargs)
-            if self.cancel_requested.is_set() and job.split(":")[0] in {
-                "probe",
-                "connect",
-                "selftest",
-                "plan",
-                "verify",
-                "discover",
-                "resume",
-            }:
-                raise MigrationError(Code.STATE, "Cancelled. You can try again when ready.")
         except TrustRequired as pending:
             shared = dict(shared_ssh_keys(getattr(pending, "existing", []) + pending.identities))
             self.trust_required.emit(

@@ -107,7 +107,7 @@ class Session:
         result = self.discover()
         result["version_check"] = check
         if self.mode == "live" and hasattr(env, "connection"):
-            result["selftest"] = self.selftest()
+            result["selftest"] = self.selftest(check)
         result["mode"] = self.mode
         result["checks"] = (
             self._checks(result)
@@ -217,11 +217,11 @@ class Session:
         )
         return rows
 
-    def selftest(self) -> dict:
+    def selftest(self, version_check: dict | None = None) -> dict:
         from .. import selftest
 
         require(self.env is not None and self.mode == "live", Code.STATE)
-        return selftest.run(self.env).data()
+        return selftest.run(self.env, version_check=version_check).data()
 
     def reconnect(self, *, fixture: str, journal: str) -> dict:
         """Re-open the same environment after a lost connection; credentials stay in memory."""

@@ -120,12 +120,12 @@ class MainWindow(QMainWindow):
         self.progress_details.setReadOnly(True)
         self.progress_details.setMaximumHeight(100)
         self.progress_details.hide()
-        self.details_button = button("Show details", "", self._toggle_progress_details)
+        self.progress_details_button = button("Show details", "", self._toggle_progress_details)
         self.cancel_activity = button("Cancel", "", self.worker.cancel)
-        self.details_button.hide()
+        self.progress_details_button.hide()
         self.cancel_activity.hide()
         activity_actions = QHBoxLayout()
-        activity_actions.addWidget(self.details_button)
+        activity_actions.addWidget(self.progress_details_button)
         activity_actions.addWidget(self.cancel_activity)
         activity_actions.addStretch(1)
         content.addLayout(activity_actions)
@@ -302,7 +302,7 @@ class MainWindow(QMainWindow):
     def _toggle_progress_details(self) -> None:
         show = not self.progress_details.isVisible()
         self.progress_details.setVisible(show)
-        self.details_button.setText("Hide details" if show else "Show details")
+        self.progress_details_button.setText("Hide details" if show else "Show details")
 
     def _update_probe_elapsed(self) -> None:
         seconds = self.probe_clock.elapsed() // 1000
@@ -357,7 +357,7 @@ class MainWindow(QMainWindow):
                 self._update_probe_elapsed()
                 self.probe_activity.show()
                 self.probe_elapsed.show()
-                self.details_button.show()
+                self.progress_details_button.show()
                 self.cancel_activity.setVisible(job.split(":")[0] != "start")
                 self.probe_timer.start()
                 names = {

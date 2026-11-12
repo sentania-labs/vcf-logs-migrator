@@ -80,7 +80,13 @@ def _fmt_day(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, UTC).date().isoformat()
 
 
-def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DAYS) -> SelfTest:
+def run(
+    env,
+    window: Window | None = None,
+    *,
+    count_days: int = DEFAULT_COUNT_DAYS,
+    version_check: dict | None = None,
+) -> SelfTest:
     """`env` is an opened LiveEnvironment (identities already trusted)."""
     report = SelfTest()
     results: dict[str, object] = {}
@@ -102,8 +108,13 @@ def run(env, window: Window | None = None, *, count_days: int = DEFAULT_COUNT_DA
         return value
 
     check = getattr(env, "version_check", None)
-    if check:
-        result = check()
+    if version_check is not None or check:
+        try:
+            result = version_check if version_check is not None else check()
+        except Exception as error:
+            logging.getLogger(__name__).exception("Self-test version check failed")
+            report.steps.append(Step("Version compatibility", "fail", _code(error)))
+            return report
         report.steps.append(
             Step(
                 "Version compatibility",
