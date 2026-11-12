@@ -143,6 +143,9 @@ def summarize(key: str, parts: list[dict], rows: dict[str, dict]) -> dict:
                     vanished.append(group)
                 else:
                     already.setdefault(group["id"], group)
+        elif part["started"]:
+            # Started with less than was first planned: the rest had left the source.
+            vanished.extend((plan_series(part["root"]) or {}).get("gone_groups") or [])
         part.update(
             {
                 "ids": ids,

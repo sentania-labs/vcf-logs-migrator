@@ -769,6 +769,8 @@ class Session:
         window = series["windows"][index]
         note = {**client, "series": {**series, "index": index}}
         self.stage(0)
+        earlier = self.journal.load(preview)
+        self._same_systems(earlier)
         try:
             run = self._engine().plan(
                 Window(window["start"], window["end"]), Policy(attempts, poll_seconds), note
@@ -781,8 +783,44 @@ class Session:
         if not run["plan"]["selected"]:
             self._skip_part(preview, {g["id"] for g in run["plan"].get("already_received", [])})
             return {"skipped": True, "index": index}
+        # What the plan the person agreed to held and this one does not is no longer on
+        # the source. The record keeps it, so the result can say it was not copied.
+        found = {
+            g["id"] for g in (*run["plan"]["selected"], *run["plan"].get("already_received", []))
+        }
+        lost = [g for g in earlier["plan"]["selected"] if g["id"] not in found]
+        if lost:
+            stored = self.journal.load(run["id"])
+            stored["client"]["series"]["gone_groups"] = lost
+            self.journal.save(stored, "part_narrowed")
         self.stage(1)
         return self._start(run["id"], acknowledged)
+
+    def _same_systems(self, earlier: dict) -> None:
+        """A later part goes only between the two systems its copy was planned for.
+        Checked before anything is planned, so a different system's dates are never
+        recorded against this copy."""
+        try:
+            with self.env.exclusive():
+                now = dict(zip(("source", "destination"), self.env.discover(), strict=True))
+        except MigrationError as error:
+            raise self._fail(error, sent=False) from None
+        planned = earlier["plan"]
+        changed = [
+            side
+            for side, cluster in now.items()
+            if (cluster.id, cluster.identity) != (planned[side]["id"], planned[side]["identity"])
+        ]
+        if changed:
+            raise self._fail(
+                MigrationError(
+                    Code.TOPOLOGY,
+                    "The next part was planned for a different " + " and ".join(changed) + ".",
+                ),
+                sent=False,
+                systems=changed,
+                labels=(earlier.get("client") or {}).get("labels") or {},
+            )
 
     def _skip_part(self, preview: str, there: set[str]) -> None:
         """Record that a planned part has nothing left to send: what it would have copied

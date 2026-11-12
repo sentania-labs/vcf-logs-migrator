@@ -816,3 +816,120 @@ def test_the_gap_quoted_for_short_days_is_the_total_across_them(rig):
     result["differing_days"] = 1
     note = copyview.check_view(copy, result)["note"]
     assert "the gap is 523 entries" in note
+
+
+def _split_copy_in_session(tmp_path, monkeypatch):
+    """A copy planned around one left-out day, with its first part finished."""
+    import time
+
+    import standin
+
+    from logs_migrate.gui.session import Session
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fixture = standin.write(tmp_path, "plain", speed=50000, delay=0)
+    journal = str(tmp_path / "journal.sqlite")
+    names = {"source_host": "logs-old.example.com", "destination": "logs-new.example.com"}
+    session = Session()
+    session.open_record(journal=journal)
+    session.connect(
+        fixture=str(fixture),
+        journal=journal,
+        credentials={"destination_ssh": "x"},
+        connection={**names, "destination_ssh_user": "root"},
+    )
+    session.config_apply(selection=["partitions:Firewall"])
+    extent = vm.history(session.discover()["source"])
+    start, end = vm.window_ms(*vm.preset_days(3, extent))
+    hole = vm.preset_days(3, extent)[0].replace(day=28)
+    plan = session.plan(
+        start=start,
+        end=end,
+        attempts=2,
+        poll_seconds=0,
+        exclude=[{"first": hole.isoformat(), "last": hole.isoformat()}],
+        labels={"source": names["source_host"], "destination": names["destination"]},
+    )
+    first, second = plan["parts"]
+    session.start(run_id=first["id"], acknowledged=True)
+    for _ in range(200):
+        if session.status(run_id=first["id"])["status"] != "running":
+            break
+        time.sleep(0.02)
+    series = {k: v for k, v in first["client"]["series"].items() if k != "index"}
+    return session, series, second, tmp_path / "journal.simulated-state"
+
+
+def _next_part(session, series, second):
+    return session.start_part(
+        series=series,
+        index=1,
+        attempts=2,
+        poll_seconds=0,
+        client={},
+        acknowledged=True,
+        preview=second["id"],
+    )
+
+
+def test_logs_that_left_the_source_before_a_later_part_are_named_not_dropped(tmp_path, monkeypatch):
+    """The plan the person agreed to is the oracle: what it held and the copy never sent
+    must be reported as not copied, never silently left out of a finished copy."""
+    import json
+    import time
+
+    session, series, second, state = _split_copy_in_session(tmp_path, monkeypatch)
+    try:
+        planned = second["plan"]["selected"]
+        retired = planned[0]
+        assert len(planned) > 1
+        data = json.loads(state.read_text())
+        data["source"]["buckets"] = [
+            b for b in data["source"]["buckets"] if b["id"] != retired["id"]
+        ]
+        state.write_text(json.dumps(data))
+        result = _next_part(session, series, second)
+        assert "skipped" not in result
+        for _ in range(200):
+            if session.status(run_id=result["run"]["id"])["status"] != "running":
+                break
+            time.sleep(0.02)
+        record = session.record()
+        (copy,) = copies.build(record["runs"], record["rows"])
+        assert copy["state"] == "finished"
+        assert set(copies.group_days(retired)) <= set(copy["gone"])
+        assert retired["id"] not in {group["id"] for group in copy["groups"]}
+        assert "no longer on the source" in copyview.left_out(copy)
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("side", ["source", "destination"])
+def test_a_later_part_is_refused_when_connected_to_a_different_system(tmp_path, monkeypatch, side):
+    import json
+
+    from logs_migrate.gui.session import Failure
+
+    session, series, second, state = _split_copy_in_session(tmp_path, monkeypatch)
+    try:
+        data = json.loads(state.read_text())
+        data[side]["id"] = "another-system"
+        data[side]["identity"] = "another-identity"
+        state.write_text(json.dumps(data))
+        before = session.record()
+        with pytest.raises(Failure) as refused:
+            _next_part(session, series, second)
+        assert vm.error_code(refused.value.code) == Code.TOPOLOGY
+        assert refused.value.data["sent"] is False and refused.value.data["systems"] == [side]
+        after = session.record()
+        # Nothing was planned, skipped or started against the other system.
+        assert [run["id"] for run in after["runs"]] == [run["id"] for run in before["runs"]]
+        (copy,) = copies.build(after["runs"], after["rows"])
+        assert copy["state"] == "between" and copies.next_part(copy)["index"] == 1
+        shown = copyview.continue_failure(
+            {"code": refused.value.code, **refused.value.data}, server_sign_in=True
+        )
+        assert shown["connect"] and f"the {side} you are connected to now" in shown["text"]
+        assert "logs-old.example.com" in shown["text"]
+    finally:
+        session.close()

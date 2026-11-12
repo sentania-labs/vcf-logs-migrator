@@ -950,6 +950,21 @@ def continue_failure(failure: dict, *, server_sign_in: bool) -> dict:
             "app offers a plan without these days.",
             "replan": True,
         }
+    if failure.get("systems"):
+        labels = failure.get("labels") or {}
+        named = [
+            f"the {side} <b>{labels[side]}</b>" if labels.get(side) else f"the {side} it began with"
+            for side in ("source", "destination")
+        ]
+        changed = " and ".join(failure["systems"])
+        return {
+            "sign_in": False,
+            "connect": True,
+            "text": f"<b>What happened:</b> this copy runs from {named[0]} to {named[1]}, and "
+            f"the {changed} you are connected to now is a different system. The rest of the "
+            "copy was not started.<br><b>What to do:</b> on Connect, enter the systems this "
+            "copy began with and test. Then come back here and continue.",
+        }
     if code == Code.STATE:
         return {
             "sign_in": False,
@@ -1060,13 +1075,20 @@ def left_out(copy: dict) -> str:
                 else ""
             )
         )
-    if copy["gone"]:
-        gone = copy["gone"]
+    # A day can leave the source whole, or lose only what one server held for it.
+    gone = [day for day in copy["gone"] if day not in copy["days"]]
+    partly = [day for day in copy["gone"] if day in copy["days"]]
+    if gone:
         parts.append(
             f"{vm.format_ranges(day_ranges(gone))} "
             f"{'was' if len(gone) == 1 else 'were'} no longer on the source when "
             f"{'its' if len(gone) == 1 else 'their'} turn came, so "
             f"{'it was' if len(gone) == 1 else 'they were'} not copied."
+        )
+    if partly:
+        parts.append(
+            f"Some of the logs for {vm.format_ranges(day_ranges(partly))} were no longer on "
+            "the source when their turn came, so they were not copied."
         )
     return " ".join(parts)
 

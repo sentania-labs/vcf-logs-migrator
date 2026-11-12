@@ -79,6 +79,14 @@ class CopyPage(Page):
         state.continue_failure = None
         self.app.more_dates()
 
+    def to_connect(self) -> None:
+        """To Connect to change the systems, with a way back to this copy."""
+        app = self.app
+        if app.state.copy_id:
+            app.state.resume = {"kind": "back", "copy": app.state.copy_id}
+        app.pages["connect"].edit()
+        app.show_page("connect")
+
     def see_result(self) -> None:
         self.app.show_page("check")
 
@@ -554,6 +562,8 @@ class CopyPage(Page):
         actions = [("Check what arrived so far", self.app.check_result)]
         if failure.get("sign_in"):
             actions.append(("Add the destination server sign-in", self.app.add_sign_in, "primary"))
+        elif failure.get("connect"):
+            actions.append(("Go to Connect", self.to_connect, "primary"))
         elif failure.get("replan"):
             actions.append(("Choose dates again", self.choose_again, "primary"))
         elif failure.get("nothing_left"):
