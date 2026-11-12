@@ -49,10 +49,60 @@ def _day(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, UTC).date().isoformat()
 
 
-def _affected_error(code, message, ids):
+def _affected_error(code, message, ids, refusal=None):
     error = MigrationError(code, message)
     error.affected_ids = set(ids)
+    if refusal is not None:
+        # The same refusal as data, for a client that shows dates instead of the sentence.
+        error.refusal = refusal
     return error
+
+
+def _refused_groups(groups, **extra):
+    """Each affected group as dates and servers; `groups` are plan dicts or Bucket objects."""
+    return [
+        {
+            "id": _field(g, "id"),
+            "source_node": _field(g, "node"),
+            "start": _field(g, "start"),
+            "end": _field(g, "end"),
+            **extra,
+        }
+        for g in groups
+    ]
+
+
+def retention_risk(source, selected, now_ms):
+    """Selected groups the source will delete within a week, where its retention can be read.
+
+    A group's partition must name a source partition with a retention limit; with exactly
+    one partition on the source every group is in it. Anything else is left out rather
+    than guessed.
+    """
+    by_name = {p.name: p for p in source.partitions}
+    by_id = {p.id: p for p in source.partitions if p.id}
+    only = source.partitions[0] if len(source.partitions) == 1 else None
+    risk = []
+    for b in selected:
+        partition = (
+            by_name.get(b["partition"])
+            or by_id.get(b["partition"])
+            or (only if not b["partition"] else None)
+        )
+        if partition is None or not partition.retention_seconds or b["end"] is None:
+            continue
+        left = b["end"] + partition.retention_seconds * 1000 - now_ms
+        if left < 7 * DAY:
+            risk.append(
+                {
+                    "id": b["id"],
+                    "start": b["start"],
+                    "end": b["end"],
+                    "retention_days": partition.retention_seconds // 86400,
+                    "days_left": max(0, left // DAY),
+                }
+            )
+    return risk
 
 
 def _field(original, name):
@@ -87,13 +137,15 @@ def _inspect_destination(inspect, destination, originals):
 
 def _check_destination_copies(existing, originals):
     bad = []
+    broken = []
     incomplete = False
     for bucket in existing:
         original = originals[bucket.id]
         size = _field(original, "size")
         messages = _field(original, "messages")
         problems = []
-        if not bucket.complete or not bucket.registered:
+        partial = not bucket.complete or not bucket.registered
+        if partial:
             incomplete = True
             problems.append("incomplete or not indexed")
         if bucket.size != size:
@@ -114,6 +166,11 @@ def _check_destination_copies(existing, originals):
                     f"destination: {bucket.node}; " + "; ".join(problems) + ")",
                 )
             )
+            broken += _refused_groups(
+                [original],
+                destination_node=bucket.node,
+                reason="incomplete" if partial else "differs",
+            )
     if bad:
         count = len({bucket_id for bucket_id, _ in bad})
         raise _affected_error(
@@ -123,6 +180,7 @@ def _check_destination_copies(existing, originals):
             + ". The named copies on the destination are incomplete or differ from the source "
             "and must be dealt with on the destination before those dates can be copied.",
             {bucket_id for bucket_id, _ in bad},
+            {"kind": "broken", "groups": broken},
         )
 
 
@@ -163,6 +221,21 @@ def _check_duplicate_destination(existing, originals):
             + ". The copies differ from the source. "
             "Inspect the listed destination copies before retrying.",
             [detail.split(" ", 1)[0] for detail in unsafe],
+            {
+                "kind": "broken",
+                "groups": [
+                    group
+                    for bucket_id in duplicate_ids
+                    for group in _refused_groups(
+                        [originals[bucket_id]],
+                        destination_node=", ".join(
+                            sorted({b.node for b in existing if b.id == bucket_id})
+                        ),
+                        reason="differs",
+                    )
+                    if any(d.startswith(bucket_id + " ") for d in unsafe)
+                ],
+            },
         )
     return details
 
@@ -213,7 +286,16 @@ class Engine:
             environment.inventory_journal = journal
         self.clock = clock or SystemClock()
         self.on_event = on_event
+        # A presentation observer told which named step of a long call has begun.
+        self.on_step = None
         self._samples = {}
+
+    def _step(self, name):
+        if self.on_step:
+            try:
+                self.on_step(name)
+            except Exception:
+                pass  # Presentation observers cannot interrupt an engine call.
 
     @property
     def attribution(self) -> bool:
@@ -390,17 +472,20 @@ class Engine:
 
     @staticmethod
     def _earlier_listing(plan, task, message, ids):
+        groups = _refused_groups(b for b in plan["selected"] if b["id"] in ids)
         if task.status not in TERMINAL:
             raise _affected_error(
                 Code.OVERLAP,
                 message + " Refresh after that transfer finishes, or resume that run.",
                 ids,
+                {"kind": "running", "run": None, "groups": groups},
             )
         if not plan["destination"].get("inventory_available"):
             raise _affected_error(
                 Code.OVERLAP,
                 message + " Destination inventory is unavailable; inspect it before retrying.",
                 ids,
+                {"kind": "unseen", "groups": groups},
             )
         plan["warnings"].append(
             message + " They are not on the destination, so they will be copied."
@@ -440,6 +525,34 @@ class Engine:
                 )
                 if running and task.nodes:
                     details += ". Destination nodes: " + ", ".join(n.node for n in task.nodes)
+                refusal = {
+                    "kind": "running"
+                    if running
+                    else "held"
+                    if uncertain
+                    else "vanished"
+                    if prior["closed"] and inspected
+                    else "unseen"
+                    if prior["closed"]
+                    else "unsettled",
+                    "run": prior["run"],
+                    "groups": _refused_groups(groups),
+                }
+                if running:
+                    refusal["task"] = {
+                        "bytes_transferred": task.bytes_transferred,
+                        "total_bytes": task.total_bytes,
+                        "progress": task.progress,
+                        "started_at": prior.get("attempted_at"),
+                    }
+                if uncertain and prior.get("attempted_at"):
+                    try:
+                        refusal["held_until"] = (
+                            datetime.fromisoformat(prior["attempted_at"])
+                            + timedelta(seconds=UNCERTAIN_RELEASE_SECONDS)
+                        ).isoformat()
+                    except ValueError:
+                        pass
                 raise _affected_error(
                     Code.UNCERTAIN_START
                     if uncertain
@@ -448,6 +561,7 @@ class Engine:
                     else Code.OVERLAP,
                     reason + details + ".",
                     affected,
+                    refusal,
                 )
         if task is not None and task.status == "running":
             task_ids = _ids(
@@ -480,6 +594,19 @@ class Engine:
                     f"bucket{'s' if len(affected) != 1 else ''}: {details}. "
                     f"Destination task nodes: {nodes}. Wait for it to finish and refresh.",
                     affected,
+                    {
+                        "kind": "running",
+                        "run": None,
+                        "groups": _refused_groups(
+                            b for b in plan["selected"] if b["id"] in affected
+                        ),
+                        "task": {
+                            "bytes_transferred": task.bytes_transferred,
+                            "total_bytes": task.total_bytes,
+                            "progress": task.progress,
+                            "started_at": None,
+                        },
+                    },
                 )
         # Include transfers started outside this journal, wherever the appliance exposes them.
         ours = {row["task_id"] for row in self.journal.transfers(destination) if row.get("task_id")}
@@ -576,6 +703,10 @@ class Engine:
                         "resubmitting them could create duplicates: " + details + ". "
                         "Restore the original node count before continuing.",
                         held,
+                        {
+                            "kind": "servers_changed",
+                            "groups": _refused_groups(b for b in selected if b.id in held),
+                        },
                     )
         inspect = getattr(self.env, "inspect_destination_buckets", None)
         if not destination.preview and (destination.inventory_available or self.attribution):
@@ -739,7 +870,10 @@ class Engine:
         }
 
     @safe_boundary
-    def plan(self, window, policy=None):
+    def plan(self, window, policy=None, client=None):
+        """Preview one window. `client` is the caller's own secret-free note about the run
+        (display names, a series it belongs to); it is stored with the run and never read
+        back by the engine."""
         with self._exclusive():
             version_check = self._version_check()
             discover = getattr(self.env, "discover_window", None)
@@ -793,6 +927,11 @@ class Engine:
                     + ", ".join(plan["open_bucket_days"])
                     + "."
                 )
+            try:
+                now_ms = int(datetime.fromisoformat(self.clock.now()).timestamp() * 1000)
+                plan["retention_risk"] = retention_risk(source, plan["selected"], now_ms)
+            except ValueError:
+                plan["retention_risk"] = []
             self._overlap(plan, task)
             run = {
                 "schema_version": 2,
@@ -804,6 +943,8 @@ class Engine:
                 "query_policy": asdict(policy or Policy()),
                 "verification": {"outcome": Verification.PENDING.value, "complete": False},
             }
+            if client:
+                run["client"] = client
             self._audit(run, "plan_previewed", {"version_check": version_check})
             return run
 
@@ -853,6 +994,7 @@ class Engine:
                 Code.TOPOLOGY,
                 "The destination topology changed while checking the remainder.",
             )
+        self._step("arrived")
         rows = self.journal.transfers(destination.id)
         root_row = next((r for r in rows if r["run"] == root["id"]), None)
         require(
@@ -964,11 +1106,12 @@ class Engine:
         return source, destination, plan
 
     @safe_boundary
-    def resume(self, run_id):
+    def resume(self, run_id, client=None):
         """Preview a linked remainder; run() starts it after the usual fresh checks."""
         with self._exclusive():
             previous = self.journal.load(run_id)
             root = self.journal.load(previous.get("resume_root", run_id))
+            self._step("resume")
             _, _, plan = self._resume_plan(root)
             run = {
                 "schema_version": 2,
@@ -982,6 +1125,8 @@ class Engine:
                 "resume_parent": run_id,
                 "verification": {"outcome": Verification.PENDING.value, "complete": False},
             }
+            if client or root.get("client"):
+                run["client"] = client or root["client"]
             self._audit(run, "resume_previewed", {"version_check": plan.get("version_check")})
             return run
 
@@ -1009,8 +1154,9 @@ class Engine:
         )
 
     @safe_boundary
-    def run(self, run_id, *, backup_ack=False, active_ack=""):
-        # Retained as an ignored keyword for callers of older versions.
+    def run(self, run_id, *, backup_ack=False, active_ack="", cancelled=None):
+        # `backup_ack` is retained as an ignored keyword for callers of older versions.
+        # `cancelled` is asked once, after the checks and before anything is requested.
         with self._exclusive():
             run = self.journal.load(run_id)
             require(run.get("schema_version") == 2, Code.SCHEMA)
@@ -1045,6 +1191,7 @@ class Engine:
             if invalidate is not None:
                 invalidate()
             window = Window(**run["plan"]["window"])
+            self._step("recheck")
             if run.get("resume_root"):
                 source, destination, fresh = self._resume_plan(
                     self.journal.load(run["resume_root"])
@@ -1073,10 +1220,12 @@ class Engine:
             policy = Policy(**run["query_policy"])
             coverage = Window(**run["plan"]["coverage"])
             keys = tuple(b["node"] + "/" + b["id"] for b in run["plan"]["selected"])
+            self._step("count_source")
             if self.attribution:
                 run["source_by_bucket"] = {
                     key: asdict(self._counts(policy, "source", coverage, (key,))) for key in keys
                 }
+                self._step("count_destination")
                 run["baseline"] = asdict(self._counts(policy, "baseline", EVERYTHING, ()))
             else:
                 # Live counts are per day for the whole cluster, so the evidence is the
@@ -1085,6 +1234,7 @@ class Engine:
                 run["count_window"] = asdict(days)
                 run["source_by_bucket"] = {}
                 run["source_counts"] = asdict(self._counts(policy, "source", days, keys))
+                self._step("count_destination")
                 try:
                     run["baseline"] = asdict(self._counts(policy, "baseline", days, ()))
                 except MigrationError as error:
@@ -1102,6 +1252,12 @@ class Engine:
                     for key in ("baseline", "source_counts", "count_window", "partial_days"):
                         if key in root:
                             run[key] = root[key]
+            require(
+                not (cancelled is not None and cancelled()),
+                Code.STATE,
+                "Cancelled before the copy was requested.",
+            )
+            self._step("start")
             run["active_ack"] = active_ack == ACTIVE_ACK
             run["capacity_at_start"] = fresh["capacity"]
             self._audit(run, "transfer_authorized")
@@ -1411,6 +1567,9 @@ class Engine:
             self._record(task, destination)
             self._observe_assignment(run, task)
             result = self._progress(task, run)
+            result["started_at"] = row.get("attempted_at")
+            result["arrived"] = self._arrived(task, run)
+            self._note_finished(run, task, result)
             settled = next(
                 (r for r in self.journal.transfers(destination) if r["run"] == run_id), row
             )
@@ -1499,15 +1658,66 @@ class Engine:
             )
             return result
 
+    @staticmethod
+    def _arrived(task, run):
+        """Group id to the destination server that reports having finished it."""
+        arrived = {}
+        assignment = run.get("assignment") or {}
+        for node in task.nodes:
+            if node.node in assignment and node.scheduled_ids is not None:
+                remaining = {item for ids in node.scheduled_ids.values() for item in ids}
+                for item in assignment[node.node]:
+                    if item not in remaining:
+                        arrived[item] = node.node
+            for key in node.completed:
+                arrived[key.rsplit("/", 1)[-1]] = node.node
+        return arrived
+
+    def _note_finished(self, run, task, result):
+        """Keep how the task ended with the run, so a record can be read without the
+        appliances. The destination still owns the task; this is the last thing seen."""
+        if task.status not in TERMINAL - {"idle"}:
+            return
+        seen = {
+            "status": task.status,
+            "bytes_transferred": result.get("bytes_transferred"),
+            "total_bytes": result.get("total_bytes"),
+            "elapsed_seconds": task.elapsed_seconds,
+            "failed_nodes": sorted(n.node for n in task.nodes if n.status == "failed"),
+            # What each destination server had taken when the task ended.
+            "node_bytes": {
+                node["node"]: node.get("bytes_transferred") for node in result.get("nodes") or []
+            },
+        }
+        previous = run.get("finished") or {}
+        if {k: previous.get(k) for k in seen} != seen:
+            ended = self._ended_at(result.get("started_at"), task.elapsed_seconds)
+            run["finished"] = {**seen, **({"at": ended} if ended else {})}
+            self.journal.save(run, "task_finished")
+
+    def _ended_at(self, started_at, elapsed_seconds) -> str | None:
+        """When the task ended: its recorded start plus its elapsed time, never later than
+        now. Unknown when either is missing, so no screen shows a time that may be wrong."""
+        if not started_at or not isinstance(elapsed_seconds, (int, float)):
+            return None
+        try:
+            ended = datetime.fromisoformat(started_at) + timedelta(seconds=elapsed_seconds)
+            return min(ended, datetime.fromisoformat(self.clock.now())).isoformat()
+        except (TypeError, ValueError):
+            return None
+
     @safe_boundary
     def stop(self, task_id):
         """Explicit API cancellation, including tasks whose POST acknowledgment was lost."""
         with self._exclusive():
+            self._step("stop_ask")
             task = self.env.transfer()
             require(task.id == task_id, Code.UNCERTAIN)
             if task.status == "running":
                 self.env.cancel()
+                self._step("stop_confirm")
                 task = self.env.transfer()
+            self._step("stop_record")
             self._record(task, task.destination)
             return self._progress(task)
 
@@ -1523,6 +1733,7 @@ class Engine:
                     self.env.destination_topology() == (planned["id"], planned["identity"]),
                     Code.TOPOLOGY,
                 )
+                self._step("verify_ended")
                 task = self._settle(planned["id"])
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
@@ -1673,8 +1884,10 @@ class Engine:
         )
         baseline = Counts.from_dict(runs[rows[0]["run"]]["baseline"])
         policy = Policy(**run["query_policy"])
+        self._step("verify_count")
         actual = self._counts(policy, "destination", EVERYTHING, ())
         ingest = self._ingest(policy, baseline)
+        self._step("verify_recount")
         require(
             actual == self._counts(policy, "destination", EVERYTHING, ())
             and ingest == self._ingest(policy, baseline),
@@ -1682,6 +1895,7 @@ class Engine:
             "Destination counts changed between two observations, so they are not stable. "
             "Retry once ingestion settles.",
         )
+        self._step("verify_compare")
         result = reconcile(source, baseline, actual, ingest)
         result["expected_count"] = source.total
         result["actual_count"] = actual.total - baseline.total - ingest.total
@@ -1737,7 +1951,9 @@ class Engine:
             if "count_window" in run
             else day_window(Window(**run["plan"]["coverage"]))
         )
+        self._step("verify_count")
         actual = self._counts(policy, "destination", days, ())
+        self._step("verify_recount")
         require(
             actual == self._counts(policy, "destination", days, ()),
             Code.INCOMPLETE,
@@ -1745,6 +1961,7 @@ class Engine:
             "stable. Retry once ingestion settles.",
         )
         ingest = Counts(True, (), (), "ingest")
+        self._step("verify_compare")
         result = reconcile(source, baseline, actual, ingest)
         # Bucket metadata supplies the selected total; daily queries cover only the
         # recorded baseline window and cannot attribute arrivals to individual groups.

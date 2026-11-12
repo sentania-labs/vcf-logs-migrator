@@ -191,7 +191,7 @@ used to stop it. If none is found, status reports `idle` with `start_outcome: un
 `hold_until` (the start attempt plus 15 minutes) and a `start_hint`: the start's
 outcome is unknown and no task has appeared yet; keep checking status; if none
 appears, the window stays held until `hold_until`, after which you plan and copy
-again. The Migration page shows the same wording with the time the window frees up.
+again. The window's Copy logs screen shows this case as "Not sure yet whether the copy started", with the time the lock on those dates ends.
 A start that was acknowledged without a task ID is looked up the same way, but
 reports plain `idle` while no task matches. Explicit cancellation uses the
 currently observed **API task ID**:
@@ -226,8 +226,9 @@ unregistered destination directory, changed bucket size, or unresolved receipt
 record stops the preview for investigation. With destination SSH on 9.0, the
 destination's bucket inventory decides what arrived. Without it, a 9.0 task that
 lists the buckets still to do per node is settled from its own report: the run's
-selection minus those buckets and minus the ones it reports skipped. Status, verify
-and the Migration page say plainly that such a record is taken from the task report
+selection minus those buckets and minus the ones it reports skipped. Status and verify
+say plainly that such a record is taken from the task report (the window carries the
+same note in the data file saved beside its report)
 and not confirmed against the destination's bucket store (a disk-limit stop that
 drops buckets without listing them cannot be seen this way). If the task lists some
 received buckets but leaves others unaccounted for, resume requests those unaccounted
@@ -389,26 +390,60 @@ fixture checks used by CI.
 
 ## Desktop GUI
 
-`logs-migrate gui [--fixture FILE] [--journal FILE]` opens the desktop window (install
-the `gui` extra first). The flags prefill the simulator fixture and private journal; both
-are also editable on the Settings page, together with theme, display timezone, status
-refresh interval, verification retry budget, count query interval and the report export
-folder, plus the troubleshooting log switch below. Settings persist in `settings.ini`
-under the user's configuration directory. Credentials entered on the Connections page stay in session memory and never reach the
-journal, the settings file or exports.
+`logs-migrate gui [--journal FILE]` opens the desktop window (install the `gui` extra
+first). The window is five steps done in order: Connect, Copy rules, Choose dates, Copy
+logs, Check result. Past runs and Settings sit beside them. Addresses, user names and
+settings persist in `settings.ini` under the user's configuration directory. Passwords and
+access tokens stay in session memory and never reach the journal, the settings file or
+saved reports.
 
-The window is a presentation layer over the commands above: Discovery & Plan runs
-`plan`, Start runs `copy` with the latest-data acknowledgment, Migration
-polls `status`, Cancel runs `stop` for the observed task ID, Verification runs `verify`
-and Reports writes the `report` Markdown and JSON. Configuration runs `config compare`
-and `config apply` with the selected rules.
+The window is a presentation layer over the commands above. Choose dates runs `plan`,
+Start copying runs `copy` with the latest-data acknowledgment, Copy logs polls `status`,
+Stop runs `stop` for the observed task ID, Continue copying runs the resume preview and
+`copy` in one step, Check result runs `verify`, and Save report writes a readable report
+and a JSON data file. Copy rules runs `config compare` and `config apply` with the ticked
+rules. The window words every result itself: bucket identifiers and engine messages go to
+the saved detail files and the troubleshooting file, not to a screen.
 
-With an empty fixture path in Settings the window connects to real appliances: the
-Connections page takes the addresses and passwords, unknown TLS certificates and SSH
-host keys open a trust dialog with their fingerprints, and Run self-test lists the
-same read-only checks as `logs-migrate selftest`. Test probes every configured
-endpoint's identity first, with the addresses being contacted and elapsed time on the
-page, and asks for trust before any credential is sent.
+Three things differ from the command line:
+
+- **Identities.** Test connections first reads the certificate of the two typed addresses
+  and the SSH host key of the server at each, and asks once, before any password is sent,
+  whether they are the systems you meant. The cluster's other members are only known after
+  signing in to that first server, so when there are any the window asks once more, with
+  their host keys, before a password goes to any of them. A member that presents exactly
+  the key already confirmed for the typed address is the same server under another name
+  and is not asked about again. No server is sent a password before its key has been
+  confirmed. The screen calls a host key an "identity code"; "Save the details" in the
+  question writes `identity-details.txt` with the ports, key types and the commands to
+  check each one. Confirmed keys are listed under "Show the recorded identity codes". A
+  changed identity still stops the test; after a server has been rebuilt,
+  `logs-migrate trust forget ssh host:22` removes the old entry and the window asks about
+  that server again. The command line asks about every identity.
+- **Continuing without the destination's server sign-in.** The window does not continue a
+  stopped or failed copy unless the destination's server sign-in was given, because it
+  cannot see what arrived. It says so on Connect, in the plan and in the Stop question.
+- **Leaving days out.** When the destination holds a broken copy of some days, the window
+  offers a plan without them. The destination takes one unbroken date range per request,
+  so such a copy is several runs back to back underneath. The window shows it as one copy
+  and starts each run when the one before finishes. If the window is closed, the run in
+  hand carries on at the destination and the copy pauses at the left-out days; opening
+  the app and pressing Continue copying sends the rest. The result and the saved report
+  say how many copies ran.
+- **Destination server user.** An empty server user with a server password typed means
+  `root`.
+- **Window size.** The smallest window is 1024 by 700, the smallest size at which every
+  screen fits without scrolling or cut text.
+
+### Stand-in systems for development
+
+`logs-migrate gui --fixture FILE --journal FILE` opens the window on a simulator fixture
+instead of real systems. The fixture is a command-line option only: it is never shown in
+the window and never written to the settings file. `python tests/standin.py --output DIR
+[--scenario NAME]` writes a fixture with about twenty months of history and a copy that
+takes time, and prints the command to open it; `--scenario` chooses a refusal or failure
+to walk (broken copies, a nearly full destination, a copy that fails or goes quiet, and
+so on).
 
 Standalone downloads of this same CLI and window are described in the README.
 
@@ -419,9 +454,10 @@ timestamped log under the client configuration directory, or use
 `--debug-log=/path/to/file` to choose its location. `-v` also writes diagnostics to
 stderr and enables a log when used alone. The default location keeps the 10 most recent
 logs, each capped at 5 MiB plus 2 rotated files; files you choose with `--debug-log=` are never
-pruned. The desktop Settings page has an **Enable detailed troubleshooting log** checkbox that
-applies to subsequent operations. After an error, **Show details** appears in the header:
-use it to inspect the log, open its folder, or save a copy.
+pruned. The desktop Settings screen has a **Detailed log** tick box that applies to subsequent
+operations, and **Save troubleshooting file…**, which writes one zip to the reports folder:
+a summary with the most recent errors in the engine's own words, the record of runs, and
+the detailed log when one exists.
 
 The log includes request paths and status, timing, SSH transport negotiation, commands,
 and exception traces. JSON error response bodies retain field names and numeric values;
@@ -456,5 +492,5 @@ on live appliances before relying on this change.
 For simulator scenarios, set `version` on each side in the fixture. Set `node_versions`
 to a mapping of node names to versions to simulate mixed nodes, and set destination
 `migration_api` to `present`, `absent`, or `unchecked`. Use a fresh simulator state file
-when changing a fixture. The same fixture works in the CLI and desktop Settings.
+when changing a fixture. The same fixture works in the CLI and with `logs-migrate gui --fixture`.
 

@@ -63,12 +63,17 @@ def test_plan_checks_before_inventory_and_records_evidence(rig):
     ],
 )
 def test_simulator_versions_in_cli_and_desktop(
-    tmp_path, fixture, source, destination, api, expected
+    tmp_path, monkeypatch, fixture, source, destination, api, expected
 ):
     import json
 
+    import standin
+
     from logs_migrate.cli import main
     from logs_migrate.gui.session import Session
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
 
     fixture["source"]["version"] = source
     fixture["destination"]["version"] = destination
@@ -87,19 +92,28 @@ def test_simulator_versions_in_cli_and_desktop(
     assert (result == 0) is expected
     session = Session()
     try:
-        response = session.connect(
-            fixture=str(path), journal=str(tmp_path / "desktop.sqlite"), credentials={}
+        response = standin.sign_in(
+            session,
+            fixture=str(path),
+            journal=str(tmp_path / "desktop.sqlite"),
+            credentials={},
+            connection={"source_host": "old.example", "destination": "new.example"},
         )
-        assert (response["compatible"] is None) is expected
+        assert response["passed"] is expected
     finally:
-        session.disconnect()
+        session.close()
 
 
-def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, fixture, capsys):
+def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, monkeypatch, fixture, capsys):
     import json
+
+    import standin
 
     from logs_migrate.cli import main
     from logs_migrate.gui.session import Session
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
 
     fixture["source"]["node_versions"] = {
         node["id"]: "8.18.7" if index == 0 else "8.18.8"
@@ -120,9 +134,20 @@ def test_mixed_simulator_nodes_refused_in_cli_and_desktop(tmp_path, fixture, cap
     assert "different versions" in capsys.readouterr().err
     session = Session()
     try:
-        response = session.connect(
-            fixture=str(path), journal=str(tmp_path / "desktop.sqlite"), credentials={}
+        from logs_migrate.gui import viewmodel as vm
+
+        response = standin.sign_in(
+            session,
+            fixture=str(path),
+            journal=str(tmp_path / "desktop.sqlite"),
+            credentials={},
+            connection={"source_host": "old.example", "destination": "new.example"},
         )
-        assert "different versions" in response["compatible"]
+        assert not response["passed"]
+        assert "different versions" in response["version_check"]["message"]
+        assert (
+            "source servers are on different versions"
+            in vm.verdict(response["version_check"])["title"]
+        )
     finally:
-        session.disconnect()
+        session.close()

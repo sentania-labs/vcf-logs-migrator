@@ -8,7 +8,7 @@ import pytest
 from conftest import execute, planned
 
 from logs_migrate.cli import main
-from logs_migrate.gui import viewmodel as vm
+from logs_migrate.gui import copies
 from logs_migrate.gui.session import Session
 from logs_migrate.journal import Journal
 from logs_migrate.models import canonical, digest
@@ -86,28 +86,26 @@ def test_cli_reports_hide_retired_prompts_without_changing_evidence(
     assert journal.events(run["id"]) == events
 
 
-def test_window_plan_and_both_exports_hide_retired_prompts(legacy_journal, tmp_path):
+def test_window_record_and_both_saved_files_hide_retired_prompts(legacy_journal, tmp_path):
     journal, run, events = legacy_journal
     shown, shown_events = expected_presentation(run, events)
-    view = vm.plan_view(run, None)
-    assert len(view["warnings"]) == len(shown["plan"]["warnings"])
-    assert "Active groups are skipped; newest data is not copied." in view["warnings"]
-    assert_retired_text_absent("\n".join(view["warnings"]))
     session = Session()
     session.journal = journal
-    assert session.runs() == [shown]
-    assert session.report(run_id=run["id"]) == {"run": shown, "events": shown_events}
-    paths = session.export(run_id=run["id"], folder=str(tmp_path), formats=["markdown", "json"])
+    session.journal_path = journal.path
+    record = session.record()
+    assert record["runs"] == [shown]
+    (copy,) = copies.build(record["runs"], record["rows"])
+    paths = session.save_report(copy_id=copy["id"], folder=str(tmp_path), zone="UTC")
     assert {Path(path).suffix for path in paths} == {".md", ".json"}
     for path in paths:
         output = Path(path).read_text()
         assert_retired_text_absent(output)
         if path.endswith(".json"):
-            report = json.loads(output)
+            (report,) = json.loads(output)["runs"]
             assert report["run"] == shown
             assert report["events"] == shown_events
         else:
-            assert "Latest-data acknowledgment" in output
+            assert "Log copy report" in output and "as you agreed" in output
     assert journal.load(run["id"]) == run
     assert journal.events(run["id"]) == events
 

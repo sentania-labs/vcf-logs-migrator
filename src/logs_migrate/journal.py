@@ -199,6 +199,15 @@ class Journal:
         require(row is not None, Code.INVALID_INPUT)
         return json.loads(row[0])
 
+    def transfer_rows(self) -> dict[str, dict]:
+        """Every ledger row by run, for reading the record without an appliance."""
+        return {
+            run: {"run": run, "source": source, "destination": destination, **json.loads(body)}
+            for run, source, destination, body in self.db.execute(
+                "SELECT run,source,destination,body FROM transfers ORDER BY rowid"
+            )
+        }
+
     def transfers(self, destination: str) -> list[dict]:
         return [
             {"run": r, "source": s, **json.loads(body)}
