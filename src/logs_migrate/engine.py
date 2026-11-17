@@ -1735,6 +1735,12 @@ class Engine:
                 )
                 self._step("verify_ended")
                 task = self._settle(planned["id"])
+                policy = Policy(**run["query_policy"])
+                for _ in range(policy.attempts - 1):
+                    if task.status != "running":
+                        break
+                    self.clock.sleep(policy.poll_seconds)
+                    task = self._settle(planned["id"])
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
                 # Re-read after the transfer is terminal; never compare a cached listing.

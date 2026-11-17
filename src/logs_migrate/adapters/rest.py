@@ -432,7 +432,9 @@ class Logs90:
     def partitions(self):
         return self.call("GET", "/api/v1/partitioning")
 
-    def daily_counts(self, window: Window) -> tuple[dict[str, int], bool]:
+    def daily_counts(
+        self, window: Window, *, timeout: float = COUNT_TIMEOUT_SECONDS
+    ) -> tuple[dict[str, int], bool]:
         """Per-UTC-day counts over the window, in 30-day queries with 1-day bins.
 
         Returns the counts and whether every response was `complete`. Partial responses
@@ -445,14 +447,14 @@ class Logs90:
             end = min(cursor + COUNT_CHUNK_DAYS * DAY, window.end)
             path = (
                 f"/api/v1/aggregated-events/timestamp/%3E%3D{cursor}/timestamp/%3C{end}"
-                f"?bin-width={DAY}&timeout=580000"
+                f"?bin-width={DAY}&timeout={int(max(1, timeout - 20) * 1000)}"
             )
             # The server is asked for up to 580 s; the socket waits a little longer.
             callback = getattr(self, "count_progress", None)
             if callback:
                 callback(cursor, end)
             try:
-                response = self.call("GET", path, timeout=COUNT_TIMEOUT_SECONDS)
+                response = self.call("GET", path, timeout=timeout)
             except QueryTimeout:
                 start_day = datetime.fromtimestamp(cursor / 1000, UTC).isoformat()
                 end_day = datetime.fromtimestamp(end / 1000, UTC).isoformat()

@@ -17,6 +17,14 @@ from logs_migrate.security import Secret
 FIXTURE = Path(__file__).parent / "fixtures" / "config.fixture"
 
 
+def test_help_describes_discover_and_report():
+    from logs_migrate.cli import parser
+
+    help_text = parser().format_help()
+    assert "discover" in help_text and "Discover" in help_text
+    assert "report" in help_text and "report" in help_text.split("report", 2)[-1].lower()
+
+
 def test_default_partition_update_uses_empty_name():
     ident = "d41d8cd9-8f00-3204-a980-0998ecf8427e"
     body = write_body(

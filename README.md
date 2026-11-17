@@ -123,7 +123,7 @@ The example report counts whole selected groups on the source, but only the requ
 
 Open the download as shown above. The window is five steps down the left side, done in order: **Connect, Copy rules, Choose dates, Copy logs, Check result.** A step you can't do yet is greyed out and says why. Every screen has one main button, bottom right, with a sentence beside it saying what happens next. The window can be made as small as 1024 by 700; no screen scrolls or cuts its text at that size. These pictures come from stand-in systems, not a real environment.
 
-1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant. It shows each certificate's fingerprint and the identity code of the server at each address, for comparing. If a system has several servers, one more question lists the others, and none of them is sent a password until you have confirmed it. You then see whether these two systems can migrate, and if not, which one has to change.
+1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant. It shows each certificate's fingerprint and the identity code of the server at each address, for comparing. If a system has more servers with new identity codes, another question lists them before their passwords are sent. The connected screen lists servers that share an already confirmed identity code. Use **Test again** to refresh the connection without retyping passwords. You then see whether these two systems can migrate, and if not, which one has to change.
 
    ![Connect, first launch](docs/images/gui/01-connect.png)
    ![The first-time question](docs/images/gui/14-first-time-question.png)
@@ -144,7 +144,7 @@ Open the download as shown above. The window is five steps down the left side, d
    ![A copy running](docs/images/gui/06-copying.png)
    ![A copy that was stopped](docs/images/gui/07-stopped.png)
 
-5. **Check result.** The app checks stored groups when destination server access is available, then compares day-by-day counts and says how many days were counted. It shows days that differ and what each means. **Save report** writes a readable report and a data file.
+5. **Check result.** The app checks stored groups when destination server access is available, then compares day-by-day counts and says how many days were counted. It shows days that differ and what each means. **Save report** writes a readable report and a data file named using the selected time zone.
 
    ![Everything arrived](docs/images/gui/08-result.png)
    ![Days that need attention](docs/images/gui/09-days-need-attention.png)

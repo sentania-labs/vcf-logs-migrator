@@ -373,7 +373,9 @@ are retained; other exception text and remote stderr are suppressed. Host-key
 and authentication failures use `authentication_failed`; the other stages use
 `connection_failed`. All exit 7. No SSH algorithm policy was weakened.
 
-`selftest` exits 0 when every read-only check passed and 1 otherwise.
+`selftest` exits 0 when the read-only checks pass or only have warnings, and 1 when a check
+fails. Its source count check has a shorter timeout; an incomplete or timed-out count is a
+warning rather than a failed migration readiness check.
 
 On a large source the per-node SSH bucket listing is the slow step. Nodes are read in
 parallel, the CLI prints a per-node progress line and each count query to stderr, and

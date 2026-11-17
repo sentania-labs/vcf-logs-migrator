@@ -647,6 +647,14 @@ class ConnectPage(Page):
             if view["caution"]:
                 widgets.append(banner("warn", *view["caution"]))
             widgets.append(self._result_cards(view))
+            shared = discovered.get("shared_servers", [])
+            if shared:
+                pairs = "; ".join(
+                    f"{escape(item['server'])} shares an identity code with "
+                    f"{escape(item['same_as'])}"
+                    for item in shared
+                )
+                widgets.append(banner("warn", "Some servers share an identity code", pairs + "."))
             found = discovered["servers_found"]
             widgets.append(
                 rich(
@@ -675,7 +683,7 @@ class ConnectPage(Page):
                 if kind == "unfinished" and copy and copy["state"] in {"running", "unsure"}:
                     text = "Go to the copy →"
                 primary = (text, self.app.resume_go, "primary")
-                actions = [("Sign out of both", self.sign_out)]
+                actions = [("Sign out of both", self.sign_out), ("Test again", self.retest)]
                 if kind == "back" and not state.server_sign_in:
                     actions.append(("Change sign-in details", self.app.add_sign_in))
                 actions.append(primary)
@@ -692,6 +700,7 @@ class ConnectPage(Page):
                 widgets.append(nxt)
                 actions = [
                     ("Sign out of both", self.sign_out),
+                    ("Test again", self.retest),
                     ("Continue →", lambda: self.app.go("rules"), "primary"),
                 ]
             self.set_body(*widgets)

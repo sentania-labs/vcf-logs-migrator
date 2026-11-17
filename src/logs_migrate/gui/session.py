@@ -101,6 +101,7 @@ class Session:
         self.delay = 0.0
         self.errors: list[str] = []
         self.server_sign_in = False
+        self.shared_servers: list[dict[str, str]] = []
 
     @property
     def mode(self) -> str:
@@ -520,20 +521,26 @@ class Session:
         return env.version_check()
 
     def _same_server(self, env, identities: list[Identity]) -> list[Identity]:
-        """A server found under another name that presents exactly the code the person
-        confirmed for a typed address is that same server (only the holder of its key can
-        present it), so it is recorded without a second question. Returns the rest."""
+        """Record servers presenting a confirmed code and list the shared codes. A cloned
+        server can have the same key, so the connected screen names both addresses."""
         port = env.connection.ssh_port
         typed = (env.connection.source_host, env.connection.destination_endpoint[0])
         confirmed = {
-            self.store.known(Identity("ssh", f"{host}:{port}", ""))
+            fingerprint: host
             for name in typed
             for host in (name, name.lower())
-        } - {None}
+            if (fingerprint := self.store.known(Identity("ssh", f"{host}:{port}", "")))
+        }
         rest = []
         for identity in identities:
             if identity.kind == "ssh" and identity.fingerprint in confirmed:
                 self.store.trust(identity, env.key_line(identity))
+                shared = {
+                    "server": identity.name.rsplit(":", 1)[0],
+                    "same_as": confirmed[identity.fingerprint],
+                }
+                if shared not in self.shared_servers:
+                    self.shared_servers.append(shared)
             else:
                 rest.append(identity)
         return rest
@@ -593,6 +600,18 @@ class Session:
                 data = where(error)
                 data["other_found"] = True
                 raise self._fail(error, **data) from None
+        port = env.connection.ssh_port
+        typed = (env.connection.source_host.lower(), env.connection.destination_endpoint[0].lower())
+        known = {host: self.store.known(Identity("ssh", f"{host}:{port}", "")) for host in typed}
+        for host in (*env.members, *env.destination_members):
+            host = host.lower()
+            if host in typed:
+                continue
+            fingerprint = self.store.known(Identity("ssh", f"{host}:{port}", ""))
+            match = next((name for name, key in known.items() if key and key == fingerprint), None)
+            shared = {"server": host, "same_as": match}
+            if match and shared not in self.shared_servers:
+                self.shared_servers.append(shared)
         self.stage(1)
         try:
             env.source_version()
@@ -658,6 +677,7 @@ class Session:
                 "servers": view["destination_servers"],
             },
             "servers_found": servers,
+            "shared_servers": list(self.shared_servers),
             "server_sign_in": self.server_sign_in,
             "tested_at": datetime.now(UTC).isoformat(),
         }
@@ -680,6 +700,7 @@ class Session:
             self.credentials.clear()
         self.env = self.engine = self.credentials = None
         self.server_sign_in = False
+        self.shared_servers = []
 
     def close(self) -> None:
         self.disconnect()
@@ -1019,7 +1040,7 @@ class Session:
         copy = next((c for c in self._copies() if c["id"] == copy_id), None)
         require(copy is not None, Code.INVALID_INPUT)
         result = copies.check(copy)
-        started = vm._local(copy["started_at"], "UTC")
+        started = vm._local(copy["started_at"], zone)
         stem = (
             "logs-copy-report-"
             + (started.strftime("%Y-%m-%d-%H%M-") if started else "")

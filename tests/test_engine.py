@@ -1063,3 +1063,23 @@ def test_status_polling_does_not_write_the_journal(rig):
         )
         engine.status(run["id"])
     assert len(journal.events(run["id"])) == before
+
+
+def test_verify_waits_for_a_running_copy_to_finish(rig):
+    engine, env, _ = rig
+    env.data["complete_after_polls"] = 3
+    run = planned(engine)
+    execute(engine, run)
+    result = engine.verify(run["id"])
+    assert (
+        result["outcome"] != "incomplete_verification" or result.get("reason") != "destination_busy"
+    )
+
+
+def test_verify_reports_busy_after_its_wait_limit(rig):
+    engine, env, _ = rig
+    env.data["complete_after_polls"] = 100
+    run = planned(engine)
+    execute(engine, run)
+    result = engine.verify(run["id"])
+    assert result["reason"] == "destination_busy"

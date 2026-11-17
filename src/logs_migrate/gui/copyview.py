@@ -830,7 +830,7 @@ def progress_view(
                 else "working it out…",
             ),
             (
-                "Should finish around",
+                "Should finish" if left is not None and left < 60 else "Should finish around",
                 format_finish(local_now + timedelta(seconds=left), local_now)
                 if left is not None and left >= 60 and local_now
                 else "soon"

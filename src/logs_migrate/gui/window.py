@@ -765,12 +765,16 @@ class MainWindow(QMainWindow):
             table.set_rows(rows)
             body.append(table)
         if servers:
-            listed = GridTable(["Server", "Identity code"], stretch=[2, 5])
+            listed = GridTable(["Server", "Identity code"], stretch=[2, 5], nowrap=())
             listed.set_rows(
                 [
                     (
                         f"{escape(item['name'].rsplit(':', 1)[0])} ({names[item['role']]})",
-                        mono.format(vm.server_key(item["fingerprint"])),
+                        mono.format(
+                            vm.server_key(item["fingerprint"])[:25]
+                            + "<br>"
+                            + vm.server_key(item["fingerprint"])[25:]
+                        ),
                     )
                     for item in servers
                 ]

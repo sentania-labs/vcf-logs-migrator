@@ -191,7 +191,9 @@ logs-migrate --journal ~/migration/lab.sqlite report RUN_ID
 ```
 
 `status` shows the API task, per-node entries, bytes and the buckets it reports.
-`verify` waits for a finished task, counts the destination over the requested UTC days
+`verify` waits for a finished task using the plan's count polling settings. If the task is
+still running after those attempts, it reports `destination_busy`; run it again after the copy
+finishes. It then counts the destination over the requested UTC days
 again (two agreeing complete observations), subtracts the baseline and compares
 with the source per day. Exit 0 is `verified_success`: every fully covered day
 matches. Partial days (shared with an unselected bucket, or at or after the sealed

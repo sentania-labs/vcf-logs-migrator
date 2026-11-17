@@ -146,7 +146,7 @@ def parser():
         "--fixture", dest="gui_fixture", type=Path, help="Prefill the simulator fixture"
     )
     gui.add_argument("--journal", dest="gui_journal", type=Path, help="Prefill the private journal")
-    sub.add_parser("discover")
+    sub.add_parser("discover", help="Discover systems and compare their configuration")
     sub.add_parser("partitions", help="Compare partitions (and extracted fields on 9.1.1)")
     status = sub.add_parser("status", help="Read the recorded API task and per-node progress")
     status.add_argument(
@@ -191,7 +191,7 @@ def parser():
     stop.add_argument("task_id")
     verify = sub.add_parser("verify", help="Compare complete, stable per-day counts")
     verify.add_argument("run_id", type=uuid_arg)
-    report = sub.add_parser("report")
+    report = sub.add_parser("report", help="Write a report for a recorded copy")
     report.add_argument("run_id", type=uuid_arg)
     report.add_argument("--format", choices=("json", "markdown"), default="markdown")
     return p

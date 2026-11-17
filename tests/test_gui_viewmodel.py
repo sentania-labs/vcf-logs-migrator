@@ -39,6 +39,36 @@ def test_copy_progress_does_not_fall_back_to_zero_on_a_later_refresh():
     assert later["bytes_transferred"] == 37_100_000
 
 
+def test_shared_server_keys_are_listed_on_connection():
+    from types import SimpleNamespace
+
+    from logs_migrate.gui.session import Session
+    from logs_migrate.trust import Identity
+
+    class Store:
+        def known(self, identity):
+            return "same" if identity.name == "source.example.com:22" else None
+
+        def trust(self, identity, key):
+            pass
+
+    session = Session()
+    session.store = Store()
+    env = SimpleNamespace(
+        connection=SimpleNamespace(
+            source_host="source.example.com",
+            destination_endpoint=("destination.example.com", 9543),
+            ssh_port=22,
+        ),
+        key_line=lambda identity: None,
+    )
+    other = Identity("ssh", "source-2.example.com:22", "same")
+    assert session._same_server(env, [other]) == []
+    assert session.shared_servers == [
+        {"server": "source-2.example.com", "same_as": "source.example.com"}
+    ]
+
+
 def test_copy_progress_names_known_servers_and_hides_unmatched_ids():
     ids = ["748bc2db-df64-4140-9cb4-cd2709443d8a", "a17a0a82-0000-4000-8000-000000000000"]
     copy = {"total_bytes": 112_000_000, "done_bytes": 0, "parts": [], "started_at": None}
@@ -62,7 +92,7 @@ def test_copy_progress_names_known_servers_and_hides_unmatched_ids():
     assert view["percent"] == 33
     assert ids[1] not in view["latest"] and "Server 1" in view["latest"]
     assert ("Time left", "under a minute") in view["facts"]
-    assert ("Should finish around", "soon") in view["facts"]
+    assert ("Should finish", "soon") in view["facts"]
 
 
 def test_sizes_counts_and_durations_read_the_way_a_person_says_them():

@@ -678,7 +678,7 @@ def _run_selftest(rigged, window, growth=None):
 
     def any_counts(method, path, body=None, headers=None, timeout=None):
         if "aggregated-events" in path:
-            assert timeout == 600.0
+            assert timeout in (30.0, 600.0)
             return count()
         return RecordedTransport.request(source, method, path, body, headers)
 
@@ -693,6 +693,14 @@ def _run_selftest(rigged, window, growth=None):
     destination.request = destination_counts
     env.source_growth = lambda: growth or {"bytes": 0, "nodes": [], "window_seconds": 5}
     return env, destination, selftest.run(env, window)
+
+
+def test_selftest_slow_source_counts_are_a_warning(rigged, monkeypatch):
+    monkeypatch.setattr(Logs90, "daily_counts", lambda self, window, **kwargs: ({}, False))
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    source = next(s for s in result.steps if s.name == "Source daily counts")
+    assert source.status == "warn"
+    assert "incomplete" in source.detail.lower()
 
 
 def test_selftest_reports_every_read_and_sends_nothing(rigged):
