@@ -1727,20 +1727,34 @@ class Engine:
         with self._exclusive():
             run = self.journal.load(run_id)
             require("baseline" in run and "source_by_bucket" in run, Code.STATE)
+            policy = Policy(**run["query_policy"])
+        self._step("verify_ended")
+        for _ in range(policy.attempts - 1):
+            try:
+                with self._exclusive():
+                    run = self.journal.load(run_id)
+                    planned = run["plan"]["destination"]
+                    require(
+                        self.env.destination_topology() == (planned["id"], planned["identity"]),
+                        Code.TOPOLOGY,
+                    )
+                    task = self._settle(planned["id"])
+            except MigrationError:
+                # The final check records any error through the normal result path.
+                break
+            if task.status != "running":
+                break
+            self.clock.sleep(policy.poll_seconds)
+        with self._exclusive():
+            run = self.journal.load(run_id)
+            require("baseline" in run and "source_by_bucket" in run, Code.STATE)
             try:
                 planned = run["plan"]["destination"]
                 require(
                     self.env.destination_topology() == (planned["id"], planned["identity"]),
                     Code.TOPOLOGY,
                 )
-                self._step("verify_ended")
                 task = self._settle(planned["id"])
-                policy = Policy(**run["query_policy"])
-                for _ in range(policy.attempts - 1):
-                    if task.status != "running":
-                        break
-                    self.clock.sleep(policy.poll_seconds)
-                    task = self._settle(planned["id"])
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
                 # Re-read after the transfer is terminal; never compare a cached listing.

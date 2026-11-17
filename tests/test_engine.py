@@ -1083,3 +1083,25 @@ def test_verify_reports_busy_after_its_wait_limit(rig):
     execute(engine, run)
     result = engine.verify(run["id"])
     assert result["reason"] == "destination_busy"
+
+
+def test_stop_can_run_while_verify_is_waiting(rig):
+    from logs_migrate.adapters.simulated import SimulatedClock
+
+    engine, env, _ = rig
+    env.data["complete_after_polls"] = 100
+    run = planned(engine)
+    task = execute(engine, run)["task"]
+    stopped = []
+    sleep = engine.clock.sleep
+
+    def stop_during_wait(seconds):
+        assert engine.status(run["id"])["status"] == "running"
+        other = Engine(env, engine.journal, SimulatedClock())
+        assert other.verify(run["id"])["reason"] == "destination_busy"
+        stopped.append(engine.stop(task["id"])["status"])
+        sleep(seconds)
+
+    engine.clock.sleep = stop_during_wait
+    engine.verify(run["id"])
+    assert stopped == ["cancelled"]
