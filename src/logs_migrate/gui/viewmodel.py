@@ -235,6 +235,10 @@ PLAIN = {
         "One of the systems did not answer.",
         "Check that it is running and that this computer can reach it, then try again.",
     ),
+    Code.REFUSED: (
+        "The destination refused the request.",
+        "Check the rules and settings on the destination, then try again.",
+    ),
     Code.SCHEMA: (
         "One of the systems answered in a form this app does not recognise.",
         "Try again. If it keeps happening, save a troubleshooting file.",

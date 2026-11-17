@@ -208,6 +208,7 @@ EXIT_CODES = {
     Code.UNCERTAIN: 8,
     Code.UNCERTAIN_START: 8,
     Code.CONNECTION: 7,
+    Code.REFUSED: 7,
     Code.AUTH: 7,
     Code.SCHEMA: 7,
     Code.STORAGE: 7,
