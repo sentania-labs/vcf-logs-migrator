@@ -280,6 +280,9 @@ class SimulatedEnvironment:
                 body["id"] = str(uuid.UUID(bytes=bytes(raw)))
             rules.append(body)
         else:
+            if kind == "partitions" and existing["id"] == "d41d8cd9-8f00-3204-a980-0998ecf8427e":
+                require(body["name"] == "", Code.INVALID_INPUT)
+                body["name"] = "Default"
             rules[rules.index(current)] = body
         self._trace(
             "config.write",

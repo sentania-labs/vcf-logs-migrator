@@ -7,6 +7,7 @@ from html import escape
 from uuid import UUID
 
 from ..errors import Code
+from ..planning import retention_warning
 from . import copies
 from . import viewmodel as vm
 from .copies import day_of, day_ranges, days_between, group_days
@@ -82,6 +83,10 @@ def plan_notes(copy: dict) -> list[dict]:
     undated = hosts = duplicates = 0
     for part in copy["parts"]:
         plan = part["root"]["plan"]
+        for item in plan.get("partition_diff", {}).get("retention", []):
+            text = retention_warning(item)
+            if not any(note["text"] == text for note in notes):
+                notes.append(line("!", "warn", "Retention", escape(text), ""))
         undated = max(undated, len(plan.get("undated_excluded", [])))
         for warning in plan.get("warnings", []):
             if "the bucket listing returned text but no recognizable groups" in warning:

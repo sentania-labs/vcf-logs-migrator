@@ -705,7 +705,12 @@ def rule_does(kind: str, rule: dict | None) -> str:
             "filters": "Drops new logs that match a condition.",
         }.get(kind, "Changes what happens to new logs.")
     if kind == "partitions":
-        seconds = rule.get("retention_seconds") or rule.get("retentionSeconds") or 0
+        seconds = (
+            rule.get("retention_seconds")
+            or rule.get("retentionSeconds")
+            or rule.get("retentionPeriodSeconds")
+            or 0
+        )
         return f"Keeps the logs it selects {_days(seconds)}."
     if kind == "forwarding":
         return f"Sends a copy of new logs to {rule.get('host', 'another system')}" + (
@@ -732,7 +737,12 @@ def rule_rows(comparison: dict | None) -> list[dict]:
         kind, changed = rule["type"], rule.get("changed_fields", [])
         detail = details.get(rule["selector"], {})
         source, destination = detail.get("source"), detail.get("destination")
-        needed = kind == "partitions"
+        needed = kind == "partitions" and (
+            rule["status"] == "missing"
+            or not changed
+            or not set(changed)
+            <= {"retention_seconds", "retentionSeconds", "retentionPeriodSeconds"}
+        )
         trusts = any("acceptCert" in w for w in rule.get("warnings", []))
         switch = kind in {"filters", "masking"} and "enabled" in changed
         if rule["status"] == "missing":
@@ -839,6 +849,7 @@ RULE_FAILURE = {
     Code.INVENTORY_CHANGED.value: "It changed on the destination while it was being copied",
     Code.AUTH.value: "The destination did not accept the sign-in",
     Code.CONNECTION.value: "The destination did not answer, or refused it",
+    Code.REFUSED.value: "The destination refused the change",
     Code.INCOMPLETE.value: "It could not be read back from the destination to confirm it",
     Code.UNCERTAIN.value: "The destination did not answer, so it may or may not be there",
 }
@@ -861,7 +872,9 @@ def rule_results(result: dict | None) -> list[dict]:
                 {"name": name, "badge": ("", "Left out"), "text": "You chose not to copy it"}
             )
         else:
-            reason = RULE_FAILURE.get(rule.get("reason", ""), "The destination did not take it")
+            reason = rule.get("message") or RULE_FAILURE.get(
+                rule.get("reason", ""), "The destination did not take it"
+            )
             rows.append(
                 {
                     "name": name,

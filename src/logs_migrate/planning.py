@@ -23,12 +23,41 @@ def partition_diff(source: Cluster, destination: Cluster) -> dict:
             for p in source.partitions
             # Match by name and all configuration settings, as config compare does.
             # Destination-assigned IDs need not equal the source fixture/API ID.
-            if p.name in target and replace(p, id=target[p.name].id) != target[p.name]
+            if p.name in target
+            and replace(p, id=target[p.name].id, retention_seconds=target[p.name].retention_seconds)
+            != target[p.name]
+        ],
+        "retention": [
+            {
+                "name": p.name,
+                "source_seconds": p.retention_seconds,
+                "destination_seconds": target[p.name].retention_seconds,
+            }
+            for p in source.partitions
+            if p.name in target and p.retention_seconds != target[p.name].retention_seconds
         ],
         "missing_fields": sorted(set(source.fields) - set(destination.fields))
         if destination.preview
         else [],
     }
+
+
+def retention_warning(item: dict) -> str:
+    def duration(seconds):
+        if not seconds:
+            return "forever"
+        if seconds % 86400 == 0:
+            return f"for {seconds // 86400} days"
+        return f"for {seconds} seconds"
+
+    source, destination = item["source_seconds"], item["destination_seconds"]
+    text = (
+        f"Storage group {item['name']}: the destination keeps logs {duration(destination)}; "
+        f"the source keeps them {duration(source)}."
+    )
+    if destination and (not source or destination < source):
+        text += " Copied logs older than the destination limit may be removed."
+    return text
 
 
 def capacity(destination: Cluster, buckets: tuple[Bucket, ...]) -> dict:
@@ -154,6 +183,7 @@ def build_plan(source: Cluster, destination: Cluster, window: Window) -> dict:
             "The source root password is sent to the destination for the transfer.",
             "Source retention can remove planned buckets before the run.",
         ]
+        + [retention_warning(item) for item in partition_diff(source, destination)["retention"]]
         + (
             [
                 f"{len(undated)} sealed bucket(s) have no time range and were excluded; "

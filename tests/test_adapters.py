@@ -5,7 +5,7 @@ import pytest
 
 from logs_migrate.adapters.rest import HTTPS, Logs90, Logs911, RecordedTransport
 from logs_migrate.adapters.ssh import NodeSSH, ReadOperation, RecordedSSH
-from logs_migrate.errors import Code, MigrationError
+from logs_migrate.errors import Code, MigrationError, Rejection
 from logs_migrate.models import DAY, Window
 from logs_migrate.security import Credentials, Secret
 
@@ -401,3 +401,45 @@ def test_https_maps_http_440_to_session_expired(monkeypatch):
     )
     with pytest.raises(SessionExpired):
         transport.request("POST", "/api/v2/data-migrations", {})
+
+
+def test_http_400_reports_the_appliance_refusal(monkeypatch):
+    class Socket:
+        def getpeercert(self, binary_form):
+            return b"certificate"
+
+    class Response:
+        status = 400
+
+        def read(self, *args):
+            return (
+                b'{"errorMessage":"Data partition name cannot be changed.",'
+                b'"errorCode":"FIELD_ERROR"}'
+            )
+
+    class Connection:
+        sock = Socket()
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("http.client.HTTPSConnection", Connection)
+    transport = HTTPS(
+        "https://logs.invalid", certificate_sha256=hashlib.sha256(b"certificate").hexdigest()
+    )
+    with pytest.raises(Rejection) as error:
+        transport.request("PUT", "/api/v1/partitioning", {})
+    assert error.value.code.value == "destination_refused"
+    assert error.value.message == "Data partition name cannot be changed."

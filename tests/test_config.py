@@ -9,12 +9,68 @@ from logs_migrate.adapters.config import ROUTES, RestConfigEnvironment
 from logs_migrate.adapters.rest import Logs90, Logs911, RecordedTransport
 from logs_migrate.adapters.simulated import SimulatedEnvironment
 from logs_migrate.cli import main
-from logs_migrate.config import RULE_TYPES, ConfigMigration
+from logs_migrate.config import RULE_TYPES, ConfigMigration, write_body
 from logs_migrate.engine import Engine
 from logs_migrate.errors import Accepted, Code, MigrationError, Rejection
 from logs_migrate.security import Secret
 
 FIXTURE = Path(__file__).parent / "fixtures" / "config.fixture"
+
+
+def test_default_partition_update_uses_empty_name():
+    ident = "d41d8cd9-8f00-3204-a980-0998ecf8427e"
+    body = write_body(
+        "partitions",
+        {"name": "Default", "retentionPeriodSeconds": 0},
+        {"id": ident, "name": "Default"},
+    )
+    assert body["id"] == ident and body["name"] == ""
+
+
+def test_default_partition_update_succeeds_against_the_fake(config_env):
+    ident = "d41d8cd9-8f00-3204-a980-0998ecf8427e"
+    config_env.data["destination"]["partitions"][0]["id"] = ident
+    config_env.data["source"]["partitions"][0]["retention_seconds"] = 0
+    config_env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+    result = Engine(config_env, None).config_apply(["partitions:Default"])
+    assert result["complete"]
+    assert config_env.data["destination"]["partitions"][0]["name"] == "Default"
+    assert config_env.data["destination"]["partitions"][0]["retention_seconds"] == 0
+
+
+def test_retention_only_partition_difference_warns_instead_of_blocking(config_env):
+    source = config_env.data["source"]["partitions"][0]
+    destination = config_env.data["destination"]["partitions"][0]
+    source["retention_seconds"] = 0
+    destination["retention_seconds"] = 30 * 86400
+    diff = Engine(config_env, None).discover()["partition_diff"]
+    assert "Default" not in diff["different"]
+    assert diff["retention"] == [
+        {"name": "Default", "source_seconds": 0, "destination_seconds": 30 * 86400}
+    ]
+
+
+def test_retention_difference_is_in_plan_and_does_not_block_copy(rig):
+    engine, env, _ = rig
+    env.data["source"]["partitions"][0]["retention_seconds"] = 0
+    env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+    run = planned(engine)
+    assert any("destination keeps logs for 30 days" in w for w in run["plan"]["warnings"])
+    assert execute(engine, run)["task"]["status"] == "running"
+
+
+def test_rule_copy_reports_the_appliance_refusal(config_env):
+    from logs_migrate.gui.viewmodel import rule_results
+
+    def refuse(*args):
+        raise Rejection(Code.REFUSED, "Data partition name cannot be changed.")
+
+    config_env.config_write = refuse
+    result = Engine(config_env, None).config_apply(["partitions:Archive"])
+    rule = next(r for r in result["rules"] if r["selector"] == "partitions:Archive")
+    assert rule["status"] == "failed" and rule["reason"] == "destination_refused"
+    assert rule["message"] == "Data partition name cannot be changed."
+    assert any(row["text"] == rule["message"] for row in rule_results(result))
 
 
 @pytest.fixture
@@ -408,6 +464,7 @@ def test_applied_archive_partition_unblocks_migration_preflight(config_env, rig,
     assert engine.discover()["partition_diff"] == {
         "missing": [],
         "different": [],
+        "retention": [],
         "missing_fields": [],
     }
     run = planned(engine)
@@ -418,7 +475,6 @@ def test_applied_archive_partition_unblocks_migration_preflight(config_env, rig,
     "setting,value",
     [
         ("criteria", 'appname="different"'),
-        ("retention_seconds", 123),
         ("order", 2),
     ],
 )

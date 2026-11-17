@@ -428,6 +428,23 @@ def test_the_plan_reads_as_short_lines_from_what_the_engine_planned(rig):
     assert copyview.plan_detail_csv(view).splitlines()[0].startswith("status,source_server")
 
 
+def test_retention_warning_names_both_limits_without_blocking_the_plan(rig):
+    engine, env, _ = rig
+    env.data["source"]["partitions"][0]["retention_seconds"] = 0
+    env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+    run = engine.plan(MARCH, Policy(poll_seconds=0))
+    view = copyview.plan_view(
+        copies.preview([display_run(run)]),
+        (date(2026, 3, 1), date(2026, 3, 31)),
+        None,
+        server_sign_in=True,
+    )
+    assert view["phase"] == "ready"
+    warning = next(line for line in view["lines"] if line["key"] == "Retention")
+    assert "destination keeps logs for 30 days" in warning["text"]
+    assert "source keeps them forever" in warning["text"]
+
+
 def test_a_refusal_becomes_a_heading_the_days_affected_and_a_button_that_fixes_it():
     asked = (date(2026, 5, 10), date(2026, 11, 9))
     day = 86_400_000

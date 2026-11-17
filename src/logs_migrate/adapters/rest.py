@@ -57,6 +57,21 @@ def _safe_error_body(raw: bytes):
         return "<unstructured body redacted>"
 
 
+def _sensitive_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if re.search(r"(?i)password|token|secret|credential|authorization", str(key)):
+                if isinstance(item, str) and len(item) >= 4:
+                    yield item
+                    if item.lower().startswith("bearer ") and len(item) > 10:
+                        yield item[7:]
+            else:
+                yield from _sensitive_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _sensitive_values(item)
+
+
 MAX_BODY = 16 * 1024 * 1024
 COUNT_CHUNK_DAYS = 30  # One aggregated-events query returns at most 100 bins (newest first).
 COUNT_TIMEOUT_SECONDS = 600.0
@@ -192,20 +207,38 @@ class HTTPS:
                 response.status,
                 time.monotonic() - started,
             )
-            if response.status >= 400 and log.isEnabledFor(logging.DEBUG):
+            raw_error = b""
+            if response.status >= 400:
                 try:
                     raw_error = response.read(MAX_BODY + 1)
-                    log.debug(
-                        "REST error body (%d bytes): %s",
-                        len(raw_error),
-                        _safe_error_body(raw_error),
-                    )
+                    if log.isEnabledFor(logging.DEBUG):
+                        log.debug(
+                            "REST error body (%d bytes): %s",
+                            len(raw_error),
+                            _safe_error_body(raw_error),
+                        )
                 except Exception:
                     log.exception("Could not read REST error body")
             if response.status in {408, 504} and path.startswith("/api/v1/aggregated-events/"):
                 raise QueryTimeout()
             if response.status == 440:
                 raise SessionExpired()
+            if 400 <= response.status < 500 and path in CONFIG_PATHS and raw_error:
+                try:
+                    error_body = json.loads(raw_error)
+                except (ValueError, UnicodeDecodeError):
+                    error_body = None
+                if isinstance(error_body, dict):
+                    message = error_body.get("errorMessage")
+                    if (
+                        not isinstance(message, str)
+                        or not re.fullmatch(r"[A-Za-z0-9 ,.'-]{1,200}", message)
+                        or re.search(r"(?i)password|token|secret|credential|authorization", message)
+                        or any(secret in message for secret in _sensitive_values(body or {}))
+                        or any(secret in message for secret in _sensitive_values(headers or {}))
+                    ):
+                        message = None
+                    raise Rejection(Code.REFUSED, message)
             if response.status in {401, 403}:
                 raise Rejection(Code.AUTH)
             if response.status == 404:

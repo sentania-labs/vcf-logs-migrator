@@ -49,6 +49,8 @@ can retire its own existing history. Missing budget or disk figures are shown as
 unknown and warned about rather than refused. The
 preview warns that the source root password is sent to the destination for the
 transfer and that source retention can remove planned buckets before the run.
+It also warns when partition retention differs, including when the destination may remove
+copied logs sooner. A missing partition or different routing still blocks the copy.
 
 The preview reports `source_ingest` as growth in the active bucket directories over
 a short sampled interval. Growth indicates the source is still receiving data; no

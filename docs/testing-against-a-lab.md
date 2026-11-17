@@ -148,7 +148,9 @@ logs-migrate config compare
 logs-migrate config apply --select 'partitions:secops'
 ```
 
-Partitions must match before a transfer (on 9.1 they decide routing). A created
+Partitions must exist with matching routing before a transfer (on 9.1 they decide routing).
+Retention-only differences are warnings; the destination may remove copied logs according to its
+own limit. A created
 partition needs one destination restart, which the tool never performs.
 
 ## Step 4: preview a plan
