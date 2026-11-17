@@ -6,8 +6,10 @@ signing in. Signing in adds the two systems and the engine on top of it.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import platform
+import socket
 import time
 import zipfile
 from datetime import UTC, datetime
@@ -26,6 +28,31 @@ from ..security import Credentials
 from ..trust import Identity, TrustRequired, TrustStore
 from . import copies, copyview
 from . import viewmodel as vm
+
+
+def _same_address(first: str, second: str) -> bool:
+    """Avoid listing two names for one server; do not guess if IP lookup fails."""
+    first, second = first.lower().rstrip("."), second.lower().rstrip(".")
+    if first == second:
+        return True
+
+    def numeric(host):
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            return None
+
+    def addresses(host):
+        value = numeric(host)
+        if value:
+            return {value}
+        return {item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
+
+    try:
+        return bool(addresses(first) & addresses(second))
+    except OSError:
+        # A name and a literal address cannot safely be distinguished without DNS.
+        return bool(numeric(first) or numeric(second))
 
 
 class Failure(Exception):
@@ -539,7 +566,10 @@ class Session:
                     "server": identity.name.rsplit(":", 1)[0],
                     "same_as": confirmed[identity.fingerprint],
                 }
-                if shared not in self.shared_servers:
+                if (
+                    not _same_address(shared["server"], shared["same_as"])
+                    and shared not in self.shared_servers
+                ):
                     self.shared_servers.append(shared)
             else:
                 rest.append(identity)
@@ -610,7 +640,7 @@ class Session:
             fingerprint = self.store.known(Identity("ssh", f"{host}:{port}", ""))
             match = next((name for name, key in known.items() if key and key == fingerprint), None)
             shared = {"server": host, "same_as": match}
-            if match and shared not in self.shared_servers:
+            if match and not _same_address(host, match) and shared not in self.shared_servers:
                 self.shared_servers.append(shared)
         self.stage(1)
         try:

@@ -649,12 +649,20 @@ class ConnectPage(Page):
             widgets.append(self._result_cards(view))
             shared = discovered.get("shared_servers", [])
             if shared:
-                pairs = "; ".join(
-                    f"{escape(item['server'])} shares an identity code with "
-                    f"{escape(item['same_as'])}"
-                    for item in shared
-                )
-                widgets.append(banner("warn", "Some servers share an identity code", pairs + "."))
+                for address in dict.fromkeys(item["same_as"] for item in shared):
+                    names = ", ".join(
+                        escape(item["server"]) for item in shared if item["same_as"] == address
+                    )
+                    count = sum(item["same_as"] == address for item in shared)
+                    verb = "presents" if count == 1 else "present"
+                    widgets.append(
+                        rich(
+                            f"Also connected: {names}, which {verb} "
+                            "the same identity code as "
+                            f"{escape(address)}.",
+                            "subtle",
+                        )
+                    )
             found = discovered["servers_found"]
             widgets.append(
                 rich(

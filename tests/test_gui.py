@@ -460,6 +460,25 @@ def test_connected_screen_can_test_again_without_retyping_passwords():
         driver.close()
 
 
+def test_shared_servers_are_listed_without_a_warning():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        assert "Also connected:" not in plain(driver)
+        driver.state.discovered["shared_servers"] = [
+            {"server": "server-2.example.com", "same_as": "server-1.example.com"},
+            {"server": "server-3.example.com", "same_as": "server-1.example.com"},
+        ]
+        driver.window.refresh_all()
+        text = plain(driver)
+        assert "Also connected: server-2.example.com, server-3.example.com" in text
+        assert "same identity code as server-1.example.com" in text
+        assert "Some servers share an identity code" not in text
+        assert driver.overflow() == 0
+    finally:
+        driver.close()
+
+
 def test_rules_are_compared_again_after_dates_sends_you_back():
     driver = Driver("rules-none", delay=0)
     try:

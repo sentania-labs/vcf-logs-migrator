@@ -69,6 +69,36 @@ def test_shared_server_keys_are_listed_on_connection():
     ]
 
 
+def test_typed_ip_and_member_hostname_for_the_same_server_are_not_listed(monkeypatch):
+    from types import SimpleNamespace
+
+    from logs_migrate.gui.session import Session
+    from logs_migrate.trust import Identity
+
+    class Store:
+        def known(self, identity):
+            return "same" if identity.name == "192.0.2.10:22" else None
+
+        def trust(self, identity, key):
+            pass
+
+    monkeypatch.setattr(
+        "socket.getaddrinfo", lambda host, *args, **kwargs: [(2, 1, 6, "", ("192.0.2.10", 0))]
+    )
+    session = Session()
+    session.store = Store()
+    env = SimpleNamespace(
+        connection=SimpleNamespace(
+            source_host="192.0.2.10",
+            destination_endpoint=("destination.example.com", 9543),
+            ssh_port=22,
+        ),
+        key_line=lambda identity: None,
+    )
+    assert session._same_server(env, [Identity("ssh", "source.example.com:22", "same")]) == []
+    assert session.shared_servers == []
+
+
 def test_copy_progress_names_known_servers_and_hides_unmatched_ids():
     ids = ["748bc2db-df64-4140-9cb4-cd2709443d8a", "a17a0a82-0000-4000-8000-000000000000"]
     copy = {"total_bytes": 112_000_000, "done_bytes": 0, "parts": [], "started_at": None}
