@@ -20,9 +20,13 @@ FIXTURE = Path(__file__).parent / "fixtures" / "config.fixture"
 def test_help_describes_discover_and_report():
     from logs_migrate.cli import parser
 
-    help_text = parser().format_help()
-    assert "discover" in help_text and "Discover" in help_text
-    assert "report" in help_text and "report" in help_text.split("report", 2)[-1].lower()
+    described = {}
+    for line in parser().format_help().splitlines():
+        parts = line.strip().split(None, 1)
+        if parts and parts[0] in {"discover", "report"}:
+            described[parts[0]] = parts[1] if len(parts) > 1 else ""
+    assert described.keys() == {"discover", "report"}
+    assert all(text.strip() for text in described.values())
 
 
 def test_default_partition_update_uses_empty_name():

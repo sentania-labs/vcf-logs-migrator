@@ -223,7 +223,12 @@ class HTTPS:
                 raise QueryTimeout()
             if response.status == 440:
                 raise SessionExpired()
-            if 400 <= response.status < 500 and path in CONFIG_PATHS and raw_error:
+            if (
+                400 <= response.status < 500
+                and response.status not in {401, 403, 404, 408}
+                and any(path == base or path.startswith(base + "/") for base in CONFIG_PATHS)
+                and raw_error
+            ):
                 try:
                     error_body = json.loads(raw_error)
                 except (ValueError, UnicodeDecodeError):
