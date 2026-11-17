@@ -1,7 +1,7 @@
 """The plain words the window shows, derived from engine results. No Qt."""
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from conftest import execute
@@ -519,6 +519,69 @@ def test_a_refusal_becomes_a_heading_the_days_affected_and_a_button_that_fixes_i
 
 
 # Copies and their results ------------------------------------------------------------------
+
+
+def test_result_leads_with_groups_and_says_only_19_of_73_days_were_counted():
+    start = date(2024, 3, 1)
+    days = [start + timedelta(days=i) for i in range(73)]
+    group = {
+        "node": "source",
+        "id": "g",
+        "start": parse_time("2024-03-01T00:00:00Z"),
+        "end": parse_time("2024-05-12T23:59:59Z"),
+    }
+    daily = [
+        {
+            "day": str(day),
+            "source": 223015 if i == 0 else 0,
+            "actual": 223015 if i == 0 else 0,
+            "preexisting": 0,
+            "new_ingest": 0,
+            "difference": 0,
+        }
+        for i, day in enumerate(days[:19])
+    ]
+    check = {
+        "outcome": "verified_success",
+        "daily": daily,
+        "bucket_check": {
+            "matched_groups": 10,
+            "total_groups": 10,
+            "matched_events": 406977,
+            "total_events": 406977,
+            "unknown": [],
+            "unmatched": [],
+        },
+    }
+    run = {"verification": check, "plan": {"selected": [group]}, "client": {}}
+    part = {"started": [run], "root": run}
+    copy = {
+        "state": "finished",
+        "days": days,
+        "parts": [part],
+        "groups": [group],
+        "received": ["g"],
+        "settled": True,
+        "labels": {},
+        "started_at": None,
+        "source_version": "8.18.7",
+        "destination_version": "9.0.2",
+        "elapsed_seconds": 60,
+        "segments": 1,
+        "total_bytes": 112_000_000,
+        "done_bytes": 112_000_000,
+        "active_skipped": False,
+        "excluded": [],
+        "gone": [],
+        "acknowledged": False,
+    }
+    result = copies.check(copy)
+    view = copyview.check_view(copy, result)
+    text = view["verdict"][3]
+    assert "10 stored groups" in text and "406,977" in text
+    assert "19 days" in text and "54 days were not counted" in text
+    assert "All 73 days match" not in text
+    assert "19 days" in copyview.report_markdown(copy, result, zone="UTC")
 
 
 def test_a_plan_that_was_never_started_is_not_a_run(rig):

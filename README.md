@@ -144,7 +144,7 @@ Open the download as shown above. The window is five steps down the left side, d
    ![A copy running](docs/images/gui/06-copying.png)
    ![A copy that was stopped](docs/images/gui/07-stopped.png)
 
-5. **Check result.** The app counts both systems day by day and gives one verdict, then only the days that differ and what each means. **Save report** writes a readable report and a data file.
+5. **Check result.** The app checks stored groups when destination server access is available, then compares day-by-day counts and says how many days were counted. It shows days that differ and what each means. **Save report** writes a readable report and a data file.
 
    ![Everything arrived](docs/images/gui/08-result.png)
    ![Days that need attention](docs/images/gui/09-days-need-attention.png)

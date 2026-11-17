@@ -1316,21 +1316,35 @@ def check_view(
 
     if phase == "ok":
         unjudged = len(result["unjudged_days"])
+        groups = result.get("group_check")
+        group_text = ""
+        if groups and groups["matched_groups"] == groups["total_groups"]:
+            group_text = (
+                f"All {vm.plural(groups['total_groups'], 'stored group')}"
+                + (
+                    f" and {vm.format_count(groups['matched_events'])} entries"
+                    if groups["total_events"] is not None
+                    else ""
+                )
+                + " are on the destination. "
+            )
+        counted = result["counted_days"]
+        not_counted = max(0, total_days - counted)
+        day_text = f"Day-by-day counts match for {vm.plural(result['judged_days'], 'day')}."
+        if not_counted:
+            day_text += (
+                f" The other {vm.plural(not_counted, 'day')} "
+                f"{'was' if not_counted == 1 else 'were'} not counted."
+            )
         view.update(
             verdict=(
                 "ok",
                 "✓",
                 "Everything arrived",
-                (
-                    f"All {total_days:,} days match."
-                    if total_days != 1
-                    else "The one day in this copy matches."
-                )
-                + " The source and the destination both hold "
-                f"<b>{vm.format_count(result['source_total'])}</b> log entries for these "
-                "dates."
+                group_text
+                + day_text
                 + (
-                    f" {vm.plural(unjudged, 'of those days is', 'of those days are')} shared "
+                    f" {vm.plural(unjudged, 'counted day is', 'counted days are')} shared "
                     "with logs the source was still writing, so "
                     f"{'its count is' if unjudged == 1 else 'their counts are'} shown but not "
                     "judged."
@@ -1352,8 +1366,8 @@ def check_view(
         short = [i for i in result["issues"] if i["kind"] == "short"]
         grave = [i for i in result["issues"] if i["kind"] not in {"short", "extra"}]
         differing = result["differing_days"]
-        rest = max(0, total_days - differing)
-        text = f"The other {vm.plural(rest, 'day')} match exactly."
+        rest = max(0, result["judged_days"] - differing)
+        text = f"{vm.plural(rest, 'other counted day')} match exactly."
         if unfinished:
             not_yet = total_days - result["arrived_days"]
             text = (

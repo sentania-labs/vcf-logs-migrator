@@ -628,7 +628,7 @@ def test_broken_copies_are_shown_as_dates_and_the_plan_leaves_them_out():
         driver.click("Check what arrived →")
         driver.idle()
         text = plain(driver)
-        assert "Everything arrived" in text and "All 176 days match." in text
+        assert "Everything arrived" in text and "Day-by-day counts match for" in text
         # The result still says how many copies ran, in its own sentence.
         assert "To go around them it ran as 3 copies back to back." in text
         assert not PARTS.search(text)
@@ -1079,7 +1079,8 @@ def test_missing_days_are_listed_alone_and_one_button_copies_just_those():
         driver.idle()
         text = plain(driver)
         assert (
-            "8 of 184 days need attention" in text and "The other 176 days match exactly." in text
+            "8 of 184 days need attention" in text
+            and "176 other counted days match exactly." in text
         )
         assert text.count("PART NEVER ARRIVED") == 2
         assert driver.window.step_mark("check") == "warn"
@@ -1093,7 +1094,7 @@ def test_missing_days_are_listed_alone_and_one_button_copies_just_those():
         driver.click("Check what arrived →")
         driver.idle()
         text = plain(driver)
-        assert "Everything arrived" in text and "All 184 days match." in text
+        assert "Everything arrived" in text and "Day-by-day counts match for" in text
     finally:
         driver.close()
 

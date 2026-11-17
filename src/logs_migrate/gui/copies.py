@@ -295,6 +295,8 @@ def check(copy: dict) -> dict:
     unsettled: list[str] = []  # Parts the engine did not call verified, for whatever reason.
     checked_any = False
     checked_at = ""
+    group_checks: list[dict] = []
+    groups_available = True
     for part in copy["parts"]:
         if not part["started"]:
             continue
@@ -336,6 +338,10 @@ def check(copy: dict) -> dict:
         }
         by_id = {group["id"]: group for group in every.values()}
         exact = result.get("bucket_check") or {}
+        if exact:
+            group_checks.append(exact)
+        else:
+            groups_available = False
         flagged = set(not_received)
         for kind, keys in (
             ("broken", result.get("incomplete_destination_copies", [])),
@@ -428,7 +434,18 @@ def check(copy: dict) -> dict:
         "arrived": arrived,
         "source_total": sum(source.get(day, 0) for day in days_all),
         "arrived_total": sum(arrived.get(day, 0) for day in days_all),
-        "judged_days": len(judged & days_all),
+        "judged_days": len((judged - unjudged) & days_all),
+        "counted_days": len((set(source) | set(arrived)) & days_all),
+        "group_check": {
+            "matched_groups": sum(c["matched_groups"] for c in group_checks),
+            "total_groups": sum(c["total_groups"] for c in group_checks),
+            "matched_events": sum(c["matched_events"] for c in group_checks),
+            "total_events": sum(c["total_events"] for c in group_checks)
+            if all(c["total_events"] is not None for c in group_checks)
+            else None,
+        }
+        if groups_available and group_checks
+        else None,
         "unjudged_days": sorted(unjudged & days_all),
         "reasons": reasons,
         "checked_at": checked_at,
