@@ -753,6 +753,9 @@ def rule_rows(comparison: dict | None) -> list[dict]:
             now = "Missing"
             off = kind in {"filters", "masking"} and source and not source.get("enabled", True)
             will = "Add it, switched off" if off else "Add it"
+        elif kind == "partitions" and not needed and destination is not None:
+            now = rule_does(kind, destination)
+            will = "Change it to match the source"
         elif switch and destination is not None and len(changed) == 1:
             on = bool(destination.get("enabled"))
             now = "Switched on" if on else "Switched off"

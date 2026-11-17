@@ -237,7 +237,8 @@ class HTTPS:
                     message = error_body.get("errorMessage")
                     if (
                         not isinstance(message, str)
-                        or not re.fullmatch(r"[A-Za-z0-9 ,.'-]{1,200}", message)
+                        or not message.isprintable()
+                        or len(message) > 1000
                         or re.search(r"(?i)password|token|secret|credential|authorization", message)
                         or any(secret in message for secret in _sensitive_values(body or {}))
                         or any(secret in message for secret in _sensitive_values(headers or {}))

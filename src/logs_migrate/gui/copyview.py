@@ -1247,8 +1247,12 @@ def all_days_rows(copy: dict, result: dict) -> list[tuple[str, str, str, str]]:
             rows.append(
                 (
                     vm.format_range(span[0], span[-1]),
-                    vm.format_count(sum(result["source"].get(day, 0) for day in span)),
-                    vm.format_count(sum(result["arrived"].get(day, 0) for day in span)),
+                    "not counted"
+                    if tag in {"No logs counted", "Not copied yet"}
+                    else vm.format_count(sum(result["source"].get(day, 0) for day in span)),
+                    "not counted"
+                    if tag in {"No logs counted", "Not copied yet"}
+                    else vm.format_count(sum(result["arrived"].get(day, 0) for day in span)),
                     tag,
                 )
             )

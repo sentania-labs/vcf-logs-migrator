@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..errors import Code
 from . import copies, copyview, theme
 from . import viewmodel as vm
 from .pages.check import CheckPage
@@ -1294,6 +1295,12 @@ class MainWindow(QMainWindow):
             state.plan = result
             state.plan_error = state.plan_refusal = None
             state.acknowledged = False
+            if any(
+                part["plan"]["partition_diff"]["missing"]
+                or part["plan"]["partition_diff"]["different"]
+                for part in result["parts"]
+            ):
+                state.comparison = state.config_result = None
         elif job == "start":
             context = self.context.pop("start")
             state.clear_plan()
@@ -1470,6 +1477,8 @@ class MainWindow(QMainWindow):
             state.plan = None
             state.plan_error = code
             state.plan_refusal = data.get("refusal")
+            if code == Code.PARTITIONS.value:
+                state.comparison = state.config_result = None
             if (data.get("refusal") or {}).get("kind") == "listfail" and activity is not None:
                 self.owners.pop(job, None)
                 # The first two steps read the source; the ones after them, the destination.

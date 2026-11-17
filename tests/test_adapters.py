@@ -462,6 +462,14 @@ def test_http_400_on_config_routes_reports_the_appliance_refusal(monkeypatch, me
     assert error.value.message == "Data partition name cannot be changed."
 
 
+def test_refusal_keeps_ordinary_punctuation_without_exposing_credentials(monkeypatch):
+    body = json.dumps({"errorMessage": "Invalid value: retention (days); use 1/30_60."}).encode()
+    transport = _https_answering(monkeypatch, 400, body)
+    with pytest.raises(Rejection) as error:
+        transport.request("PUT", "/api/v1/partitioning", {})
+    assert error.value.message == "Invalid value: retention (days); use 1/30_60."
+
+
 @pytest.mark.parametrize(
     ("status", "code"),
     [(401, "authentication_failed"), (403, "authentication_failed"), (404, "connection_failed")],

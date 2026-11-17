@@ -51,8 +51,8 @@ def _same_address(first: str, second: str) -> bool:
     try:
         return bool(addresses(first) & addresses(second))
     except OSError:
-        # A name and a literal address cannot safely be distinguished without DNS.
-        return bool(numeric(first) or numeric(second))
+        # No match was established; keep the name visible to the operator.
+        return False
 
 
 class Failure(Exception):
@@ -478,7 +478,8 @@ class Session:
             """The server password goes to the server at the typed address first. Only that
             server can say which others stand behind the address, and none of them is sent
             the password before the person has confirmed its code."""
-            for index, identity in enumerate(self._stand_in_servers(env, side)):
+            identities = self._stand_in_servers(env, side)
+            for index, identity in enumerate(identities):
                 state = self.store.check(identity)
                 name = identity.name.rsplit(":", 1)[0]
                 if state == "changed":
@@ -489,6 +490,16 @@ class Session:
                         kind="identity",
                         server=name,
                     )
+                if index and identity.fingerprint == identities[0].fingerprint:
+                    if self.store.check(identities[0]) == "trusted":
+                        self.store.trust(identity)
+                        state = "trusted"
+                        shared = {"server": name, "same_as": identities[0].name.rsplit(":", 1)[0]}
+                        if (
+                            not _same_address(shared["server"], shared["same_as"])
+                            and shared not in self.shared_servers
+                        ):
+                            self.shared_servers.append(shared)
                 if state == "unknown":
                     more.append(self._shown(side, identity, state))
                     if index == 0:
@@ -707,6 +718,7 @@ class Session:
                 "servers": view["destination_servers"],
             },
             "servers_found": servers,
+            "destination_node_names": dict(getattr(self.env, "destination_node_names", {})),
             "shared_servers": list(self.shared_servers),
             "server_sign_in": self.server_sign_in,
             "tested_at": datetime.now(UTC).isoformat(),

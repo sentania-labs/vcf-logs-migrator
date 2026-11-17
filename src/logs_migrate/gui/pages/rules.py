@@ -152,6 +152,8 @@ class RulesPage(Page):
             )
             return
         actions = [("Compare again", self.app.compare_rules)]
+        if not needed:
+            actions.append(("Continue to dates →", self.onward))
         if needed and len(self.rows()) > needed:
             only = "Copy only the needed one…" if needed == 1 else "Copy only the needed ones…"
             actions.append((only, lambda: self.ask_copy(True)))
@@ -400,13 +402,14 @@ class RulesPage(Page):
             f"“{escape(row['name'].split('“')[-1].rstrip('”'))}”" for row in failed[:3]
         )
         reason = failed[0]["text"][0].lower() + failed[0]["text"][1:] if failed else ""
+        punctuation = "" if reason.endswith((".", "!", "?")) else "."
         others = len(copied)
         self.set_body(
             banner(
                 "warn",
                 f"{vm.plural(others, 'rule')} copied. {len(failed)} "
                 f"{'was' if len(failed) == 1 else 'were'} not.",
-                f"{names} could not be added: {escape(reason)}. "
+                f"{names} could not be added: {escape(reason)}{punctuation} "
                 + (
                     f"The other {vm.plural(others, 'rule')} {'is' if others == 1 else 'are'} in "
                     "place and stay there. "

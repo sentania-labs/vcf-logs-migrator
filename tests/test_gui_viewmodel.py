@@ -99,6 +99,16 @@ def test_typed_ip_and_member_hostname_for_the_same_server_are_not_listed(monkeyp
     assert session.shared_servers == []
 
 
+def test_unresolvable_member_is_not_assumed_to_be_the_typed_ip(monkeypatch):
+    from logs_migrate.gui.session import _same_address
+
+    def fail(*args, **kwargs):
+        raise OSError("DNS unavailable")
+
+    monkeypatch.setattr("socket.getaddrinfo", fail)
+    assert not _same_address("192.0.2.10", "other-server")
+
+
 def test_copy_progress_names_known_servers_and_hides_unmatched_ids():
     ids = ["748bc2db-df64-4140-9cb4-cd2709443d8a", "a17a0a82-0000-4000-8000-000000000000"]
     copy = {"total_bytes": 112_000_000, "done_bytes": 0, "parts": [], "started_at": None}
@@ -339,6 +349,30 @@ COMPARISON = {
         },
     },
 }
+
+
+def test_retention_difference_shows_the_destination_limit():
+    comparison = {
+        "rules": [
+            {
+                "selector": "partitions:Default",
+                "type": "partitions",
+                "name": "Default",
+                "status": "differs",
+                "changed_fields": ["retention_seconds"],
+                "warnings": [],
+            }
+        ],
+        "details": {
+            "partitions:Default": {
+                "source": {"retention_seconds": 0},
+                "destination": {"retention_seconds": 30 * 86400},
+            }
+        },
+    }
+    (row,) = vm.rule_rows(comparison)
+    assert "30 days" in row["now"]
+    assert not row["needed"]
 
 
 def test_rules_say_what_they_do_and_mark_the_one_the_copy_depends_on():
@@ -658,6 +692,7 @@ def test_result_leads_with_groups_and_says_only_19_of_73_days_were_counted():
     assert "10 stored groups" in text and "406,977" in text
     assert "19 days" in text and "54 days were not counted" in text
     assert "All 73 days match" not in text
+    assert copyview.all_days_rows(copy, result)[-1][1:3] == ("not counted", "not counted")
     assert "19 days" in copyview.report_markdown(copy, result, zone="UTC")
 
 
@@ -682,6 +717,7 @@ def test_a_finished_copy_whose_days_all_match_says_everything_arrived(rig):
     engine.verify(run["id"])
     (copy,) = recorded(journal)
     result = copies.check(copy)
+    assert result["group_check"] is not None
     assert result["phase"] == "ok" and result["source_total"] == result["arrived_total"] > 0
     view = copyview.check_view(copy, result)
     assert view["verdict"][2] == "Everything arrived"

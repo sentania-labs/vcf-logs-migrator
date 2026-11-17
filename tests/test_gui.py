@@ -460,6 +460,17 @@ def test_connected_screen_can_test_again_without_retyping_passwords():
         driver.close()
 
 
+def test_stand_in_shared_server_key_is_listed_on_connection():
+    driver = Driver("rules-none", knobs={"server_seeds": {"logs-old-2": "logs-old-1"}})
+    try:
+        driver.sign_in()
+        assert any(
+            item["server"] == "logs-old-2" for item in driver.state.discovered["shared_servers"]
+        )
+    finally:
+        driver.close()
+
+
 def test_shared_servers_are_listed_without_a_warning():
     driver = Driver("rules-none", delay=0)
     try:
@@ -497,6 +508,77 @@ def test_rules_are_compared_again_after_dates_sends_you_back():
         driver.idle()
         assert "Storage group “Default”" in plain(driver) and "NEEDED" in plain(driver)
         assert "Compare again" in driver.buttons()
+    finally:
+        driver.close()
+
+
+def test_sidebar_rechecks_rules_after_dates_refuses_a_missing_partition():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        driver.click("Continue →")
+        driver.idle()
+        assert driver.window.step_mark("rules") == "done"
+        driver.click("Continue to dates →")
+        driver.idle()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["destination"]["partitions"] = [
+                p for p in env.data["destination"]["partitions"] if p["name"] != "Firewall"
+            ]
+        driver.choose("Last 3 months")
+        assert "Go to Copy rules" in driver.buttons()
+        assert driver.window.step_mark("rules") != "done"
+        driver.step("rules")
+        driver.idle()
+        assert "Storage group “Firewall”" in plain(driver) and "NEEDED" in plain(driver)
+    finally:
+        driver.close()
+
+
+def test_optional_retention_rule_can_be_left_alone_without_unticking():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["source"]["partitions"][0]["retention_seconds"] = 0
+            env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+        driver.click("Continue →")
+        driver.idle()
+        driver.click("Compare again")
+        driver.idle()
+        assert "30 days" in plain(driver)
+        assert any("Continue" in button for button in driver.buttons())
+    finally:
+        driver.close()
+
+
+def test_rule_refusal_message_does_not_get_a_double_period():
+    from logs_migrate.errors import Code, Rejection
+
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+            env.data["source"]["partitions"][0]["retention_seconds"] = 0
+
+        def refuse(*args):
+            raise Rejection(Code.REFUSED, "Data partition name cannot be changed.")
+
+        env.config_write = refuse
+        driver.click("Continue →")
+        driver.idle()
+        driver.click("Compare again")
+        driver.idle()
+        driver.click("Copy 1 rule…")
+        driver.click("Copy 1 rule")
+        driver.idle()
+        text = plain(driver)
+        assert "data partition name cannot be changed." in text
+        assert "changed.." not in text
     finally:
         driver.close()
 

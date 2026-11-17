@@ -37,6 +37,27 @@ C = "33333333-3333-3333-3333-333333333333"
 D = "44444444-4444-4444-4444-444444444444"
 
 
+def test_destination_member_tokens_map_progress_ids_to_addresses():
+    xml = (
+        f'<config><distributed><daemon host="logs-new-1.example.com" token="{A}"/>'
+        f'<daemon token="{B}" host="logs-new-2.example.com"/></distributed></config>'
+    )
+    assert live.parse_member_ids(xml) == {A: "logs-new-1.example.com", B: "logs-new-2.example.com"}
+
+    class SSH:
+        def read(self, operation):
+            assert operation == ReadOperation.MEMBERS
+            return xml
+
+    env = object.__new__(LiveEnvironment)
+    env._ssh = lambda *args: SSH()
+    assert env._members("logs-new-1.example.com", "destination_ssh", "root") == [
+        "logs-new-1.example.com",
+        "logs-new-2.example.com",
+    ]
+    assert env.destination_node_names == {A: "logs-new-1.example.com", B: "logs-new-2.example.com"}
+
+
 def test_task_prefers_server_address_to_internal_id():
     body = {
         "status": "RUNNING",
