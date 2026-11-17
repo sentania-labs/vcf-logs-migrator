@@ -384,7 +384,7 @@ def test_rules_compare_by_themselves_and_the_needed_one_stays_ticked(driver):
     assert "NEEDED" in text and "Storage group “Firewall”" in text
     needed = page.boxes["partitions:Firewall"]
     assert needed.isChecked() and not needed.isEnabled()
-    assert driver.buttons() == ["Copy only the needed one…", "Copy 5 rules…"]
+    assert driver.buttons() == ["Compare again", "Copy only the needed one…", "Copy 5 rules…"]
     page.boxes["masking:hide-secrets"].click()
     assert driver.buttons()[-1] == "Copy 4 rules…"
     driver.click("Copy 4 rules…")
@@ -397,7 +397,7 @@ def test_rules_compare_by_themselves_and_the_needed_one_stays_ticked(driver):
     assert "4 rules copied to the destination." in text
     assert "LEFT OUT" in text and "You chose not to copy it" in text
     assert driver.window.step_mark("rules") == "done"
-    assert driver.buttons() == ["Continue to dates →"]
+    assert driver.buttons() == ["Compare again", "Continue to dates →"]
 
 
 def test_matching_rules_finish_the_step_without_a_visit():
@@ -408,7 +408,33 @@ def test_matching_rules_finish_the_step_without_a_visit():
         driver.click("Continue →")
         driver.idle()
         assert "Nothing to copy" in plain(driver)
-        assert driver.buttons() == ["Continue to dates →"]
+        assert driver.buttons() == ["Compare again", "Continue to dates →"]
+    finally:
+        driver.close()
+
+
+def test_rules_are_compared_again_after_dates_sends_you_back():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        driver.click("Continue →")
+        driver.idle()
+        assert "Nothing to copy" in plain(driver)
+        driver.click("Continue to dates →")
+        driver.idle()
+        calls = []
+        compare = driver.window.compare_rules
+
+        def record_compare(*args, **kwargs):
+            calls.append(True)
+            return compare(*args, **kwargs)
+
+        driver.window.compare_rules = record_compare
+        # This is the action on the dates refusal for a missing or changed rule.
+        driver.page._act("rules", "")
+        driver.idle()
+        assert calls
+        assert "Compare again" in driver.buttons()
     finally:
         driver.close()
 
@@ -443,7 +469,7 @@ def test_a_rule_that_cannot_be_copied_is_named_and_can_be_tried_again():
         text = plain(driver)
         assert "4 rules copied. 1 was not." in text and "“to-siem” could not be added" in text
         assert driver.window.step_mark("rules") == "warn"
-        assert driver.buttons() == ["Try that rule again", "Continue to dates →"]
+        assert driver.buttons() == ["Compare again", "Try that rule again", "Continue to dates →"]
         driver.click("Try that rule again")
         driver.idle()
         assert "1 rule copied to the destination." in driver.texts()

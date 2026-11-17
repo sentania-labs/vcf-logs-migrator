@@ -210,6 +210,7 @@ class DatesPage(Page):
         elif action == "add-sign-in":
             self.app.add_sign_in(back=False)
         elif action == "rules":
+            self.app.compare_rules()
             self.app.go("rules")
         elif action == "runs":
             self.app.go("runs")

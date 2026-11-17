@@ -134,7 +134,7 @@ Open the download as shown above. The window is five steps down the left side, d
 
    ![Rules that differ](docs/images/gui/03-copy-rules.png)
 
-3. **Choose dates.** Pick how far back and press **Check these dates**. Presets count back from the newest finished data, even if an open group contains older events. The plan is a short list: what is copied, how big, how long, whether it fits, and what is left out. Tick the box beside **Start copying** to start. If the dates can't be copied as picked, the screen says which days are affected and why, and the button fixes it.
+3. **Choose dates.** Pick how far back and press **Check these dates**. Presets count back from the newest finished data, even if an open group contains older events. The plan is a short list: what is copied, how big, how long, whether it fits, and what is left out. Tick the box beside **Start copying** to start. If the dates can't be copied as picked, the screen says which days are affected and why, and the button fixes it. When a rule needs attention, returning to **Copy rules** compares the systems again; you can also choose **Compare again** there.
 
    ![The plan](docs/images/gui/04-plan.png)
    ![Days that cannot be copied, and the fix](docs/images/gui/05-cannot-start.png)
