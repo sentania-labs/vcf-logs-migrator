@@ -50,6 +50,7 @@ class AppState:
     arrived_seen: set = field(default_factory=set)
     quiet_since: float | None = None
     bytes_seen: int | None = None
+    server_labels: dict[str, str] = field(default_factory=dict)
     # Check result
     verify_error: str | None = None
     saved: dict = field(default_factory=dict)  # copy id to the files written for it.
@@ -75,6 +76,15 @@ class AppState:
         wanted = copy_id or self.copy_id
         return next((c for c in self.copies if c["id"] == wanted), None)
 
+    def remember_progress(self, result: dict) -> None:
+        previous = self.status
+        if previous and result.get("run_id") and result.get("run_id") == previous.get("run_id"):
+            old = previous.get("bytes_transferred")
+            new = result.get("bytes_transferred")
+            if old is not None and (new is None or new < old):
+                result["bytes_transferred"] = old
+        self.status = result
+
     def set_record(self, record: dict) -> None:
         self.record = record
         self.copies = copies.build(record["runs"], record["rows"])
@@ -87,6 +97,7 @@ class AppState:
         self.continued_note = ""
         self.latest = None
         self.arrived_seen = set()
+        self.server_labels = {}
         self.quiet_since = self.bytes_seen = None
         self.verify_error = None
 

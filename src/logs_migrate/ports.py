@@ -19,6 +19,7 @@ class NodeTransfer:
     total_buckets: dict[str, int] | None = None
     elapsed_seconds: float | None = None
     scheduled_ids: dict[str, tuple[str, ...]] | None = None
+    address: str | None = None
 
 
 @dataclass(frozen=True)

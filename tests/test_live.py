@@ -35,6 +35,17 @@ B = "22222222-2222-2222-2222-222222222222"
 C = "33333333-3333-3333-3333-333333333333"
 
 D = "44444444-4444-4444-4444-444444444444"
+
+
+def test_task_prefers_server_address_to_internal_id():
+    body = {
+        "status": "RUNNING",
+        "nodes": [{"nodeId": A, "hostName": "server.example.com", "status": "FINISHED"}],
+    }
+    task = decode_task(body, destination="destination", now_ms=0)
+    assert task.nodes[0].node == A and task.nodes[0].address == "server.example.com"
+
+
 # Lines quoted from a real 8.18.7 `bucket-index show` (ids masked): comma separated head,
 # space separated fields inside cmd=[...], and cmd=[NULL] for buckets sealed by a restart.
 REAL_DATED = (

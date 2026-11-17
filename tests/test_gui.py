@@ -838,7 +838,7 @@ def test_a_running_copy_updates_in_place_and_the_stop_button_keeps_its_click():
         assert page.progress.percent.text() != first
         assert driver.button("Stop the copy…") is stop, "the button was rebuilt while the copy ran"
         text = plain(driver)
-        assert "You can close this window." in text and "Latest to arrive: logs up to" in text
+        assert "You can close this window." in text and "Newest logs received: up to" in text
         assert "Running for" in text and "Should finish around" in text
         assert "logs-new-1" in text and "COPYING" in text
         driver.click("Stop the copy…")

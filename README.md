@@ -139,7 +139,7 @@ Open the download as shown above. The window is five steps down the left side, d
    ![The plan](docs/images/gui/04-plan.png)
    ![Days that cannot be copied, and the fix](docs/images/gui/05-cannot-start.png)
 
-4. **Copy logs.** One percentage, a bar, time left and a row per destination server. You can close the window; the copy runs on the destination. **Stop the copy…** asks first, and **Continue copying** sends only what is missing.
+4. **Copy logs.** One percentage, a bar, time left and a row per destination server. When an address is unavailable, the row uses a numbered server label. You can close the window; the copy runs on the destination. **Stop the copy…** asks first, and **Continue copying** sends only what is missing.
 
    ![A copy running](docs/images/gui/06-copying.png)
    ![A copy that was stopped](docs/images/gui/07-stopped.png)

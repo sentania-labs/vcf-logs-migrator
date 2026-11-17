@@ -1384,7 +1384,7 @@ class MainWindow(QMainWindow):
         self.context.pop("reconnect", None)
         if state.lost_at:
             self.toast("Reconnected. The copy carried on while this window was out of touch.")
-        state.status = result
+        state.remember_progress(result)
         state.status_at = vm.now_iso()
         state.status_error = state.lost_at = None
         state.unsure = result.get("start_outcome") == "unknown"
@@ -1393,7 +1393,9 @@ class MainWindow(QMainWindow):
         if new and copy is not None:
             ends = {group["id"]: group["end"] for group in copy["groups"]}
             newest = max(new, key=lambda item: ends.get(item, 0))
-            if newest in ends:
+            if newest in ends and (
+                state.latest is None or copies.day_of(ends[newest]) >= state.latest["day"]
+            ):
                 state.latest = {
                     "day": copies.day_of(ends[newest]),
                     "node": arrived[newest],

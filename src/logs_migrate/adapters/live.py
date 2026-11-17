@@ -540,6 +540,13 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
                 totals,
                 node_elapsed,
                 scheduled_ids,
+                _node_name(
+                    {
+                        key: entry[key]
+                        for key in ("host", "hostName", "hostname", "ip")
+                        if key in entry
+                    }
+                ),
             )
         )
     completed = tuple(dict.fromkeys(completed + tuple(k for n in nodes for k in n.completed)))

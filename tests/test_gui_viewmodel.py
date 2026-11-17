@@ -9,6 +9,8 @@ from conftest import execute
 from logs_migrate.errors import Code
 from logs_migrate.gui import copies, copyview
 from logs_migrate.gui import viewmodel as vm
+from logs_migrate.gui.settings import Settings
+from logs_migrate.gui.state import AppState
 from logs_migrate.models import Policy, Window, parse_time
 from logs_migrate.reporting import display_run
 from logs_migrate.versions import evaluate
@@ -26,6 +28,41 @@ def recorded(journal) -> list[dict]:
 
 
 # Formatting --------------------------------------------------------------------------------
+
+
+def test_copy_progress_does_not_fall_back_to_zero_on_a_later_refresh():
+    state = AppState(Settings())
+    first = {"run_id": "copy", "bytes_transferred": 37_100_000}
+    later = {"run_id": "copy", "bytes_transferred": 0}
+    state.remember_progress(first)
+    state.remember_progress(later)
+    assert later["bytes_transferred"] == 37_100_000
+
+
+def test_copy_progress_names_known_servers_and_hides_unmatched_ids():
+    ids = ["748bc2db-df64-4140-9cb4-cd2709443d8a", "a17a0a82-0000-4000-8000-000000000000"]
+    copy = {"total_bytes": 112_000_000, "done_bytes": 0, "parts": [], "started_at": None}
+    status = {
+        "status": "running",
+        "run_id": "copy",
+        "bytes_transferred": 37_100_000,
+        "elapsed_seconds": 60,
+        "eta_seconds": 20,
+        "nodes": [{"node": ident, "status": "completed", "progress": 100} for ident in ids],
+    }
+    view = copyview.progress_view(
+        copy,
+        status,
+        zone="UTC",
+        now="2026-11-17T19:00:00Z",
+        latest={"node": ids[1], "day": date(2024, 3, 16)},
+        server_names={ids[0]: "server.example.com"},
+    )
+    assert [server["name"] for server in view["servers"]] == ["server.example.com", "Server 1"]
+    assert view["percent"] == 33
+    assert ids[1] not in view["latest"] and "Server 1" in view["latest"]
+    assert ("Time left", "under a minute") in view["facts"]
+    assert ("Should finish around", "soon") in view["facts"]
 
 
 def test_sizes_counts_and_durations_read_the_way_a_person_says_them():

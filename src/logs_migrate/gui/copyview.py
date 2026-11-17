@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from html import escape
+from uuid import UUID
 
 from ..errors import Code
 from . import copies
@@ -775,6 +776,8 @@ def progress_view(
     quiet_minutes: float = 0,
     latest: dict | None = None,
     continued: bool = False,
+    server_names: dict[str, str] | None = None,
+    server_labels: dict[str, str] | None = None,
 ) -> dict:
     """The one progress card: percent, size, three facts, a row per destination server."""
     total = copy["total_bytes"] or 0
@@ -788,7 +791,8 @@ def progress_view(
         for run in part["started"]
     )
     live = bool(status) and (running or (status.get("run_id") and not recorded))
-    done = min(total, copy["done_bytes"] + (current if live else 0)) if total else 0
+    counted = copy["done_bytes"] + current if live else max(copy["done_bytes"], current)
+    done = min(total, counted) if total else 0
     fraction = done / total if total else 0.0
     mode = "lost" if lost_at else "quiet" if quiet_minutes >= QUIET_MINUTES and running else "live"
     eta = (status or {}).get("eta_seconds") if running else None
@@ -816,18 +820,42 @@ def progress_view(
             ("Running again for" if continued else "Running for", vm.format_duration(elapsed)),
             (
                 "Time left",
-                "about " + vm.format_duration(left) if left is not None else "working it out…",
+                ("under a minute" if left < 60 else "about " + vm.format_duration(left))
+                if left is not None
+                else "working it out…",
             ),
             (
                 "Should finish around",
                 format_finish(local_now + timedelta(seconds=left), local_now)
-                if left is not None and local_now
+                if left is not None and left >= 60 and local_now
+                else "soon"
+                if left is not None and left < 60
                 else "known after a few minutes",
             ),
         ]
+    nodes = (status or {}).get("nodes", [])
+    names = {**(server_names or {}), **{n["node"]: n["address"] for n in nodes if n.get("address")}}
+
+    def is_id(value: str) -> bool:
+        try:
+            UUID(value)
+            return True
+        except ValueError:
+            return False
+
+    names = {key: value for key, value in names.items() if not is_id(value)}
+    unknown = sorted({n["node"] for n in nodes if is_id(n["node"]) and n["node"] not in names})
+    labels = server_labels if server_labels is not None else {}
+    for ident in unknown:
+        if ident not in labels:
+            labels[ident] = f"Server {len(labels) + 1}"
+
+    def server_name(value: str) -> str:
+        return names.get(value) or labels.get(value) or ("Server" if is_id(value) else value)
+
     servers = []
     around = server_so_far(copy, status)
-    for node in (status or {}).get("nodes", []):
+    for node in nodes:
         node_done, node_total = node.get("bytes_transferred"), node.get("total_bytes")
         if around is not None:
             part = None
@@ -850,12 +878,14 @@ def progress_view(
             badge = ("warn", f"Nothing new for {int(quiet_minutes)} min")
         else:
             badge = NODE_BADGE.get(node["status"], ("", "Not known"))
-        servers.append({"name": node["node"], "fraction": part, "text": text, "badge": badge})
+        servers.append(
+            {"name": server_name(node["node"]), "fraction": part, "text": text, "badge": badge}
+        )
     if latest:
-        where = f", on {latest['node']}" if latest.get("node") else ""
+        where = f", on {server_name(latest['node'])}" if latest.get("node") else ""
         day = vm.format_day(latest["day"], False)
         if mode == "live":
-            arrived = f"Latest to arrive: logs up to {day}{where}."
+            arrived = f"Newest logs received: up to {day}{where}."
         elif mode == "quiet":
             arrived = (
                 f"Last to arrive: logs up to {day}, at {vm.format_time(latest.get('at'), zone)}."
