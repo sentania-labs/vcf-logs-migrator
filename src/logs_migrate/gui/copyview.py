@@ -273,19 +273,12 @@ def plan_view(
             )
         )
     if copy["active_skipped"]:
-        onward = (
-            f"Logs from {vm.format_day(newest)} onward."
-            if newest and newest > last
-            else f"The newest logs, from part-way through {vm.format_day(newest)}."
-            if newest
-            else "The newest logs."
-        )
         lines.append(
             line(
                 "!",
                 "warn",
                 "Left out",
-                f"<b>{onward}</b> The source is still writing them, so they cannot be copied yet.",
+                "<b>Some logs are still being written.</b> They cannot be copied yet.",
                 "It closes them every few days. Copy them in a later run.",
             )
         )
@@ -320,7 +313,7 @@ def plan_view(
     lines += plan_notes(copy)
     ack = None
     if base["needs_ack"]:
-        newest_text = f"the newest logs ({vm.format_day(newest)} onward)" if newest else ""
+        newest_text = "logs still being written" if copy["active_skipped"] else ""
         skipped_text = (
             f"the {vm.plural(len(skipped), 'skipped day')}".replace(
                 " 1 skipped day", " skipped day"
@@ -328,10 +321,6 @@ def plan_view(
             if skipped
             else ""
         )
-        if not copy["active_skipped"]:
-            newest_text = ""
-        elif not newest_text:
-            newest_text = "the newest logs"
         ack = (
             "I understand "
             + " and ".join(text for text in (skipped_text, newest_text) if text)
@@ -401,9 +390,7 @@ def months_view(view: dict) -> list[tuple[str, str, str, str]]:
             )
         )
     if view["newest"] and copy["active_skipped"]:
-        rows.append(
-            (f"{vm.format_day(view['newest'])} onward", "", "not known", "No. Still being written.")
-        )
+        rows.append(("Logs still being written", "", "not known", "No. Still being written."))
     return rows
 
 
@@ -1093,16 +1080,9 @@ def dates_text(copy: dict) -> str:
 def left_out(copy: dict) -> str:
     """What was deliberately not part of this copy, for the result and the report."""
     parts = []
-    client = copy["parts"][0]["root"].get("client") or {}
     if copy["active_skipped"]:
-        newest = client.get("newest")
-        onward = (
-            f"Logs from {vm.format_day(date.fromisoformat(newest))} onward"
-            if newest
-            else "The newest logs"
-        )
         parts.append(
-            f"{onward} were left out, "
+            "Some logs still being written were left out, "
             + ("as you agreed, " if copy["acknowledged"] else "")
             + "because the source was still writing them. Copy them in a later run."
         )

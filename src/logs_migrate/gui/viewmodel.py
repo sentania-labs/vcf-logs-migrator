@@ -936,18 +936,10 @@ def history(source: dict | None) -> dict | None:
     first = day_of(min(g["start"] for g in sealed))
     last_sealed = day_of(max(g["end"] for g in sealed))
     open_groups = [g for g in source["buckets"] if g["status"] == "active"]
-    starts = [g["start"] for g in open_groups if g.get("bounds_proven") and g.get("start")]
-    newest = None
-    if open_groups:
-        if starts and len(starts) == len(open_groups):
-            newest = day_of(min(starts))
-        else:
-            ends: dict[str, int] = {}
-            for g in sealed:
-                ends[g["node"]] = max(ends.get(g["node"], 0), g["end"])
-            newest = day_of(min(ends.values())) if ends else last_sealed
-    last = min(last_sealed, newest - timedelta(days=1)) if newest else last_sealed
-    return {"first": first, "last": max(first, last), "newest": newest, "last_sealed": last_sealed}
+    # The planner judges days shared with open groups individually. An old event in an
+    # open group must not make all later, finished data unavailable in the window.
+    newest = last_sealed + timedelta(days=1) if open_groups else None
+    return {"first": first, "last": last_sealed, "newest": newest, "last_sealed": last_sealed}
 
 
 PRESETS = (("Last 3 months", 3), ("Last 6 months", 6), ("Last 12 months", 12), ("Everything", None))

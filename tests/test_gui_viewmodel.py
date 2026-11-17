@@ -324,6 +324,28 @@ def test_rule_results_are_copied_left_out_or_not_copied_with_a_reason():
 # Dates and the plan ------------------------------------------------------------------------
 
 
+def test_backfilled_open_group_does_not_hide_newer_finished_days():
+    def group(status, start, end):
+        return {
+            "status": status,
+            "start": parse_time(start),
+            "end": parse_time(end),
+            "bounds_proven": True,
+            "node": "server-1",
+        }
+
+    source = {
+        "buckets": [
+            group("sealed", "2024-03-01T00:00:00Z", "2026-11-10T00:00:00Z"),
+            group("active", "2024-03-20T00:00:00Z", "2024-06-01T00:00:00Z"),
+        ]
+    }
+    extent = vm.history(source)
+    assert extent["last"] == date(2026, 11, 10)
+    assert vm.dates_problem(date(2025, 1, 1), date(2025, 1, 8), extent) is None
+    assert vm.preset_days(3, extent) == (date(2026, 8, 11), date(2026, 11, 10))
+
+
 def test_presets_count_back_from_the_last_day_that_can_be_picked():
     extent = {"first": date(2025, 3, 3), "last": date(2026, 11, 9), "newest": date(2026, 11, 10)}
     assert [name for name, _ in vm.PRESETS] == [

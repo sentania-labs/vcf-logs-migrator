@@ -777,7 +777,7 @@ def test_a_list_that_fits_its_box_shows_every_row_and_no_scroll_strip():
         driver.choose("Last 6 months")
         driver.link("list")
         driver.wait(80)
-        assert "Nov 10, 2026 onward" in driver.texts()
+        assert "Logs still being written" in driver.texts()
         assert box().hidden() == 0 and box().cue.isHidden(), "the last month is under the strip"
         driver.click("Close")
         driver.start()
