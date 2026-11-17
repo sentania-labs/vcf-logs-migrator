@@ -192,7 +192,7 @@ logs-migrate --journal ~/migration/lab.sqlite report RUN_ID
 
 `status` shows the API task, per-node entries, bytes and the buckets it reports.
 `verify` waits for a finished task using the plan's count polling settings. If the task is
-still running after those attempts, it reports `destination_busy`; run it again after the copy
+still running after those attempts, it reports `destination_busy` (exit 7); run it again after the copy
 finishes. It then counts the destination over the requested UTC days
 again (two agreeing complete observations), subtracts the baseline and compares
 with the source per day. Exit 0 is `verified_success`: every fully covered day
@@ -204,7 +204,7 @@ result. Without it, what arrived is taken from the task's own report (and the
 result says so), and a selection that reaches days beyond the requested ones is
 incomplete, not `verified_success`. Exit 5 is a difference on a fully covered day,
 including new ingest that landed on those dates, which counts cannot tell apart from
-migrated events. Exit 6 is incomplete evidence (task still running, counts not
+migrated events. Exit 6 is incomplete evidence (counts not
 complete, nothing received, or no fully covered day at all).
 
 A 9.0 task can report COMPLETED after skipping buckets at its disk limit; the
