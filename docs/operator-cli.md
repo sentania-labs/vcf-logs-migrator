@@ -106,7 +106,8 @@ and the source is never written.
 
 The engine applies partitions, filters, masking, then forwarding. Existing rules
 are updated by destination ID after matching their name (partitions are updated at
-`PUT /api/v1/partitioning` with the ID in the body; the per-ID route is a 404 on 9.0); creates of partitions,
+`PUT /api/v1/partitioning` with the ID in the body; the per-ID route is a 404 on 9.0; the
+Default partition, fixed ID `d41d8cd9-8f00-3204-a980-0998ecf8427e`, is sent with an empty `name` because 9.0 refuses its listed name); creates of partitions,
 masking and filters omit the source `id` so the destination assigns its own.
 Masking and filters retain their API definitions. Partition retention/archive
 settings travel with the rule. A newly created partition needs **one destination
@@ -126,7 +127,8 @@ per source rule. Created/updated means the destination readback matches its
 configuration; it does not prove log delivery, masking, filtering or partition
 routing. A failed rule does not roll back earlier changes, and other selected
 rules are still attempted. An HTTP error answer (4xx) means the write was refused and
-is `failed`. A 2xx answer whose body is not JSON (9.0 answers a partition update with
+is `failed`; for a configuration route with a JSON error body the reason is
+`destination_refused` and the appliance's message is shown when it is plain text. A 2xx answer whose body is not JSON (9.0 answers a partition update with
 plain text) counts as accepted and is confirmed by the readback. A lost write response is
 uncertain and never retried
 automatically. Compare again to inspect the destination before selecting a retry.
