@@ -951,8 +951,9 @@ def test_a_part_with_nothing_left_to_send_is_over_and_its_days_are_named(rig):
     assert copy["total_bytes"] == copy["done_bytes"]
 
 
+@pytest.mark.parametrize("today", [date(2026, 11, day) for day in range(17, 21)])
 def test_a_part_whose_logs_are_gone_is_skipped_once_and_never_asked_for_again(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, today
 ):
     import json
 
@@ -962,7 +963,8 @@ def test_a_part_whose_logs_are_gone_is_skipped_once_and_never_asked_for_again(
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
-    fixture = standin.write(tmp_path, "plain", speed=50000, delay=0)
+    # Exercise all four alignments of the stand-in's four-day buckets with the gap.
+    fixture = standin.write(tmp_path, "plain", today=today, speed=50000, delay=0)
     journal = str(tmp_path / "journal.sqlite")
     names = {"source_host": "logs-old.example.com", "destination": "logs-new.example.com"}
     session = Session()
@@ -997,12 +999,11 @@ def test_a_part_whose_logs_are_gone_is_skipped_once_and_never_asked_for_again(
         # The source deletes everything the second part would have copied.
         state = tmp_path / "journal.simulated-state"
         data = json.loads(state.read_text())
-        window = series["windows"][1]
-        data["source"]["buckets"] = [
-            b
-            for b in data["source"]["buckets"]
-            if b["status"] == "active" or b["start"] < window["start"]
-        ]
+        # A bucket can start before this part and still overlap it. Remove exactly
+        # what the agreed plan held, including those boundary-spanning buckets.
+        gone = {b["id"] for b in second["plan"]["selected"]}
+        assert gone
+        data["source"]["buckets"] = [b for b in data["source"]["buckets"] if b["id"] not in gone]
         state.write_text(json.dumps(data))
         result = session.start_part(
             series=series,
