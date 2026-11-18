@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from html import escape
+from uuid import UUID
 
 from ..errors import Code
+from ..planning import retention_warning
 from . import copies
 from . import viewmodel as vm
 from .copies import day_of, day_ranges, days_between, group_days
@@ -81,6 +83,10 @@ def plan_notes(copy: dict) -> list[dict]:
     undated = hosts = duplicates = 0
     for part in copy["parts"]:
         plan = part["root"]["plan"]
+        for item in plan.get("partition_diff", {}).get("retention", []):
+            text = retention_warning(item)
+            if not any(note["text"] == text for note in notes):
+                notes.append(line("!", "warn", "Retention", escape(text), ""))
         undated = max(undated, len(plan.get("undated_excluded", [])))
         for warning in plan.get("warnings", []):
             if "the bucket listing returned text but no recognizable groups" in warning:
@@ -273,19 +279,12 @@ def plan_view(
             )
         )
     if copy["active_skipped"]:
-        onward = (
-            f"Logs from {vm.format_day(newest)} onward."
-            if newest and newest > last
-            else f"The newest logs, from part-way through {vm.format_day(newest)}."
-            if newest
-            else "The newest logs."
-        )
         lines.append(
             line(
                 "!",
                 "warn",
                 "Left out",
-                f"<b>{onward}</b> The source is still writing them, so they cannot be copied yet.",
+                "<b>Some logs are still being written.</b> They cannot be copied yet.",
                 "It closes them every few days. Copy them in a later run.",
             )
         )
@@ -320,7 +319,7 @@ def plan_view(
     lines += plan_notes(copy)
     ack = None
     if base["needs_ack"]:
-        newest_text = f"the newest logs ({vm.format_day(newest)} onward)" if newest else ""
+        newest_text = "logs still being written" if copy["active_skipped"] else ""
         skipped_text = (
             f"the {vm.plural(len(skipped), 'skipped day')}".replace(
                 " 1 skipped day", " skipped day"
@@ -328,10 +327,6 @@ def plan_view(
             if skipped
             else ""
         )
-        if not copy["active_skipped"]:
-            newest_text = ""
-        elif not newest_text:
-            newest_text = "the newest logs"
         ack = (
             "I understand "
             + " and ".join(text for text in (skipped_text, newest_text) if text)
@@ -401,9 +396,7 @@ def months_view(view: dict) -> list[tuple[str, str, str, str]]:
             )
         )
     if view["newest"] and copy["active_skipped"]:
-        rows.append(
-            (f"{vm.format_day(view['newest'])} onward", "", "not known", "No. Still being written.")
-        )
+        rows.append(("Logs still being written", "", "not known", "No. Still being written."))
     return rows
 
 
@@ -788,6 +781,8 @@ def progress_view(
     quiet_minutes: float = 0,
     latest: dict | None = None,
     continued: bool = False,
+    server_names: dict[str, str] | None = None,
+    server_labels: dict[str, str] | None = None,
 ) -> dict:
     """The one progress card: percent, size, three facts, a row per destination server."""
     total = copy["total_bytes"] or 0
@@ -801,7 +796,8 @@ def progress_view(
         for run in part["started"]
     )
     live = bool(status) and (running or (status.get("run_id") and not recorded))
-    done = min(total, copy["done_bytes"] + (current if live else 0)) if total else 0
+    counted = copy["done_bytes"] + current if live else max(copy["done_bytes"], current)
+    done = min(total, counted) if total else 0
     fraction = done / total if total else 0.0
     mode = "lost" if lost_at else "quiet" if quiet_minutes >= QUIET_MINUTES and running else "live"
     eta = (status or {}).get("eta_seconds") if running else None
@@ -829,18 +825,42 @@ def progress_view(
             ("Running again for" if continued else "Running for", vm.format_duration(elapsed)),
             (
                 "Time left",
-                "about " + vm.format_duration(left) if left is not None else "working it out…",
+                ("under a minute" if left < 60 else "about " + vm.format_duration(left))
+                if left is not None
+                else "working it out…",
             ),
             (
-                "Should finish around",
+                "Should finish" if left is not None and left < 60 else "Should finish around",
                 format_finish(local_now + timedelta(seconds=left), local_now)
-                if left is not None and local_now
+                if left is not None and left >= 60 and local_now
+                else "soon"
+                if left is not None and left < 60
                 else "known after a few minutes",
             ),
         ]
+    nodes = (status or {}).get("nodes", [])
+    names = {**(server_names or {}), **{n["node"]: n["address"] for n in nodes if n.get("address")}}
+
+    def is_id(value: str) -> bool:
+        try:
+            UUID(value)
+            return True
+        except ValueError:
+            return False
+
+    names = {key: value for key, value in names.items() if not is_id(value)}
+    unknown = sorted({n["node"] for n in nodes if is_id(n["node"]) and n["node"] not in names})
+    labels = server_labels if server_labels is not None else {}
+    for ident in unknown:
+        if ident not in labels:
+            labels[ident] = f"Server {len(labels) + 1}"
+
+    def server_name(value: str) -> str:
+        return names.get(value) or labels.get(value) or ("Server" if is_id(value) else value)
+
     servers = []
     around = server_so_far(copy, status)
-    for node in (status or {}).get("nodes", []):
+    for node in nodes:
         node_done, node_total = node.get("bytes_transferred"), node.get("total_bytes")
         if around is not None:
             part = None
@@ -863,12 +883,14 @@ def progress_view(
             badge = ("warn", f"Nothing new for {int(quiet_minutes)} min")
         else:
             badge = NODE_BADGE.get(node["status"], ("", "Not known"))
-        servers.append({"name": node["node"], "fraction": part, "text": text, "badge": badge})
+        servers.append(
+            {"name": server_name(node["node"]), "fraction": part, "text": text, "badge": badge}
+        )
     if latest:
-        where = f", on {latest['node']}" if latest.get("node") else ""
+        where = f", on {server_name(latest['node'])}" if latest.get("node") else ""
         day = vm.format_day(latest["day"], False)
         if mode == "live":
-            arrived = f"Latest to arrive: logs up to {day}{where}."
+            arrived = f"Newest logs received: up to {day}{where}."
         elif mode == "quiet":
             arrived = (
                 f"Last to arrive: logs up to {day}, at {vm.format_time(latest.get('at'), zone)}."
@@ -1093,16 +1115,9 @@ def dates_text(copy: dict) -> str:
 def left_out(copy: dict) -> str:
     """What was deliberately not part of this copy, for the result and the report."""
     parts = []
-    client = copy["parts"][0]["root"].get("client") or {}
     if copy["active_skipped"]:
-        newest = client.get("newest")
-        onward = (
-            f"Logs from {vm.format_day(date.fromisoformat(newest))} onward"
-            if newest
-            else "The newest logs"
-        )
         parts.append(
-            f"{onward} were left out, "
+            "Some logs still being written were left out, "
             + ("as you agreed, " if copy["acknowledged"] else "")
             + "because the source was still writing them. Copy them in a later run."
         )
@@ -1232,8 +1247,12 @@ def all_days_rows(copy: dict, result: dict) -> list[tuple[str, str, str, str]]:
             rows.append(
                 (
                     vm.format_range(span[0], span[-1]),
-                    vm.format_count(sum(result["source"].get(day, 0) for day in span)),
-                    vm.format_count(sum(result["arrived"].get(day, 0) for day in span)),
+                    "not counted"
+                    if tag in {"No logs counted", "Not copied yet"}
+                    else vm.format_count(sum(result["source"].get(day, 0) for day in span)),
+                    "not counted"
+                    if tag in {"No logs counted", "Not copied yet"}
+                    else vm.format_count(sum(result["arrived"].get(day, 0) for day in span)),
                     tag,
                 )
             )
@@ -1306,21 +1325,35 @@ def check_view(
 
     if phase == "ok":
         unjudged = len(result["unjudged_days"])
+        groups = result.get("group_check")
+        group_text = ""
+        if groups and groups["matched_groups"] == groups["total_groups"]:
+            group_text = (
+                f"All {vm.plural(groups['total_groups'], 'stored group')}"
+                + (
+                    f" and {vm.format_count(groups['matched_events'])} entries"
+                    if groups["total_events"] is not None
+                    else ""
+                )
+                + " are on the destination. "
+            )
+        counted = result["counted_days"]
+        not_counted = max(0, total_days - counted)
+        day_text = f"Day-by-day counts match for {vm.plural(result['judged_days'], 'day')}."
+        if not_counted:
+            day_text += (
+                f" The other {vm.plural(not_counted, 'day')} "
+                f"{'was' if not_counted == 1 else 'were'} not counted."
+            )
         view.update(
             verdict=(
                 "ok",
                 "✓",
                 "Everything arrived",
-                (
-                    f"All {total_days:,} days match."
-                    if total_days != 1
-                    else "The one day in this copy matches."
-                )
-                + " The source and the destination both hold "
-                f"<b>{vm.format_count(result['source_total'])}</b> log entries for these "
-                "dates."
+                group_text
+                + day_text
                 + (
-                    f" {vm.plural(unjudged, 'of those days is', 'of those days are')} shared "
+                    f" {vm.plural(unjudged, 'counted day is', 'counted days are')} shared "
                     "with logs the source was still writing, so "
                     f"{'its count is' if unjudged == 1 else 'their counts are'} shown but not "
                     "judged."
@@ -1342,8 +1375,8 @@ def check_view(
         short = [i for i in result["issues"] if i["kind"] == "short"]
         grave = [i for i in result["issues"] if i["kind"] not in {"short", "extra"}]
         differing = result["differing_days"]
-        rest = max(0, total_days - differing)
-        text = f"The other {vm.plural(rest, 'day')} match exactly."
+        rest = max(0, result["judged_days"] - differing)
+        text = f"{vm.plural(rest, 'other counted day')} match exactly."
         if unfinished:
             not_yet = total_days - result["arrived_days"]
             text = (

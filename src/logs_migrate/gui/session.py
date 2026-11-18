@@ -6,8 +6,10 @@ signing in. Signing in adds the two systems and the engine on top of it.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import platform
+import socket
 import time
 import zipfile
 from datetime import UTC, datetime
@@ -26,6 +28,31 @@ from ..security import Credentials
 from ..trust import Identity, TrustRequired, TrustStore
 from . import copies, copyview
 from . import viewmodel as vm
+
+
+def _same_address(first: str, second: str) -> bool:
+    """Avoid listing two names for one server; do not guess if IP lookup fails."""
+    first, second = first.lower().rstrip("."), second.lower().rstrip(".")
+    if first == second:
+        return True
+
+    def numeric(host):
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            return None
+
+    def addresses(host):
+        value = numeric(host)
+        if value:
+            return {value}
+        return {item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
+
+    try:
+        return bool(addresses(first) & addresses(second))
+    except OSError:
+        # No match was established; keep the name visible to the operator.
+        return False
 
 
 class Failure(Exception):
@@ -101,6 +128,7 @@ class Session:
         self.delay = 0.0
         self.errors: list[str] = []
         self.server_sign_in = False
+        self.shared_servers: list[dict[str, str]] = []
 
     @property
     def mode(self) -> str:
@@ -450,7 +478,8 @@ class Session:
             """The server password goes to the server at the typed address first. Only that
             server can say which others stand behind the address, and none of them is sent
             the password before the person has confirmed its code."""
-            for index, identity in enumerate(self._stand_in_servers(env, side)):
+            identities = self._stand_in_servers(env, side)
+            for index, identity in enumerate(identities):
                 state = self.store.check(identity)
                 name = identity.name.rsplit(":", 1)[0]
                 if state == "changed":
@@ -461,6 +490,16 @@ class Session:
                         kind="identity",
                         server=name,
                     )
+                if index and identity.fingerprint == identities[0].fingerprint:
+                    if self.store.check(identities[0]) == "trusted":
+                        self.store.trust(identity)
+                        state = "trusted"
+                        shared = {"server": name, "same_as": identities[0].name.rsplit(":", 1)[0]}
+                        if (
+                            not _same_address(shared["server"], shared["same_as"])
+                            and shared not in self.shared_servers
+                        ):
+                            self.shared_servers.append(shared)
                 if state == "unknown":
                     more.append(self._shown(side, identity, state))
                     if index == 0:
@@ -520,20 +559,29 @@ class Session:
         return env.version_check()
 
     def _same_server(self, env, identities: list[Identity]) -> list[Identity]:
-        """A server found under another name that presents exactly the code the person
-        confirmed for a typed address is that same server (only the holder of its key can
-        present it), so it is recorded without a second question. Returns the rest."""
+        """Record servers presenting a confirmed code and list the shared codes. A cloned
+        server can have the same key, so the connected screen names both addresses."""
         port = env.connection.ssh_port
         typed = (env.connection.source_host, env.connection.destination_endpoint[0])
         confirmed = {
-            self.store.known(Identity("ssh", f"{host}:{port}", ""))
+            fingerprint: host
             for name in typed
             for host in (name, name.lower())
-        } - {None}
+            if (fingerprint := self.store.known(Identity("ssh", f"{host}:{port}", "")))
+        }
         rest = []
         for identity in identities:
             if identity.kind == "ssh" and identity.fingerprint in confirmed:
                 self.store.trust(identity, env.key_line(identity))
+                shared = {
+                    "server": identity.name.rsplit(":", 1)[0],
+                    "same_as": confirmed[identity.fingerprint],
+                }
+                if (
+                    not _same_address(shared["server"], shared["same_as"])
+                    and shared not in self.shared_servers
+                ):
+                    self.shared_servers.append(shared)
             else:
                 rest.append(identity)
         return rest
@@ -593,6 +641,18 @@ class Session:
                 data = where(error)
                 data["other_found"] = True
                 raise self._fail(error, **data) from None
+        port = env.connection.ssh_port
+        typed = (env.connection.source_host.lower(), env.connection.destination_endpoint[0].lower())
+        known = {host: self.store.known(Identity("ssh", f"{host}:{port}", "")) for host in typed}
+        for host in (*env.members, *env.destination_members):
+            host = host.lower()
+            if host in typed:
+                continue
+            fingerprint = self.store.known(Identity("ssh", f"{host}:{port}", ""))
+            match = next((name for name, key in known.items() if key and key == fingerprint), None)
+            shared = {"server": host, "same_as": match}
+            if match and not _same_address(host, match) and shared not in self.shared_servers:
+                self.shared_servers.append(shared)
         self.stage(1)
         try:
             env.source_version()
@@ -658,6 +718,8 @@ class Session:
                 "servers": view["destination_servers"],
             },
             "servers_found": servers,
+            "destination_node_names": dict(getattr(self.env, "destination_node_names", {})),
+            "shared_servers": list(self.shared_servers),
             "server_sign_in": self.server_sign_in,
             "tested_at": datetime.now(UTC).isoformat(),
         }
@@ -680,6 +742,7 @@ class Session:
             self.credentials.clear()
         self.env = self.engine = self.credentials = None
         self.server_sign_in = False
+        self.shared_servers = []
 
     def close(self) -> None:
         self.disconnect()
@@ -1019,7 +1082,7 @@ class Session:
         copy = next((c for c in self._copies() if c["id"] == copy_id), None)
         require(copy is not None, Code.INVALID_INPUT)
         result = copies.check(copy)
-        started = vm._local(copy["started_at"], "UTC")
+        started = vm._local(copy["started_at"], zone)
         stem = (
             "logs-copy-report-"
             + (started.strftime("%Y-%m-%d-%H%M-") if started else "")

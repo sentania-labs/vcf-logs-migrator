@@ -1,7 +1,7 @@
 """The plain words the window shows, derived from engine results. No Qt."""
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from conftest import execute
@@ -9,6 +9,8 @@ from conftest import execute
 from logs_migrate.errors import Code
 from logs_migrate.gui import copies, copyview
 from logs_migrate.gui import viewmodel as vm
+from logs_migrate.gui.settings import Settings
+from logs_migrate.gui.state import AppState
 from logs_migrate.models import Policy, Window, parse_time
 from logs_migrate.reporting import display_run
 from logs_migrate.versions import evaluate
@@ -26,6 +28,111 @@ def recorded(journal) -> list[dict]:
 
 
 # Formatting --------------------------------------------------------------------------------
+
+
+def test_copy_progress_does_not_fall_back_to_zero_on_a_later_refresh():
+    state = AppState(Settings())
+    first = {"run_id": "copy", "bytes_transferred": 37_100_000}
+    later = {"run_id": "copy", "bytes_transferred": 0}
+    state.remember_progress(first)
+    state.remember_progress(later)
+    assert later["bytes_transferred"] == 37_100_000
+
+
+def test_shared_server_keys_are_listed_on_connection():
+    from types import SimpleNamespace
+
+    from logs_migrate.gui.session import Session
+    from logs_migrate.trust import Identity
+
+    class Store:
+        def known(self, identity):
+            return "same" if identity.name == "source.example.com:22" else None
+
+        def trust(self, identity, key):
+            pass
+
+    session = Session()
+    session.store = Store()
+    env = SimpleNamespace(
+        connection=SimpleNamespace(
+            source_host="source.example.com",
+            destination_endpoint=("destination.example.com", 9543),
+            ssh_port=22,
+        ),
+        key_line=lambda identity: None,
+    )
+    other = Identity("ssh", "source-2.example.com:22", "same")
+    assert session._same_server(env, [other]) == []
+    assert session.shared_servers == [
+        {"server": "source-2.example.com", "same_as": "source.example.com"}
+    ]
+
+
+def test_typed_ip_and_member_hostname_for_the_same_server_are_not_listed(monkeypatch):
+    from types import SimpleNamespace
+
+    from logs_migrate.gui.session import Session
+    from logs_migrate.trust import Identity
+
+    class Store:
+        def known(self, identity):
+            return "same" if identity.name == "192.0.2.10:22" else None
+
+        def trust(self, identity, key):
+            pass
+
+    monkeypatch.setattr(
+        "socket.getaddrinfo", lambda host, *args, **kwargs: [(2, 1, 6, "", ("192.0.2.10", 0))]
+    )
+    session = Session()
+    session.store = Store()
+    env = SimpleNamespace(
+        connection=SimpleNamespace(
+            source_host="192.0.2.10",
+            destination_endpoint=("destination.example.com", 9543),
+            ssh_port=22,
+        ),
+        key_line=lambda identity: None,
+    )
+    assert session._same_server(env, [Identity("ssh", "source.example.com:22", "same")]) == []
+    assert session.shared_servers == []
+
+
+def test_unresolvable_member_is_not_assumed_to_be_the_typed_ip(monkeypatch):
+    from logs_migrate.gui.session import _same_address
+
+    def fail(*args, **kwargs):
+        raise OSError("DNS unavailable")
+
+    monkeypatch.setattr("socket.getaddrinfo", fail)
+    assert not _same_address("192.0.2.10", "other-server")
+
+
+def test_copy_progress_names_known_servers_and_hides_unmatched_ids():
+    ids = ["748bc2db-df64-4140-9cb4-cd2709443d8a", "a17a0a82-0000-4000-8000-000000000000"]
+    copy = {"total_bytes": 112_000_000, "done_bytes": 0, "parts": [], "started_at": None}
+    status = {
+        "status": "running",
+        "run_id": "copy",
+        "bytes_transferred": 37_100_000,
+        "elapsed_seconds": 60,
+        "eta_seconds": 20,
+        "nodes": [{"node": ident, "status": "completed", "progress": 100} for ident in ids],
+    }
+    view = copyview.progress_view(
+        copy,
+        status,
+        zone="UTC",
+        now="2026-11-17T19:00:00Z",
+        latest={"node": ids[1], "day": date(2024, 3, 16)},
+        server_names={ids[0]: "server.example.com"},
+    )
+    assert [server["name"] for server in view["servers"]] == ["server.example.com", "Server 1"]
+    assert view["percent"] == 33
+    assert ids[1] not in view["latest"] and "Server 1" in view["latest"]
+    assert ("Time left", "under a minute") in view["facts"]
+    assert ("Should finish", "soon") in view["facts"]
 
 
 def test_sizes_counts_and_durations_read_the_way_a_person_says_them():
@@ -244,6 +351,30 @@ COMPARISON = {
 }
 
 
+def test_retention_difference_shows_the_destination_limit():
+    comparison = {
+        "rules": [
+            {
+                "selector": "partitions:Default",
+                "type": "partitions",
+                "name": "Default",
+                "status": "differs",
+                "changed_fields": ["retention_seconds"],
+                "warnings": [],
+            }
+        ],
+        "details": {
+            "partitions:Default": {
+                "source": {"retention_seconds": 0},
+                "destination": {"retention_seconds": 30 * 86400},
+            }
+        },
+    }
+    (row,) = vm.rule_rows(comparison)
+    assert "30 days" in row["now"]
+    assert not row["needed"]
+
+
 def test_rules_say_what_they_do_and_mark_the_one_the_copy_depends_on():
     rows = vm.rule_rows(COMPARISON)
     assert [row["name"] for row in rows] == [
@@ -324,6 +455,28 @@ def test_rule_results_are_copied_left_out_or_not_copied_with_a_reason():
 # Dates and the plan ------------------------------------------------------------------------
 
 
+def test_backfilled_open_group_does_not_hide_newer_finished_days():
+    def group(status, start, end):
+        return {
+            "status": status,
+            "start": parse_time(start),
+            "end": parse_time(end),
+            "bounds_proven": True,
+            "node": "server-1",
+        }
+
+    source = {
+        "buckets": [
+            group("sealed", "2024-03-01T00:00:00Z", "2026-11-10T00:00:00Z"),
+            group("active", "2024-03-20T00:00:00Z", "2024-06-01T00:00:00Z"),
+        ]
+    }
+    extent = vm.history(source)
+    assert extent["last"] == date(2026, 11, 10)
+    assert vm.dates_problem(date(2025, 1, 1), date(2025, 1, 8), extent) is None
+    assert vm.preset_days(3, extent) == (date(2026, 8, 11), date(2026, 11, 10))
+
+
 def test_presets_count_back_from_the_last_day_that_can_be_picked():
     extent = {"first": date(2025, 3, 3), "last": date(2026, 11, 9), "newest": date(2026, 11, 10)}
     assert [name for name, _ in vm.PRESETS] == [
@@ -367,6 +520,23 @@ def test_the_plan_reads_as_short_lines_from_what_the_engine_planned(rig):
     months = copyview.months_view(view)
     assert months[0][0] == "Mar 2026" and months[-1][3] == "No. Still being written."
     assert copyview.plan_detail_csv(view).splitlines()[0].startswith("status,source_server")
+
+
+def test_retention_warning_names_both_limits_without_blocking_the_plan(rig):
+    engine, env, _ = rig
+    env.data["source"]["partitions"][0]["retention_seconds"] = 0
+    env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+    run = engine.plan(MARCH, Policy(poll_seconds=0))
+    view = copyview.plan_view(
+        copies.preview([display_run(run)]),
+        (date(2026, 3, 1), date(2026, 3, 31)),
+        None,
+        server_sign_in=True,
+    )
+    assert view["phase"] == "ready"
+    warning = next(line for line in view["lines"] if line["key"] == "Retention")
+    assert "destination keeps logs for 30 days" in warning["text"]
+    assert "source keeps them forever" in warning["text"]
 
 
 def test_a_refusal_becomes_a_heading_the_days_affected_and_a_button_that_fixes_it():
@@ -462,6 +632,70 @@ def test_a_refusal_becomes_a_heading_the_days_affected_and_a_button_that_fixes_i
 # Copies and their results ------------------------------------------------------------------
 
 
+def test_result_leads_with_groups_and_says_only_19_of_73_days_were_counted():
+    start = date(2024, 3, 1)
+    days = [start + timedelta(days=i) for i in range(73)]
+    group = {
+        "node": "source",
+        "id": "g",
+        "start": parse_time("2024-03-01T00:00:00Z"),
+        "end": parse_time("2024-05-12T23:59:59Z"),
+    }
+    daily = [
+        {
+            "day": str(day),
+            "source": 223015 if i == 0 else 0,
+            "actual": 223015 if i == 0 else 0,
+            "preexisting": 0,
+            "new_ingest": 0,
+            "difference": 0,
+        }
+        for i, day in enumerate(days[:19])
+    ]
+    check = {
+        "outcome": "verified_success",
+        "daily": daily,
+        "bucket_check": {
+            "matched_groups": 10,
+            "total_groups": 10,
+            "matched_events": 406977,
+            "total_events": 406977,
+            "unknown": [],
+            "unmatched": [],
+        },
+    }
+    run = {"verification": check, "plan": {"selected": [group]}, "client": {}}
+    part = {"started": [run], "root": run}
+    copy = {
+        "state": "finished",
+        "days": days,
+        "parts": [part],
+        "groups": [group],
+        "received": ["g"],
+        "settled": True,
+        "labels": {},
+        "started_at": None,
+        "source_version": "8.18.7",
+        "destination_version": "9.0.2",
+        "elapsed_seconds": 60,
+        "segments": 1,
+        "total_bytes": 112_000_000,
+        "done_bytes": 112_000_000,
+        "active_skipped": False,
+        "excluded": [],
+        "gone": [],
+        "acknowledged": False,
+    }
+    result = copies.check(copy)
+    view = copyview.check_view(copy, result)
+    text = view["verdict"][3]
+    assert "10 stored groups" in text and "406,977" in text
+    assert "19 days" in text and "54 days were not counted" in text
+    assert "All 73 days match" not in text
+    assert copyview.all_days_rows(copy, result)[-1][1:3] == ("not counted", "not counted")
+    assert "19 days" in copyview.report_markdown(copy, result, zone="UTC")
+
+
 def test_a_plan_that_was_never_started_is_not_a_run(rig):
     engine, env, journal = rig
     run = engine.plan(MARCH, Policy(poll_seconds=0))
@@ -483,6 +717,7 @@ def test_a_finished_copy_whose_days_all_match_says_everything_arrived(rig):
     engine.verify(run["id"])
     (copy,) = recorded(journal)
     result = copies.check(copy)
+    assert result["group_check"] is not None
     assert result["phase"] == "ok" and result["source_total"] == result["arrived_total"] > 0
     view = copyview.check_view(copy, result)
     assert view["verdict"][2] == "Everything arrived"

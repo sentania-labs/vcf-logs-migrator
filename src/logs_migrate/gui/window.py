@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..errors import Code
 from . import copies, copyview, theme
 from . import viewmodel as vm
 from .pages.check import CheckPage
@@ -765,12 +766,16 @@ class MainWindow(QMainWindow):
             table.set_rows(rows)
             body.append(table)
         if servers:
-            listed = GridTable(["Server", "Identity code"], stretch=[2, 5])
+            listed = GridTable(["Server", "Identity code"], stretch=[2, 5], nowrap=())
             listed.set_rows(
                 [
                     (
                         f"{escape(item['name'].rsplit(':', 1)[0])} ({names[item['role']]})",
-                        mono.format(vm.server_key(item["fingerprint"])),
+                        mono.format(
+                            vm.server_key(item["fingerprint"])[:25]
+                            + "<br>"
+                            + vm.server_key(item["fingerprint"])[25:]
+                        ),
                     )
                     for item in servers
                 ]
@@ -1290,6 +1295,12 @@ class MainWindow(QMainWindow):
             state.plan = result
             state.plan_error = state.plan_refusal = None
             state.acknowledged = False
+            if any(
+                part["plan"]["partition_diff"]["missing"]
+                or part["plan"]["partition_diff"]["different"]
+                for part in result["parts"]
+            ):
+                state.comparison = state.config_result = None
         elif job == "start":
             context = self.context.pop("start")
             state.clear_plan()
@@ -1384,7 +1395,7 @@ class MainWindow(QMainWindow):
         self.context.pop("reconnect", None)
         if state.lost_at:
             self.toast("Reconnected. The copy carried on while this window was out of touch.")
-        state.status = result
+        state.remember_progress(result)
         state.status_at = vm.now_iso()
         state.status_error = state.lost_at = None
         state.unsure = result.get("start_outcome") == "unknown"
@@ -1393,7 +1404,9 @@ class MainWindow(QMainWindow):
         if new and copy is not None:
             ends = {group["id"]: group["end"] for group in copy["groups"]}
             newest = max(new, key=lambda item: ends.get(item, 0))
-            if newest in ends:
+            if newest in ends and (
+                state.latest is None or copies.day_of(ends[newest]) >= state.latest["day"]
+            ):
                 state.latest = {
                     "day": copies.day_of(ends[newest]),
                     "node": arrived[newest],
@@ -1464,6 +1477,8 @@ class MainWindow(QMainWindow):
             state.plan = None
             state.plan_error = code
             state.plan_refusal = data.get("refusal")
+            if code == Code.PARTITIONS.value:
+                state.comparison = state.config_result = None
             if (data.get("refusal") or {}).get("kind") == "listfail" and activity is not None:
                 self.owners.pop(job, None)
                 # The first two steps read the source; the ones after them, the destination.

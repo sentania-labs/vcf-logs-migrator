@@ -5,7 +5,7 @@ import pytest
 
 from logs_migrate.adapters.rest import HTTPS, Logs90, Logs911, RecordedTransport
 from logs_migrate.adapters.ssh import NodeSSH, ReadOperation, RecordedSSH
-from logs_migrate.errors import Code, MigrationError
+from logs_migrate.errors import Code, MigrationError, Rejection
 from logs_migrate.models import DAY, Window
 from logs_migrate.security import Credentials, Secret
 
@@ -401,3 +401,81 @@ def test_https_maps_http_440_to_session_expired(monkeypatch):
     )
     with pytest.raises(SessionExpired):
         transport.request("POST", "/api/v2/data-migrations", {})
+
+
+def _https_answering(monkeypatch, status, body):
+    class Socket:
+        def getpeercert(self, binary_form):
+            return b"certificate"
+
+    class Response:
+        def __init__(self):
+            self.status = status
+
+        def read(self, *args):
+            return body
+
+    class Connection:
+        sock = Socket()
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def connect(self):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("http.client.HTTPSConnection", Connection)
+    return HTTPS(
+        "https://logs.invalid", certificate_sha256=hashlib.sha256(b"certificate").hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("PUT", "/api/v1/partitioning"),
+        ("PUT", "/api/v1/log-filter/abc"),
+        ("PUT", "/api/v1/log-mask/abc"),
+        ("PUT", "/api/v1/log-forwarder/abc"),
+        ("POST", "/api/v1/log-forwarder/batch"),
+        ("POST", "/api/v1/log-filter"),
+    ],
+)
+def test_http_400_on_config_routes_reports_the_appliance_refusal(monkeypatch, method, path):
+    transport = _https_answering(
+        monkeypatch,
+        400,
+        b'{"errorMessage":"Data partition name cannot be changed.","errorCode":"FIELD_ERROR"}',
+    )
+    with pytest.raises(Rejection) as error:
+        transport.request(method, path, {})
+    assert error.value.code.value == "destination_refused"
+    assert error.value.message == "Data partition name cannot be changed."
+
+
+def test_refusal_keeps_ordinary_punctuation_without_exposing_credentials(monkeypatch):
+    body = json.dumps({"errorMessage": "Invalid value: retention (days); use 1/30_60."}).encode()
+    transport = _https_answering(monkeypatch, 400, body)
+    with pytest.raises(Rejection) as error:
+        transport.request("PUT", "/api/v1/partitioning", {})
+    assert error.value.message == "Invalid value: retention (days); use 1/30_60."
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(401, "authentication_failed"), (403, "authentication_failed"), (404, "connection_failed")],
+)
+def test_auth_and_missing_statuses_on_config_routes_are_not_refusals(monkeypatch, status, code):
+    transport = _https_answering(monkeypatch, status, b'{"errorMessage":"Nope."}')
+    with pytest.raises(Rejection) as error:
+        transport.request("GET", "/api/v1/partitioning")
+    assert error.value.code.value == code

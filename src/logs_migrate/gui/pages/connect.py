@@ -647,6 +647,22 @@ class ConnectPage(Page):
             if view["caution"]:
                 widgets.append(banner("warn", *view["caution"]))
             widgets.append(self._result_cards(view))
+            shared = discovered.get("shared_servers", [])
+            if shared:
+                for address in dict.fromkeys(item["same_as"] for item in shared):
+                    names = ", ".join(
+                        escape(item["server"]) for item in shared if item["same_as"] == address
+                    )
+                    count = sum(item["same_as"] == address for item in shared)
+                    verb = "presents" if count == 1 else "present"
+                    widgets.append(
+                        rich(
+                            f"Also connected: {names}, which {verb} "
+                            "the same identity code as "
+                            f"{escape(address)}.",
+                            "subtle",
+                        )
+                    )
             found = discovered["servers_found"]
             widgets.append(
                 rich(
@@ -675,7 +691,7 @@ class ConnectPage(Page):
                 if kind == "unfinished" and copy and copy["state"] in {"running", "unsure"}:
                     text = "Go to the copy →"
                 primary = (text, self.app.resume_go, "primary")
-                actions = [("Sign out of both", self.sign_out)]
+                actions = [("Sign out of both", self.sign_out), ("Test again", self.retest)]
                 if kind == "back" and not state.server_sign_in:
                     actions.append(("Change sign-in details", self.app.add_sign_in))
                 actions.append(primary)
@@ -692,6 +708,7 @@ class ConnectPage(Page):
                 widgets.append(nxt)
                 actions = [
                     ("Sign out of both", self.sign_out),
+                    ("Test again", self.retest),
                     ("Continue →", lambda: self.app.go("rules"), "primary"),
                 ]
             self.set_body(*widgets)

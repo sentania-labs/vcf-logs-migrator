@@ -289,6 +289,7 @@ class CopyPage(Page):
             self.set_footer(hint, actions)
             return
         if phase in {"running", "lost", "settling"}:
+            names = (state.discovered or {}).get("destination_node_names") or {}
             view = copyview.progress_view(
                 copy,
                 state.status,
@@ -297,6 +298,8 @@ class CopyPage(Page):
                 lost_at=state.lost_at,
                 quiet_minutes=quiet,
                 latest=state.latest,
+                server_names=names,
+                server_labels=state.server_labels,
                 continued=bool(state.continued_note),
             )
             if state.continued_note and view["latest"]:

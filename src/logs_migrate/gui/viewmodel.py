@@ -235,6 +235,10 @@ PLAIN = {
         "One of the systems did not answer.",
         "Check that it is running and that this computer can reach it, then try again.",
     ),
+    Code.REFUSED: (
+        "The destination refused the request.",
+        "Check the rules and settings on the destination, then try again.",
+    ),
     Code.SCHEMA: (
         "One of the systems answered in a form this app does not recognise.",
         "Try again. If it keeps happening, save a troubleshooting file.",
@@ -705,7 +709,12 @@ def rule_does(kind: str, rule: dict | None) -> str:
             "filters": "Drops new logs that match a condition.",
         }.get(kind, "Changes what happens to new logs.")
     if kind == "partitions":
-        seconds = rule.get("retention_seconds") or rule.get("retentionSeconds") or 0
+        seconds = (
+            rule.get("retention_seconds")
+            or rule.get("retentionSeconds")
+            or rule.get("retentionPeriodSeconds")
+            or 0
+        )
         return f"Keeps the logs it selects {_days(seconds)}."
     if kind == "forwarding":
         return f"Sends a copy of new logs to {rule.get('host', 'another system')}" + (
@@ -732,13 +741,21 @@ def rule_rows(comparison: dict | None) -> list[dict]:
         kind, changed = rule["type"], rule.get("changed_fields", [])
         detail = details.get(rule["selector"], {})
         source, destination = detail.get("source"), detail.get("destination")
-        needed = kind == "partitions"
+        needed = kind == "partitions" and (
+            rule["status"] == "missing"
+            or not changed
+            or not set(changed)
+            <= {"retention_seconds", "retentionSeconds", "retentionPeriodSeconds"}
+        )
         trusts = any("acceptCert" in w for w in rule.get("warnings", []))
         switch = kind in {"filters", "masking"} and "enabled" in changed
         if rule["status"] == "missing":
             now = "Missing"
             off = kind in {"filters", "masking"} and source and not source.get("enabled", True)
             will = "Add it, switched off" if off else "Add it"
+        elif kind == "partitions" and not needed and destination is not None:
+            now = rule_does(kind, destination)
+            will = "Change it to match the source"
         elif switch and destination is not None and len(changed) == 1:
             on = bool(destination.get("enabled"))
             now = "Switched on" if on else "Switched off"
@@ -839,6 +856,7 @@ RULE_FAILURE = {
     Code.INVENTORY_CHANGED.value: "It changed on the destination while it was being copied",
     Code.AUTH.value: "The destination did not accept the sign-in",
     Code.CONNECTION.value: "The destination did not answer, or refused it",
+    Code.REFUSED.value: "The destination refused the change",
     Code.INCOMPLETE.value: "It could not be read back from the destination to confirm it",
     Code.UNCERTAIN.value: "The destination did not answer, so it may or may not be there",
 }
@@ -861,7 +879,9 @@ def rule_results(result: dict | None) -> list[dict]:
                 {"name": name, "badge": ("", "Left out"), "text": "You chose not to copy it"}
             )
         else:
-            reason = RULE_FAILURE.get(rule.get("reason", ""), "The destination did not take it")
+            reason = rule.get("message") or RULE_FAILURE.get(
+                rule.get("reason", ""), "The destination did not take it"
+            )
             rows.append(
                 {
                     "name": name,
@@ -936,18 +956,10 @@ def history(source: dict | None) -> dict | None:
     first = day_of(min(g["start"] for g in sealed))
     last_sealed = day_of(max(g["end"] for g in sealed))
     open_groups = [g for g in source["buckets"] if g["status"] == "active"]
-    starts = [g["start"] for g in open_groups if g.get("bounds_proven") and g.get("start")]
-    newest = None
-    if open_groups:
-        if starts and len(starts) == len(open_groups):
-            newest = day_of(min(starts))
-        else:
-            ends: dict[str, int] = {}
-            for g in sealed:
-                ends[g["node"]] = max(ends.get(g["node"], 0), g["end"])
-            newest = day_of(min(ends.values())) if ends else last_sealed
-    last = min(last_sealed, newest - timedelta(days=1)) if newest else last_sealed
-    return {"first": first, "last": max(first, last), "newest": newest, "last_sealed": last_sealed}
+    # The planner judges days shared with open groups individually. An old event in an
+    # open group must not make all later, finished data unavailable in the window.
+    newest = last_sealed + timedelta(days=1) if open_groups else None
+    return {"first": first, "last": last_sealed, "newest": newest, "last_sealed": last_sealed}
 
 
 PRESETS = (("Last 3 months", 3), ("Last 6 months", 6), ("Last 12 months", 12), ("Everything", None))

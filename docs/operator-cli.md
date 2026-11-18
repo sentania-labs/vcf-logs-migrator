@@ -49,6 +49,8 @@ can retire its own existing history. Missing budget or disk figures are shown as
 unknown and warned about rather than refused. The
 preview warns that the source root password is sent to the destination for the
 transfer and that source retention can remove planned buckets before the run.
+It also warns when partition retention differs, including when the destination may remove
+copied logs sooner. A missing partition or different routing still blocks the copy.
 
 The preview reports `source_ingest` as growth in the active bucket directories over
 a short sampled interval. Growth indicates the source is still receiving data; no
@@ -104,7 +106,8 @@ and the source is never written.
 
 The engine applies partitions, filters, masking, then forwarding. Existing rules
 are updated by destination ID after matching their name (partitions are updated at
-`PUT /api/v1/partitioning` with the ID in the body; the per-ID route is a 404 on 9.0); creates of partitions,
+`PUT /api/v1/partitioning` with the ID in the body; the per-ID route is a 404 on 9.0; the
+Default partition, fixed ID `d41d8cd9-8f00-3204-a980-0998ecf8427e`, is sent with an empty `name` because 9.0 refuses its listed name); creates of partitions,
 masking and filters omit the source `id` so the destination assigns its own.
 Masking and filters retain their API definitions. Partition retention/archive
 settings travel with the rule. A newly created partition needs **one destination
@@ -124,7 +127,8 @@ per source rule. Created/updated means the destination readback matches its
 configuration; it does not prove log delivery, masking, filtering or partition
 routing. A failed rule does not roll back earlier changes, and other selected
 rules are still attempted. An HTTP error answer (4xx) means the write was refused and
-is `failed`. A 2xx answer whose body is not JSON (9.0 answers a partition update with
+is `failed`; for a configuration route with a JSON error body the reason is
+`destination_refused` and the appliance's message is shown when it is plain text. A 2xx answer whose body is not JSON (9.0 answers a partition update with
 plain text) counts as accepted and is confirmed by the readback. A lost write response is
 uncertain and never retried
 automatically. Compare again to inspect the destination before selecting a retry.
@@ -371,7 +375,9 @@ are retained; other exception text and remote stderr are suppressed. Host-key
 and authentication failures use `authentication_failed`; the other stages use
 `connection_failed`. All exit 7. No SSH algorithm policy was weakened.
 
-`selftest` exits 0 when every read-only check passed and 1 otherwise.
+`selftest` exits 0 when the read-only checks pass or only have warnings, and 1 when a check
+fails. Its source count check has a shorter timeout; an incomplete or timed-out count is a
+warning rather than a failed migration readiness check.
 
 On a large source the per-node SSH bucket listing is the slow step. Nodes are read in
 parallel, the CLI prints a per-node progress line and each count query to stderr, and

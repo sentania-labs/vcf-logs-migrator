@@ -21,7 +21,7 @@ Each download has both a desktop window and a command-line interface (CLI). You 
 - On the source, you need the address of one 8.18 cluster member, a Logs API account and password, and root SSH access to **every** 8.18 member. Your workstation has to reach the source Logs API on port 9543 and each source member over SSH on port 22. The destination needs SSH access to each source member too.
 - On the destination, you need the Logs address, an API account and password, and access to port 9543. If you also give it root SSH access, the plan can check free storage on each destination node.
 - During the copy, the source root SSH password goes to the destination so it can pull the data. Type passwords at a prompt or in the window. For automation, use the private credential methods in the [lab guide](docs/testing-against-a-lab.md), and never put a password in a command argument.
-- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. The command line asks about every one. The window asks once, before any password is sent, about the two addresses you typed and the server at each. If signing in finds more servers behind an address, it asks once more about those before any password goes to them. It stops if a recorded identity ever changes. Make sure the partition configuration matches and the destination has enough space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
+- Compare the certificate and SSH host key fingerprints with the appliances before you trust them. The command line asks about every one. The window asks once, before any password is sent, about the two addresses you typed and the server at each. If signing in finds more servers behind an address, it asks once more about those before any password goes to them. It stops if a recorded identity ever changes. Check the partition routing, retention and destination space. The [lab guide](docs/testing-against-a-lab.md) is a step-by-step walkthrough against lab appliances, with the exact commands for these checks.
 
 ## Walk through a migration with the CLI
 
@@ -93,7 +93,7 @@ The API user defaults to `admin` and the source SSH user to `root`. The [lab gui
    extrapolate from your own run. The preview gives a rough range and its assumptions;
    a rate measured for several minutes on the same cluster pair improves later previews.
 
-   Take the `id` from your plan and use it in place of `<run-id>` below. If the partitions differ, sort that out before copying. See [configuration rules](docs/operator-cli.md#configuration-rules).
+   Take the `id` from your plan and use it in place of `<run-id>` below. Missing partitions and routing differences block copying; retention differences are warnings so you can decide whether to proceed. See [configuration rules](docs/operator-cli.md#configuration-rules).
 
 3. **Copy.** Once you've read the plan, start the transfer. If the plan leaves out open groups, you have to acknowledge that their data won't be copied. Keep the quotes exactly as shown.
 
@@ -123,7 +123,7 @@ The example report counts whole selected groups on the source, but only the requ
 
 Open the download as shown above. The window is five steps down the left side, done in order: **Connect, Copy rules, Choose dates, Copy logs, Check result.** A step you can't do yet is greyed out and says why. Every screen has one main button, bottom right, with a sentence beside it saying what happens next. The window can be made as small as 1024 by 700; no screen scrolls or cuts its text at that size. These pictures come from stand-in systems, not a real environment.
 
-1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant. It shows each certificate's fingerprint and the identity code of the server at each address, for comparing. If a system has several servers, one more question lists the others, and none of them is sent a password until you have confirmed it. You then see whether these two systems can migrate, and if not, which one has to change.
+1. **Connect.** Type each system's address and admin sign-in, the source servers' root password and (recommended) the destination servers' root password, then press **Test connections**. The first time, before any password is sent, the app asks whether these two addresses are the systems you meant. It shows each certificate's fingerprint and the identity code of the server at each address, for comparing. If a system has more servers with new identity codes, another question lists them before their passwords are sent. The connected screen lists servers that share an already confirmed identity code. Use **Test again** to refresh the connection without retyping passwords. You then see whether these two systems can migrate, and if not, which one has to change.
 
    ![Connect, first launch](docs/images/gui/01-connect.png)
    ![The first-time question](docs/images/gui/14-first-time-question.png)
@@ -134,17 +134,17 @@ Open the download as shown above. The window is five steps down the left side, d
 
    ![Rules that differ](docs/images/gui/03-copy-rules.png)
 
-3. **Choose dates.** Pick how far back and press **Check these dates**. The plan is a short list: what is copied, how big, how long, whether it fits, and what is left out. Tick the box beside **Start copying** to start. If the dates can't be copied as picked, the screen says which days are affected and why, and the button fixes it.
+3. **Choose dates.** Pick how far back and press **Check these dates**. Presets count back from the newest finished data, even if an open group contains older events. The plan is a short list: what is copied, how big, how long, whether it fits, and what is left out. Tick the box beside **Start copying** to start. If the dates can't be copied as picked, the screen says which days are affected and why, and the button fixes it. When a rule needs attention, returning to **Copy rules** compares the systems again; you can also choose **Compare again** there.
 
    ![The plan](docs/images/gui/04-plan.png)
    ![Days that cannot be copied, and the fix](docs/images/gui/05-cannot-start.png)
 
-4. **Copy logs.** One percentage, a bar, time left and a row per destination server. You can close the window; the copy runs on the destination. **Stop the copy…** asks first, and **Continue copying** sends only what is missing.
+4. **Copy logs.** One percentage, a bar, time left and a row per destination server. When an address is unavailable, the row uses a numbered server label. You can close the window; the copy runs on the destination. **Stop the copy…** asks first, and **Continue copying** sends only what is missing.
 
    ![A copy running](docs/images/gui/06-copying.png)
    ![A copy that was stopped](docs/images/gui/07-stopped.png)
 
-5. **Check result.** The app counts both systems day by day and gives one verdict, then only the days that differ and what each means. **Save report** writes a readable report and a data file.
+5. **Check result.** The app checks stored groups when destination server access is available, then compares day-by-day counts and says how many days were counted. It shows days that differ and what each means. **Save report** writes a readable report and a data file named using the selected time zone.
 
    ![Everything arrived](docs/images/gui/08-result.png)
    ![Days that need attention](docs/images/gui/09-days-need-attention.png)

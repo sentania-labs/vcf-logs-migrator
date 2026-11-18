@@ -1392,15 +1392,27 @@ class Engine:
         assignment = run.get("assignment") if run else None
         if (
             assignment
-            and task.status == "running"
-            and all(node.status == "running" for node in task.nodes)
+            and task.nodes
+            and (
+                task.status == "running"
+                or (task.status == "completed" and all(n.status == "completed" for n in task.nodes))
+            )
+            and all(
+                node.status in {"running", "completed"} and not node.skipped for node in task.nodes
+            )
         ):
             sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}
             node_results = []
             for node, output in zip(task.nodes, result["nodes"], strict=True):
-                if node.node not in assignment or node.scheduled_ids is None:
+                if node.node not in assignment or (
+                    node.scheduled_ids is None and node.status != "completed"
+                ):
                     break
-                remaining = {item for ids in node.scheduled_ids.values() for item in ids}
+                remaining = (
+                    {item for ids in (node.scheduled_ids or {}).values() for item in ids}
+                    if node.status != "completed"
+                    else set()
+                )
                 assigned = set(assignment[node.node])
                 if not remaining <= assigned:
                     break
@@ -1440,6 +1452,45 @@ class Engine:
                 ):
                     result["eta_seconds"] = max(n["eta_seconds"] for n in node_results)
                 result["total_bytes"] = copied + remaining
+        elif (
+            run
+            and task.nodes
+            and not task.skipped
+            and (
+                task.status == "running"
+                or (task.status == "completed" and all(n.status == "completed" for n in task.nodes))
+            )
+        ):
+            # The first poll can arrive after a group has already finished. The API still
+            # lists every remaining group and each server's original group count, so the
+            # copy-wide completed bytes are known even though per-server assignment is not.
+            sizes = {b["id"]: b["size"] for b in run["plan"]["selected"]}
+            nodes = task.nodes
+            if sizes and all(
+                node.status in {"running", "completed"}
+                and not node.skipped
+                and node.total_buckets is not None
+                and (node.scheduled_ids is not None or node.status == "completed")
+                for node in nodes
+            ):
+                pending = [
+                    item
+                    for node in nodes
+                    if node.status != "completed"
+                    for ids in (node.scheduled_ids or {}).values()
+                    for item in ids
+                ]
+                total_groups = sum(sum(node.total_buckets.values()) for node in nodes)
+                if (
+                    total_groups == len(sizes)
+                    and len(pending) == len(set(pending))
+                    and set(pending) <= sizes.keys()
+                ):
+                    done = sizes.keys() - set(pending)
+                    result["bytes_transferred"] = sum(sizes[item] for item in done)
+                    result["total_bytes"] = sum(sizes.values())
+                    result["buckets_done"] = len(done)
+                    result["buckets_total"] = len(sizes)
         result["observation"] = (
             "destination API; estimates derive from API counters and elapsed time"
         )
@@ -1727,13 +1778,33 @@ class Engine:
         with self._exclusive():
             run = self.journal.load(run_id)
             require("baseline" in run and "source_by_bucket" in run, Code.STATE)
+            policy = Policy(**run["query_policy"])
+        self._step("verify_ended")
+        for _ in range(policy.attempts - 1):
+            try:
+                with self._exclusive():
+                    run = self.journal.load(run_id)
+                    planned = run["plan"]["destination"]
+                    require(
+                        self.env.destination_topology() == (planned["id"], planned["identity"]),
+                        Code.TOPOLOGY,
+                    )
+                    task = self._settle(planned["id"])
+            except MigrationError:
+                # The final check records any error through the normal result path.
+                break
+            if task.status != "running":
+                break
+            self.clock.sleep(policy.poll_seconds)
+        with self._exclusive():
+            run = self.journal.load(run_id)
+            require("baseline" in run and "source_by_bucket" in run, Code.STATE)
             try:
                 planned = run["plan"]["destination"]
                 require(
                     self.env.destination_topology() == (planned["id"], planned["identity"]),
                     Code.TOPOLOGY,
                 )
-                self._step("verify_ended")
                 task = self._settle(planned["id"])
                 require(task.status in TERMINAL | {"running"}, Code.UNCERTAIN)
                 require(task.status != "running", Code.BUSY)
@@ -1763,7 +1834,7 @@ class Engine:
                     key for key, counts in counts_by_copy.items() if len(counts) > 1
                 )
                 bucket_check = None
-                if not self.attribution and destination.inventory_available:
+                if destination.inventory_available or self.attribution:
                     selected = run["plan"].get("original_selected", run["plan"]["selected"])
                     by_id = {}
                     for bucket in destination.buckets:
@@ -1790,6 +1861,10 @@ class Engine:
                         "unmatched": [b["node"] + "/" + b["id"] for b in unmatched],
                         "unknown": [b["node"] + "/" + b["id"] for b in unknown],
                     }
+                    if self.attribution and (unmatched or unknown):
+                        # The stand-in's per-event attribution remains authoritative when
+                        # its abbreviated inventory cannot establish a group comparison.
+                        bucket_check = None
                 try:
                     result = (
                         self._reconcile(run, destination.id)

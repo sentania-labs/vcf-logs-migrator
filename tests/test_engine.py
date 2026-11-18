@@ -912,6 +912,81 @@ def test_observed_assignment_provides_progress_and_measured_preview(rig):
     assert "buckets_done" not in terminal
 
 
+def test_progress_keeps_counting_after_each_destination_server_finishes(rig):
+    engine, _, _ = rig
+    run = {
+        "plan": {
+            "selected": [
+                {"id": "a", "size": 40_000_000},
+                {"id": "b", "size": 36_000_000},
+                {"id": "c", "size": 36_000_000},
+            ]
+        },
+        "assignment": {"one": ["a"], "two": ["b"], "three": ["c"]},
+    }
+
+    def node(name, status, pending):
+        return NodeTransfer(
+            name,
+            status,
+            bytes_transferred=None,
+            scheduled_ids={"source": tuple(pending)},
+            total_buckets={"source": 1},
+        )
+
+    task = Transfer(
+        "task",
+        "running",
+        bytes_transferred=None,
+        nodes=(
+            node("one", "completed", ["a"]),
+            node("two", "running", ["b"]),
+            node("three", "running", ["c"]),
+        ),
+    )
+    assert engine._progress(task, run)["bytes_transferred"] == 40_000_000
+    all_done = replace(
+        task,
+        nodes=tuple(
+            replace(n, status="completed", scheduled_ids={"source": ()}) for n in task.nodes
+        ),
+    )
+    result = engine._progress(all_done, run)
+    assert result["bytes_transferred"] == 112_000_000
+    assert all(n["bytes_transferred"] == n["total_bytes"] for n in result["nodes"])
+    assert (
+        engine._progress(replace(all_done, status="completed"), run)["bytes_transferred"]
+        == 112_000_000
+    )
+    assert engine._progress(replace(all_done, status="failed"), run)["bytes_transferred"] is None
+
+
+def test_progress_is_available_when_a_bucket_finished_before_the_first_poll(rig):
+    engine, _, _ = rig
+    run = {
+        "plan": {
+            "selected": [
+                {"id": "a", "size": 40_000_000},
+                {"id": "b", "size": 36_000_000},
+                {"id": "c", "size": 36_000_000},
+            ]
+        }
+    }
+    nodes = tuple(
+        NodeTransfer(
+            name,
+            "completed",
+            progress=100,
+            bytes_transferred=None,
+            scheduled_ids={"source": ()},
+            total_buckets={"source": 1},
+        )
+        for name in ("one", "two", "three")
+    )
+    result = engine._progress(Transfer("task", "running", bytes_transferred=None, nodes=nodes), run)
+    assert result["bytes_transferred"] == 112_000_000
+
+
 def test_capacity_warns_when_api_assignment_exceeds_node_budget(rig):
     engine, _, _ = rig
     plan = planned(engine)["plan"]
@@ -1025,7 +1100,7 @@ def test_signoff_report_formats_utc_dates_and_ranges(rig):
     engine.verify(run["id"])
     result = journal.load(run["id"])
     text = markdown(result, journal.events(run["id"]))
-    assert "selected groups;" in text
+    assert "groups registered on the destination with matching counts" in text
     assert "UTC" in text and "Unix ms" not in text
     assert "2026-03-01 to 2026-03-03" in text
     block = text.split("\n\n")[2]
@@ -1063,3 +1138,45 @@ def test_status_polling_does_not_write_the_journal(rig):
         )
         engine.status(run["id"])
     assert len(journal.events(run["id"])) == before
+
+
+def test_verify_waits_for_a_running_copy_to_finish(rig):
+    engine, env, _ = rig
+    env.data["complete_after_polls"] = 3
+    run = planned(engine)
+    execute(engine, run)
+    result = engine.verify(run["id"])
+    assert (
+        result["outcome"] != "incomplete_verification" or result.get("reason") != "destination_busy"
+    )
+
+
+def test_verify_reports_busy_after_its_wait_limit(rig):
+    engine, env, _ = rig
+    env.data["complete_after_polls"] = 100
+    run = planned(engine)
+    execute(engine, run)
+    result = engine.verify(run["id"])
+    assert result["reason"] == "destination_busy"
+
+
+def test_stop_can_run_while_verify_is_waiting(rig):
+    from logs_migrate.adapters.simulated import SimulatedClock
+
+    engine, env, _ = rig
+    env.data["complete_after_polls"] = 100
+    run = planned(engine)
+    task = execute(engine, run)["task"]
+    stopped = []
+    sleep = engine.clock.sleep
+
+    def stop_during_wait(seconds):
+        assert engine.status(run["id"])["status"] == "running"
+        other = Engine(env, engine.journal, SimulatedClock())
+        assert other.verify(run["id"])["reason"] == "destination_busy"
+        stopped.append(engine.stop(task["id"])["status"])
+        sleep(seconds)
+
+    engine.clock.sleep = stop_during_wait
+    engine.verify(run["id"])
+    assert stopped == ["cancelled"]

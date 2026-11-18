@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
 from .adapters.ssh_errors import SSHFailure
-from .errors import Code, MigrationError
+from .errors import Code, MigrationError, QueryTimeout
 from .models import DAY, Cluster, Window
 from .planning import build_plan, compatible, partition_diff
 
@@ -22,7 +22,7 @@ DEFAULT_COUNT_DAYS = 30
 @dataclass
 class Step:
     name: str
-    status: str  # pass, fail, skip
+    status: str  # pass, fail, skip, warn
     detail: str = ""
 
 
@@ -38,7 +38,7 @@ class SelfTest:
     def counts(self) -> dict[str, int]:
         return {
             status: sum(1 for s in self.steps if s.status == status)
-            for status in ("pass", "fail", "skip")
+            for status in ("pass", "fail", "skip", "warn")
         }
 
     def text(self) -> str:
@@ -49,8 +49,15 @@ class SelfTest:
         totals = self.counts()
         lines.append("")
         lines.append(
-            f"Summary: {totals['pass']} passed, {totals['fail']} failed, {totals['skip']} skipped. "
-            + ("All checks passed." if self.passed else "Fix the failed checks before planning.")
+            f"Summary: {totals['pass']} passed, {totals['fail']} failed, "
+            f"{totals['skip']} skipped, {totals['warn']} warnings. "
+            + (
+                "Fix the failed checks before planning."
+                if not self.passed
+                else "Checks completed with warnings."
+                if totals["warn"]
+                else "All checks passed."
+            )
         )
         lines.append("Read-only: nothing was started, written or stopped.")
         return "\n".join(lines) + "\n"
@@ -91,7 +98,7 @@ def run(
     report = SelfTest()
     results: dict[str, object] = {}
 
-    def step(name, action, *, skip: str | None = None):
+    def step(name, action, *, skip: str | None = None, optional_counts: bool = False):
         if skip:
             report.steps.append(Step(name, "skip", skip))
             return None
@@ -100,6 +107,20 @@ def run(
         try:
             value, detail = action()
         except Exception as error:  # Only codes and safe diagnostics cross.
+            if optional_counts and (
+                isinstance(error, QueryTimeout)
+                or isinstance(error, MigrationError)
+                and error.code == Code.INCOMPLETE
+            ):
+                report.steps.append(
+                    Step(
+                        name,
+                        "warn",
+                        "Counts were incomplete or timed out. "
+                        "Try again when the source is less busy.",
+                    )
+                )
+                return None
             logging.getLogger(__name__).exception("Self-test step %r failed", name)
             report.steps.append(Step(name, "fail", _code(error)))
             return None
@@ -290,7 +311,7 @@ def run(
     label = f"{_fmt_day(count_window.start)} to {_fmt_day(count_window.end - 1)}"
 
     def source_counts():
-        daily, complete = env.source_client.daily_counts(count_window)
+        daily, complete = env.source_client.daily_counts(count_window, timeout=30.0)
         total = sum(daily.values())
         days = sum(1 for v in daily.values() if v)
         if not complete:
@@ -301,7 +322,7 @@ def run(
             )
         return daily, f"{total:,} events on {days} days ({label}) · complete"
 
-    step("Source daily counts", source_counts)
+    step("Source daily counts", source_counts, optional_counts=True)
 
     def destination_counts():
         daily, complete = env.destination_client.daily_counts(count_window)

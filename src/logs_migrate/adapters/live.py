@@ -263,6 +263,27 @@ def parse_members(text: str, fallback: str) -> list[str]:
     return hosts or [fallback]
 
 
+def parse_member_ids(text: str) -> dict[str, str]:
+    """Read the destination daemon IDs and hosts without retaining the config text."""
+    section = DISTRIBUTED.search(text)
+    if not section:
+        return {}
+    result: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for tag in re.findall(r"<daemon\b[^>]*>", section.group(), re.IGNORECASE):
+        attributes = dict(re.findall(r"""([A-Za-z_][\w-]*)\s*=\s*["']([^"']*)["']""", tag))
+        ident, host = (
+            attributes.get("token", "").lower(),
+            attributes.get("host", "").lower().rstrip("."),
+        )
+        if not UUID.fullmatch(ident) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", host):
+            continue
+        if ident in result and result[ident] != host:
+            ambiguous.add(ident)
+        result[ident] = host
+    return {ident: host for ident, host in result.items() if ident not in ambiguous}
+
+
 def parse_partitions(response) -> list[dict]:
     if isinstance(response, dict):
         for key in ("partitions", "items", "results"):
@@ -540,6 +561,13 @@ def decode_task(response, *, destination: str, now_ms: int) -> Transfer:
                 totals,
                 node_elapsed,
                 scheduled_ids,
+                _node_name(
+                    {
+                        key: entry[key]
+                        for key in ("host", "hostName", "hostname", "ip")
+                        if key in entry
+                    }
+                ),
             )
         )
     completed = tuple(dict.fromkeys(completed + tuple(k for n in nodes for k in n.completed)))
@@ -652,6 +680,7 @@ class LiveEnvironment:
         self.listing_warnings: set[str] = set()
         self.members: list[str] = []
         self.destination_members: list[str] = []
+        self.destination_node_names: dict[str, str] = {}
         self.source_client: Logs90 | None = None
         self.destination_client: Logs90 | None = None
         self.config_env: RestConfigEnvironment | None = None
@@ -948,6 +977,8 @@ class LiveEnvironment:
         # An unreadable member list fails closed: the API copies from every member, so a
         # plan and ledger built from one node would be short.
         text = self._ssh(host, credential, username).read(ReadOperation.MEMBERS)
+        if credential == "destination_ssh":
+            self.destination_node_names = parse_member_ids(text)
         return parse_members(text, host.lower())
 
     def source_members(self) -> list[str]:

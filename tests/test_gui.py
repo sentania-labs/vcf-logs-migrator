@@ -119,6 +119,15 @@ def test_one_test_asks_about_the_two_addresses_before_any_password_is_sent(drive
     # screen says another question may follow.
     assert "logs-old-1 (source)" in text and "logs-new-1 (destination)" in text
     assert text.count("SHA256:") == 2 and "logs-old-2" not in text
+    assert not driver.clipped(), "identity codes must fit in the first-time question"
+    from PySide6.QtGui import QTextDocument
+    from PySide6.QtWidgets import QLabel
+
+    for cell in window.modal.findChildren(QLabel):
+        if "SHA256:" in cell.text():
+            doc = QTextDocument()
+            doc.setHtml(cell.text())
+            assert doc.idealWidth() <= cell.contentsRect().width()
     assert "If a system has several servers, one more question like this follows" in text
     driver.resize(1024, 700)
     assert fits(driver)
@@ -384,7 +393,7 @@ def test_rules_compare_by_themselves_and_the_needed_one_stays_ticked(driver):
     assert "NEEDED" in text and "Storage group “Firewall”" in text
     needed = page.boxes["partitions:Firewall"]
     assert needed.isChecked() and not needed.isEnabled()
-    assert driver.buttons() == ["Copy only the needed one…", "Copy 5 rules…"]
+    assert driver.buttons() == ["Compare again", "Copy only the needed one…", "Copy 5 rules…"]
     page.boxes["masking:hide-secrets"].click()
     assert driver.buttons()[-1] == "Copy 4 rules…"
     driver.click("Copy 4 rules…")
@@ -397,7 +406,7 @@ def test_rules_compare_by_themselves_and_the_needed_one_stays_ticked(driver):
     assert "4 rules copied to the destination." in text
     assert "LEFT OUT" in text and "You chose not to copy it" in text
     assert driver.window.step_mark("rules") == "done"
-    assert driver.buttons() == ["Continue to dates →"]
+    assert driver.buttons() == ["Compare again", "Continue to dates →"]
 
 
 def test_matching_rules_finish_the_step_without_a_visit():
@@ -408,7 +417,168 @@ def test_matching_rules_finish_the_step_without_a_visit():
         driver.click("Continue →")
         driver.idle()
         assert "Nothing to copy" in plain(driver)
-        assert driver.buttons() == ["Continue to dates →"]
+        assert driver.buttons() == ["Compare again", "Continue to dates →"]
+    finally:
+        driver.close()
+
+
+def test_long_server_name_leaves_room_for_the_full_identity_code(driver):
+    from PySide6.QtGui import QTextDocument
+    from PySide6.QtWidgets import QLabel
+
+    driver.window._ask_identities(
+        [
+            {
+                "kind": "server",
+                "name": "logs-destination-server-123456.example.com:22",
+                "role": "destination",
+                "fingerprint": "ab" * 32,
+                "state": "unknown",
+            }
+        ]
+    )
+    driver.wait(100)
+    cells = [c for c in driver.window.modal.findChildren(QLabel) if "SHA256:" in c.text()]
+    assert cells
+    for cell in cells:
+        doc = QTextDocument()
+        doc.setHtml(cell.text())
+        assert doc.idealWidth() <= cell.contentsRect().width()
+
+
+def test_connected_screen_can_test_again_without_retyping_passwords():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        assert "Test again" in driver.buttons()
+        driver.click("Test again")
+        driver.confirm()
+        assert driver.state.connected
+        assert driver.page.source_password.text() == "letmein"
+        assert driver.page.destination_password.text() == "letmein"
+    finally:
+        driver.close()
+
+
+def test_stand_in_shared_server_key_is_listed_on_connection():
+    driver = Driver("rules-none", knobs={"server_seeds": {"logs-old-2": "logs-old-1"}})
+    try:
+        driver.sign_in()
+        assert any(
+            item["server"] == "logs-old-2" for item in driver.state.discovered["shared_servers"]
+        )
+    finally:
+        driver.close()
+
+
+def test_shared_servers_are_listed_without_a_warning():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        assert "Also connected:" not in plain(driver)
+        driver.state.discovered["shared_servers"] = [
+            {"server": "server-2.example.com", "same_as": "server-1.example.com"},
+            {"server": "server-3.example.com", "same_as": "server-1.example.com"},
+        ]
+        driver.window.refresh_all()
+        text = plain(driver)
+        assert "Also connected: server-2.example.com, server-3.example.com" in text
+        assert "same identity code as server-1.example.com" in text
+        assert "Some servers share an identity code" not in text
+        assert driver.overflow() == 0
+    finally:
+        driver.close()
+
+
+def test_rules_are_compared_again_after_dates_sends_you_back():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        driver.click("Continue →")
+        driver.idle()
+        assert "Nothing to copy" in plain(driver)
+        driver.click("Continue to dates →")
+        driver.idle()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["destination"]["partitions"][0]["criteria"] = 'appname="changed"'
+        driver.choose("Last 3 months")
+        assert "Go to Copy rules" in driver.buttons()
+        driver.click("Go to Copy rules")
+        driver.idle()
+        assert "Storage group “Default”" in plain(driver) and "NEEDED" in plain(driver)
+        assert "Compare again" in driver.buttons()
+    finally:
+        driver.close()
+
+
+def test_sidebar_rechecks_rules_after_dates_refuses_a_missing_partition():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        driver.click("Continue →")
+        driver.idle()
+        assert driver.window.step_mark("rules") == "done"
+        driver.click("Continue to dates →")
+        driver.idle()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["destination"]["partitions"] = [
+                p for p in env.data["destination"]["partitions"] if p["name"] != "Firewall"
+            ]
+        driver.choose("Last 3 months")
+        assert "Go to Copy rules" in driver.buttons()
+        assert driver.window.step_mark("rules") != "done"
+        driver.step("rules")
+        driver.idle()
+        assert "Storage group “Firewall”" in plain(driver) and "NEEDED" in plain(driver)
+    finally:
+        driver.close()
+
+
+def test_optional_retention_rule_can_be_left_alone_without_unticking():
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["source"]["partitions"][0]["retention_seconds"] = 0
+            env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+        driver.click("Continue →")
+        driver.idle()
+        driver.click("Compare again")
+        driver.idle()
+        assert "30 days" in plain(driver)
+        assert any("Continue" in button for button in driver.buttons())
+    finally:
+        driver.close()
+
+
+def test_rule_refusal_message_does_not_get_a_double_period():
+    from logs_migrate.errors import Code, Rejection
+
+    driver = Driver("rules-none", delay=0)
+    try:
+        driver.sign_in()
+        env = driver.window.worker.session.env
+        with env.exclusive():
+            env.data["destination"]["partitions"][0]["retention_seconds"] = 30 * 86400
+            env.data["source"]["partitions"][0]["retention_seconds"] = 0
+
+        def refuse(*args):
+            raise Rejection(Code.REFUSED, "Data partition name cannot be changed.")
+
+        env.config_write = refuse
+        driver.click("Continue →")
+        driver.idle()
+        driver.click("Compare again")
+        driver.idle()
+        driver.click("Copy 1 rule…")
+        driver.click("Copy 1 rule")
+        driver.idle()
+        text = plain(driver)
+        assert "data partition name cannot be changed." in text
+        assert "changed.." not in text
     finally:
         driver.close()
 
@@ -443,7 +613,7 @@ def test_a_rule_that_cannot_be_copied_is_named_and_can_be_tried_again():
         text = plain(driver)
         assert "4 rules copied. 1 was not." in text and "“to-siem” could not be added" in text
         assert driver.window.step_mark("rules") == "warn"
-        assert driver.buttons() == ["Try that rule again", "Continue to dates →"]
+        assert driver.buttons() == ["Compare again", "Try that rule again", "Continue to dates →"]
         driver.click("Try that rule again")
         driver.idle()
         assert "1 rule copied to the destination." in driver.texts()
@@ -563,13 +733,13 @@ def test_broken_copies_are_shown_as_dates_and_the_plan_leaves_them_out():
         text = plain(driver)
         assert "except 8 days" in text and "Skipped" in text
         assert "The copy goes around them." in text and not PARTS.search(text)
-        # At the smallest window the long sentence to tick is whole, on two lines.
+        # At the smallest window the sentence to tick remains whole.
         driver.resize(1024, 700)
-        assert "\n" in driver.page.ack.text() and driver.clipped() == []
+        assert driver.clipped() == []
         assert driver.overflow() == 0
         driver.resize(1280, 800)
         assert "\n" not in driver.page.ack.text()
-        assert "the 8 skipped days and the newest logs" in driver.page.ack.text()
+        assert "the 8 skipped days and logs still being written" in driver.page.ack.text()
         assert len(driver.state.plan["parts"]) == 3
         driver.start()
         # It reads as one copy from start to finish: every screen on the way is kept.
@@ -602,7 +772,7 @@ def test_broken_copies_are_shown_as_dates_and_the_plan_leaves_them_out():
         driver.click("Check what arrived →")
         driver.idle()
         text = plain(driver)
-        assert "Everything arrived" in text and "All 176 days match." in text
+        assert "Everything arrived" in text and "Day-by-day counts match for" in text
         # The result still says how many copies ran, in its own sentence.
         assert "To go around them it ran as 3 copies back to back." in text
         assert not PARTS.search(text)
@@ -777,7 +947,7 @@ def test_a_list_that_fits_its_box_shows_every_row_and_no_scroll_strip():
         driver.choose("Last 6 months")
         driver.link("list")
         driver.wait(80)
-        assert "Nov 10, 2026 onward" in driver.texts()
+        assert "Logs still being written" in driver.texts()
         assert box().hidden() == 0 and box().cue.isHidden(), "the last month is under the strip"
         driver.click("Close")
         driver.start()
@@ -812,7 +982,7 @@ def test_a_running_copy_updates_in_place_and_the_stop_button_keeps_its_click():
         assert page.progress.percent.text() != first
         assert driver.button("Stop the copy…") is stop, "the button was rebuilt while the copy ran"
         text = plain(driver)
-        assert "You can close this window." in text and "Latest to arrive: logs up to" in text
+        assert "You can close this window." in text and "Newest logs received: up to" in text
         assert "Running for" in text and "Should finish around" in text
         assert "logs-new-1" in text and "COPYING" in text
         driver.click("Stop the copy…")
@@ -823,7 +993,7 @@ def test_a_running_copy_updates_in_place_and_the_stop_button_keeps_its_click():
         driver.click("Stop the copy")
         driver.finish()
         text = plain(driver)
-        assert "You stopped the copy today at" in text
+        assert "You stopped the copy" in text
         assert "Arrived and safe on the destination" in text and "Still to copy" in text
         assert driver.buttons() == ["Check what arrived so far", "Continue copying"]
         # A copy that did not finish is never called complete.
@@ -1053,7 +1223,8 @@ def test_missing_days_are_listed_alone_and_one_button_copies_just_those():
         driver.idle()
         text = plain(driver)
         assert (
-            "8 of 184 days need attention" in text and "The other 176 days match exactly." in text
+            "8 of 184 days need attention" in text
+            and "176 other counted days match exactly." in text
         )
         assert text.count("PART NEVER ARRIVED") == 2
         assert driver.window.step_mark("check") == "warn"
@@ -1067,7 +1238,7 @@ def test_missing_days_are_listed_alone_and_one_button_copies_just_those():
         driver.click("Check what arrived →")
         driver.idle()
         text = plain(driver)
-        assert "Everything arrived" in text and "All 184 days match." in text
+        assert "Everything arrived" in text and "Day-by-day counts match for" in text
     finally:
         driver.close()
 

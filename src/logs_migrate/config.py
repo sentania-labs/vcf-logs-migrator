@@ -60,6 +60,8 @@ def write_body(kind, rule, existing):
     if existing is not None:
         require(isinstance(existing.get("id"), str), Code.SCHEMA)
         body["id"] = existing["id"]
+        if kind == "partitions" and existing["id"] == "d41d8cd9-8f00-3204-a980-0998ecf8427e":
+            body["name"] = ""
     elif kind != "forwarding":
         body.pop("id", None)
     if kind == "forwarding" and body.get("sslEnabled") is True:
@@ -166,7 +168,11 @@ class ConfigMigration:
                 except Rejection as error:
                     # A 4xx/auth refusal means the write did not happen.
                     written = False
-                    result.update(status="failed", reason=error.code.value)
+                    result.update(
+                        status="failed",
+                        reason=error.code.value,
+                        **({"message": error.message} if hasattr(error, "message") else {}),
+                    )
                 except MigrationError as error:
                     written = False
                     # A transport error can follow an accepted write. No automatic retry.

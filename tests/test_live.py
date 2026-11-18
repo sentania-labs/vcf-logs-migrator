@@ -35,6 +35,38 @@ B = "22222222-2222-2222-2222-222222222222"
 C = "33333333-3333-3333-3333-333333333333"
 
 D = "44444444-4444-4444-4444-444444444444"
+
+
+def test_destination_member_tokens_map_progress_ids_to_addresses():
+    xml = (
+        f'<config><distributed><daemon host="logs-new-1.example.com" token="{A}"/>'
+        f'<daemon token="{B}" host="logs-new-2.example.com"/></distributed></config>'
+    )
+    assert live.parse_member_ids(xml) == {A: "logs-new-1.example.com", B: "logs-new-2.example.com"}
+
+    class SSH:
+        def read(self, operation):
+            assert operation == ReadOperation.MEMBERS
+            return xml
+
+    env = object.__new__(LiveEnvironment)
+    env._ssh = lambda *args: SSH()
+    assert env._members("logs-new-1.example.com", "destination_ssh", "root") == [
+        "logs-new-1.example.com",
+        "logs-new-2.example.com",
+    ]
+    assert env.destination_node_names == {A: "logs-new-1.example.com", B: "logs-new-2.example.com"}
+
+
+def test_task_prefers_server_address_to_internal_id():
+    body = {
+        "status": "RUNNING",
+        "nodes": [{"nodeId": A, "hostName": "server.example.com", "status": "FINISHED"}],
+    }
+    task = decode_task(body, destination="destination", now_ms=0)
+    assert task.nodes[0].node == A and task.nodes[0].address == "server.example.com"
+
+
 # Lines quoted from a real 8.18.7 `bucket-index show` (ids masked): comma separated head,
 # space separated fields inside cmd=[...], and cmd=[NULL] for buckets sealed by a restart.
 REAL_DATED = (
@@ -667,7 +699,7 @@ def _run_selftest(rigged, window, growth=None):
 
     def any_counts(method, path, body=None, headers=None, timeout=None):
         if "aggregated-events" in path:
-            assert timeout == 600.0
+            assert timeout in (30.0, 600.0)
             return count()
         return RecordedTransport.request(source, method, path, body, headers)
 
@@ -682,6 +714,14 @@ def _run_selftest(rigged, window, growth=None):
     destination.request = destination_counts
     env.source_growth = lambda: growth or {"bytes": 0, "nodes": [], "window_seconds": 5}
     return env, destination, selftest.run(env, window)
+
+
+def test_selftest_slow_source_counts_are_a_warning(rigged, monkeypatch):
+    monkeypatch.setattr(Logs90, "daily_counts", lambda self, window, **kwargs: ({}, False))
+    _, _, result = _run_selftest(rigged, Window(1780000000000, 1782000000000))
+    source = next(s for s in result.steps if s.name == "Source daily counts")
+    assert source.status == "warn"
+    assert "incomplete" in source.detail.lower()
 
 
 def test_selftest_reports_every_read_and_sends_nothing(rigged):

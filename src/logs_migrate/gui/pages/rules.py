@@ -37,7 +37,7 @@ class RulesPage(Page):
         self._drawn = None
 
     def arrive(self) -> None:
-        """The comparison runs by itself on arrival; there is no button for it."""
+        """Start the first comparison on arrival."""
         state = self.app.state
         state.rules_seen = True
         if not state.connected:
@@ -145,10 +145,15 @@ class RulesPage(Page):
         if not count:
             self.set_footer(
                 "No rules are ticked, so nothing will be copied to the destination.",
-                [("Continue to dates →", self.onward, "primary")],
+                [
+                    ("Compare again", self.app.compare_rules),
+                    ("Continue to dates →", self.onward, "primary"),
+                ],
             )
             return
-        actions = []
+        actions = [("Compare again", self.app.compare_rules)]
+        if not needed:
+            actions.append(("Continue to dates →", self.onward))
         if needed and len(self.rows()) > needed:
             only = "Copy only the needed one…" if needed == 1 else "Copy only the needed ones…"
             actions.append((only, lambda: self.ask_copy(True)))
@@ -334,7 +339,11 @@ class RulesPage(Page):
             layout.addStretch(1)
             self.set_body(frame)
             self.set_footer(
-                "No rules need copying.", [("Continue to dates →", self.onward, "primary")]
+                "No rules need copying.",
+                [
+                    ("Compare again", self.app.compare_rules),
+                    ("Continue to dates →", self.onward, "primary"),
+                ],
             )
             return
         if where == "diff":
@@ -383,20 +392,24 @@ class RulesPage(Page):
             )
             self.set_footer(
                 "Rules are done. Next, choose how far back to copy logs.",
-                [("Continue to dates →", self.onward, "primary")],
+                [
+                    ("Compare again", self.app.compare_rules),
+                    ("Continue to dates →", self.onward, "primary"),
+                ],
             )
             return
         names = ", ".join(
             f"“{escape(row['name'].split('“')[-1].rstrip('”'))}”" for row in failed[:3]
         )
         reason = failed[0]["text"][0].lower() + failed[0]["text"][1:] if failed else ""
+        punctuation = "" if reason.endswith((".", "!", "?")) else "."
         others = len(copied)
         self.set_body(
             banner(
                 "warn",
                 f"{vm.plural(others, 'rule')} copied. {len(failed)} "
                 f"{'was' if len(failed) == 1 else 'were'} not.",
-                f"{names} could not be added: {escape(reason)}. "
+                f"{names} could not be added: {escape(reason)}{punctuation} "
                 + (
                     f"The other {vm.plural(others, 'rule')} {'is' if others == 1 else 'are'} in "
                     "place and stay there. "
@@ -419,12 +432,20 @@ class RulesPage(Page):
         if outstanding:
             self.set_footer(
                 "The needed rule was not copied, so logs cannot be copied yet.",
-                [("Continue to dates →", self.onward), (retry, self.retry, "primary")],
+                [
+                    ("Compare again", self.app.compare_rules),
+                    ("Continue to dates →", self.onward),
+                    (retry, self.retry, "primary"),
+                ],
             )
         else:
             self.set_footer(
                 "You can go on to copy logs.",
-                [(retry, self.retry), ("Continue to dates →", self.onward, "primary")],
+                [
+                    ("Compare again", self.app.compare_rules),
+                    (retry, self.retry),
+                    ("Continue to dates →", self.onward, "primary"),
+                ],
             )
 
 

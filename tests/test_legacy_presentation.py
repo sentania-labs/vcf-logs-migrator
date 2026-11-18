@@ -110,6 +110,19 @@ def test_window_record_and_both_saved_files_hide_retired_prompts(legacy_journal,
     assert journal.events(run["id"]) == events
 
 
+def test_report_filename_uses_the_selected_local_time(legacy_journal, tmp_path):
+    journal, run, _ = legacy_journal
+    session = Session()
+    session.journal = journal
+    session.journal_path = journal.path
+    record = session.record()
+    (copy,) = copies.build(record["runs"], record["rows"])
+    # The fake clock starts at 2026-11-06 00:00 UTC, or 6 PM the previous day in Chicago.
+    expected = "2026-11-05-1800-"
+    paths = session.save_report(copy_id=copy["id"], folder=str(tmp_path), zone="America/Chicago")
+    assert all(expected in Path(path).name for path in paths)
+
+
 def test_unrelated_warning_and_audit_evidence_are_preserved(legacy_journal):
     _, run, events = legacy_journal
     run = deepcopy(run)

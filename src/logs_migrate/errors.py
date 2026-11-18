@@ -18,6 +18,7 @@ class Code(StrEnum):
     ACK = "acknowledgment_required"
     AUTH = "authentication_failed"
     CONNECTION = "connection_failed"
+    REFUSED = "destination_refused"
     SCHEMA = "unrecognized_response_schema"
     INCOMPLETE = "incomplete_evidence"
     VERIFICATION_PENDING = "verification_pending"
